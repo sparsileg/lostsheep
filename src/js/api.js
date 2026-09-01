@@ -34,10 +34,6 @@ const Api = {
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),
     getMapData: (tagId) => invoke('get_map_data', { tagId }),
-    listCacheRegions: () => invoke('list_cache_regions'),
-    saveCacheRegion: (name, polygonGeojson, tileCount, bytesOnDisk) =>
-        invoke('save_cache_region', { name, polygonGeojson, tileCount, bytesOnDisk }),
-    deleteCacheRegion: (id) => invoke('delete_cache_region', { id }),
 
     // backup / restore
     backupDatabase: (destPath, passphrase) => invoke('backup_database', { destPath, passphrase }),

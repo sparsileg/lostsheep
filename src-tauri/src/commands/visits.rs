@@ -113,7 +113,7 @@ pub struct VisitListEntry {
 pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListParams) -> Result<Vec<VisitListEntry>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
 
-    // seed_household_id = 0 is used by map_cache::get_map_data for
+    // seed_household_id = 0 is used by map_data::get_map_data for
     // plain "show everything" mode, where distance is unused — falls
     // back to (0,0) instead of erroring on a not-found id.
     let seed: (f64, f64) = conn

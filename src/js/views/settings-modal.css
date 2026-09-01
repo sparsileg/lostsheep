@@ -1,9 +1,13 @@
 .settings-modal { width: 520px; max-width: 90vw; max-height: 92vh; }
-.settings-modal label { display: block; margin: 10px 0 4px; font-weight: 600; }
-.settings-modal input[type="number"] { width: 100%; }
+
+/* Label + control on one line, control shortened to fit — everything
+   except the backup-folder row (below), which keeps its own full-width
+   label-above-row layout since a folder path needs the room. */
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
+.settings-row label { margin: 0; font-weight: 600; }
+.settings-row input[type="number"] { width: 90px; flex: 0 0 auto; }
+.settings-row .inline-dropdown { width: 140px; max-width: 140px; flex: 0 0 auto; margin-bottom: 0; }
+
+.settings-modal > label { display: block; margin: 10px 0 4px; font-weight: 600; }
 .settings-folder-row { display: flex; gap: 8px; align-items: center; }
 .settings-folder-row input { flex: 1; }
-#sCacheTable { margin-top: 8px; }
-.settings-note { font-size: 0.85em; opacity: 0.75; margin: 8px 0 0; }
-#sCacheTableBody { display: block; max-height: 160px; overflow-y: auto; }
-#sCacheTable thead, #sCacheTableBody tr { display: table; width: 100%; table-layout: fixed; }

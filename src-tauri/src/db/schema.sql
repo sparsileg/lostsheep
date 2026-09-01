@@ -151,18 +151,6 @@ CREATE TABLE IF NOT EXISTS visit_group_members (
     PRIMARY KEY (visit_group_id, household_id)
 );
 
--- User-drawn polygon regions cached for offline map tiles. Tiles
--- themselves live on disk under the app data dir; this row tracks the
--- polygon + bookkeeping so the frontend can list/delete cached regions.
-CREATE TABLE IF NOT EXISTS cache_regions (
-    id             INTEGER PRIMARY KEY,
-    name           TEXT NOT NULL,
-    polygon_geojson TEXT NOT NULL,
-    tile_count     INTEGER NOT NULL DEFAULT 0,
-    bytes_on_disk  INTEGER NOT NULL DEFAULT 0,
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -173,10 +161,16 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('deletedRetentionDays', '365'),
     ('logRetentionDays', '30'),
     ('logLevel', 'info'),
-    ('mapOfflineCacheEnabled', 'false'),
     ('defaultVisitGroupSize', '10'),
     ('pageSize', '25'),
     ('backupFolder', '');
+
+-- Offline map-tile caching was dropped (issue #3) — this runs on every
+-- startup, not just a fresh DB, so it also cleans up an existing
+-- install's leftover table/setting from before the removal. Must come
+-- after the settings table is created above.
+DROP TABLE IF EXISTS cache_regions;
+DELETE FROM settings WHERE key = 'mapOfflineCacheEnabled';
 
 CREATE TABLE IF NOT EXISTS logs (
     id         INTEGER PRIMARY KEY,

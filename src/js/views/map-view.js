@@ -8,7 +8,6 @@ registerView('map', {
                 <input type="number" id="mapVisitCount" min="1" value="10" style="width:70px;" title="Number of addresses to include">
                 <button class="btn btn-primary" id="mapGenerateBtn" disabled>Generate visit list from selected seed</button>
                 <button class="btn" id="mapResetSeedBtn">Reset Seed</button>
-                <button class="btn btn-primary" id="mapDrawCacheBtn">Draw offline-cache region</button>
             </div>
             <div id="mapEl"></div>
             <div id="mapVisitListResult"></div>
@@ -20,9 +19,6 @@ registerView('map', {
         this.markersLayer = L.layerGroup().addTo(this.map);
         this.markersByAddressKey = {};
         this.seedGroupKey = null;
-        this.drawingPolygon = false;
-        this.polygonPoints = [];
-        this.polygonLayer = null;
         this.selectedTagId = '';
 
         this.tagDropdown = mountDropdown(document.getElementById('mapTagDropdown'), {
@@ -32,8 +28,6 @@ registerView('map', {
         });
         document.getElementById('mapGenerateBtn').addEventListener('click', generateVisitList);
         document.getElementById('mapResetSeedBtn').addEventListener('click', resetSeed);
-        document.getElementById('mapDrawCacheBtn').addEventListener('click', toggleCacheDrawMode);
-        this.map.on('click', onMapClick);
     },
     async onShow() {
         await populateMapTagSelect();
@@ -97,26 +91,41 @@ const starIcon = L.divIcon({
     className: '', iconSize: [52, 52], iconAnchor: [26, 26],
 });
 
+// The generated visit list is always restricted to "Not known" households,
+// regardless of whatever tag the dashboard's own filter dropdown currently
+// has selected (that dropdown only controls what's plotted on the map).
+async function notKnownTagId() {
+    const tags = await Api.listTags().catch(() => []);
+    const tag = tags.find(t => t.name === 'Not known');
+    return tag ? tag.id : null;
+}
+
 async function generateVisitList() {
     if (!MapView.seedHouseholdId) return;
-    const tagId = MapView.selectedTagId || null;
+    const tagId = await notKnownTagId();
     const count = parseInt(document.getElementById('mapVisitCount').value, 10) || 10;
     let entries;
     try {
         entries = await Api.generateVisitList({
             seed_household_id: MapView.seedHouseholdId,
-            tag_id: tagId ? Number(tagId) : null,
+            tag_id: tagId,
             count,
         });
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
+    // Previous run's stars need to go back to the default pin before this
+    // run's results get their own stars — otherwise stars from a household
+    // that isn't part of the new list stick around looking like it still is.
+    Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
     entries.forEach(e => {
         const marker = MapView.markersByAddressKey[e.address_key];
         if (marker) marker.setIcon(starIcon);
     });
 
+    MapView.lastVisitListText = buildVisitListText(entries);
     document.getElementById('mapVisitListResult').innerHTML = `
         <h2>Visit List (${entries.length} addresses)</h2>
+        <button class="btn" id="mapCopyVisitListBtn">⎘ Copy</button>
         <ol>${entries.map(e => {
             const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
             const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
@@ -124,6 +133,22 @@ async function generateVisitList() {
                 — ${e.names.map(escapeHtml).join(', ')}${phones}
                 <span style="opacity:.6;"> (${Math.round(e.distance_meters)} m from seed)</span></li>`;
         }).join('')}</ol>`;
+    document.getElementById('mapCopyVisitListBtn').addEventListener('click', copyVisitList);
+}
+
+function buildVisitListText(entries) {
+    return entries.map(e => {
+        const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
+        const phones = e.phones.length ? ` — ${e.phones.join(', ')}` : '';
+        return `${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`;
+    }).join('\n');
+}
+
+async function copyVisitList() {
+    const btn = document.getElementById('mapCopyVisitListBtn');
+    try { await navigator.clipboard.writeText(MapView.lastVisitListText || ''); btn.textContent = 'Copied!'; }
+    catch (e) { btn.textContent = 'Copy failed'; }
+    setTimeout(() => { if (btn) btn.textContent = '⎘ Copy'; }, 1500);
 }
 
 function resetSeed() {
@@ -135,46 +160,3 @@ function resetSeed() {
     showMessage('Seed cleared.', CONSTANTS.MESSAGE_TYPES.INFO, 2000);
 }
 
-// ── Offline-cache polygon draw: exactly 4 clicks, auto-closes back to
-// the first point (Leaflet's L.polygon always renders that closing
-// segment on its own), thick white-on-black outline for visibility. ──
-function toggleCacheDrawMode() {
-    MapView.drawingPolygon = !MapView.drawingPolygon;
-    MapView.polygonPoints = [];
-    if (MapView.polygonLayer) { MapView.map.removeLayer(MapView.polygonLayer); MapView.polygonLayer = null; }
-    document.getElementById('mapDrawCacheBtn').textContent =
-        MapView.drawingPolygon ? 'Click map 4 times to draw region' : 'Draw offline-cache region';
-}
-
-function redrawPolygonPreview() {
-    if (MapView.polygonLayer) { MapView.map.removeLayer(MapView.polygonLayer); MapView.polygonLayer = null; }
-    if (MapView.polygonPoints.length < 2) return;
-    // Two overlaid polygons: a thick black one underneath, a thin white
-    // one on top — reads clearly against any map tile or theme.
-    const outline = L.polygon(MapView.polygonPoints, { color: '#000000', weight: 9, fill: false });
-    const inner = L.polygon(MapView.polygonPoints, { color: '#ffffff', weight: 3, fill: false });
-    MapView.polygonLayer = L.layerGroup([outline, inner]).addTo(MapView.map);
-}
-
-function onMapClick(e) {
-    if (!MapView.drawingPolygon) return;
-    MapView.polygonPoints.push([e.latlng.lat, e.latlng.lng]);
-    redrawPolygonPreview();
-    if (MapView.polygonPoints.length >= 4) {
-        finishCacheRegion();
-    }
-}
-
-async function finishCacheRegion() {
-    const name = prompt('Name this cache region:', 'Region ' + new Date().toLocaleDateString());
-    if (!name) { toggleCacheDrawMode(); return; }
-    const geojson = JSON.stringify({ type: 'Polygon', coordinates: [[...MapView.polygonPoints, MapView.polygonPoints[0]].map(([lat, lng]) => [lng, lat])] });
-    // Actual tile fetch+disk-write happens here in a full build (Tauri fs
-    // API against the app data dir's tile-cache folder); this MVP records
-    // the region definition so Settings can list/delete it.
-    try {
-        await Api.saveCacheRegion(name, geojson, 0, 0);
-        showMessage('Cache region saved.', CONSTANTS.MESSAGE_TYPES.INFO);
-    } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
-    toggleCacheDrawMode();
-}

@@ -65,10 +65,7 @@ fn main() {
             commands::visits::get_visits_report,
             commands::visits::get_household_visits,
             commands::visits::generate_visit_list,
-            commands::map_cache::get_map_data,
-            commands::map_cache::list_cache_regions,
-            commands::map_cache::save_cache_region,
-            commands::map_cache::delete_cache_region,
+            commands::map_data::get_map_data,
             // backup / restore
             commands::backup::backup_database,
             commands::backup::restore_preview,

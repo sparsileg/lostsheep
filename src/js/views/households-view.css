@@ -26,7 +26,7 @@
 .hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
 .hh-detail-scroll { overflow-y: auto; flex: 1; min-height: 0; }
 .hh-detail-fixed { flex-shrink: 0; padding-top: 8px; }
-.hh-detail-modal h2 { margin: 0 0 8px; }
+.hh-detail-modal h3 { margin: 6px 0; }
 .hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
 .hh-detail-address { margin-top: 10px; font-size: 0.9em; opacity: 0.85; }
 .hh-latlon { opacity: 0.65; font-size: 0.85em; margin-top: 2px; }
