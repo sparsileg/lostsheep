@@ -1,0 +1,44 @@
+.households-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.households-toolbar input[type="text"] { flex: 1; min-width: 240px; }
+#hhTagFilterDropdown { min-width: 200px; }
+#hhResultsMeta { margin-bottom: 8px; opacity: 0.75; font-size: 0.9em; }
+#hhPager { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+
+.hh-row { cursor: pointer; }
+.hh-row:hover td { background: var(--color-table-row-hover); }
+
+.modal label { display: block; margin-bottom: 8px; }
+.modal input:not([type="checkbox"]), .modal select, .modal textarea { width: 100%; }
+.modal label.checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: normal; }
+.modal label.checkbox-label input[type="checkbox"] { width: auto; margin: 0; }
+.modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+
+/* Household detail modal — mirrors the source directory's own layout,
+   stacked top-to-bottom: name, heads with contact info, minors marker,
+   then address/coords. Read-only throughout except the comments/tags/
+   visits sections.
+
+   The "record a new visit" form and the Close button stay pinned at the
+   bottom always — only the content above (name/tags/comments/visit
+   history) scrolls. Overrides base.css's generic `.modal { overflow-y:
+   auto }`, which would otherwise scroll the whole thing as one block and
+   let the visit form/close button scroll out of view. */
+.hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
+.hh-detail-scroll { overflow-y: auto; flex: 1; min-height: 0; }
+.hh-detail-fixed { flex-shrink: 0; padding-top: 8px; }
+.hh-detail-modal h2 { margin: 0 0 8px; }
+.hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
+.hh-detail-address { margin-top: 10px; font-size: 0.9em; opacity: 0.85; }
+.hh-latlon { opacity: 0.65; font-size: 0.85em; margin-top: 2px; }
+
+.hh-detail-head { margin: 10px 0; padding-left: 6px; border-left: 2px solid var(--border-color); }
+.hh-detail-head strong { display: block; }
+.hh-detail-head div { font-size: 0.9em; opacity: 0.85; }
+
+.hh-visit-history { max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.hh-visit-entry {
+    padding: 8px 10px; margin-bottom: 6px; background: var(--card-bg);
+    border-radius: 4px; border-left: 3px solid var(--primary-color);
+}
+.hh-visit-date { font-weight: 700; }
+.hh-visit-comments { margin-top: 2px; opacity: 0.9; white-space: pre-wrap; }

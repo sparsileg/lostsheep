@@ -1,0 +1,131 @@
+/* base.css — structure only. Colors/tokens come from css/themes/*.css. */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; font-family: var(--font-ui, system-ui, sans-serif); }
+body { background: var(--bg-color); color: var(--text-color); font-size: 1rem; }
+
+#appShell { display: flex; height: 100vh; overflow: hidden; }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+#sidebar {
+    width: 242px; flex-shrink: 0; background: var(--sidebar-bg);
+    border-right: 1px solid var(--border-color); display: flex; flex-direction: column;
+}
+.sidebar-top { display: flex; align-items: center; justify-content: space-between; padding: 16px; }
+.sidebar-top .logo { font-weight: 600; font-size: 1.1rem; color: var(--primary-text); padding: 0; }
+.sidebar-controls { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--border-color); margin-bottom: 8px; }
+#sidebarNavList { list-style: none; margin: 0; padding: 8px 12px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.nav-item {
+    padding: 10px 14px; cursor: pointer; color: var(--color-nav-text); background: var(--card-bg);
+    border: 1px solid var(--border-color); border-radius: 6px; transition: background 0.15s, border-color 0.15s;
+}
+.nav-item:hover { background: var(--color-nav-hover-bg); color: var(--color-nav-hover-text); border-color: var(--primary-color); }
+.nav-item.active { border-left: 3px solid var(--primary-color); font-weight: 600; background: var(--card-hover); }
+
+.sidebar-footer { padding: 10px 16px; border-top: 1px solid var(--border-color); }
+#theme-dropdown { position: relative; }
+#theme-dropdown-trigger { width: 100%; text-align: left; }
+#theme-dropdown-menu { display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--card-bg); border: 1px solid var(--border-color); box-shadow: var(--shadow-dropdown); z-index: 20; }
+#theme-dropdown-menu.open { display: block; }
+.theme-dropdown-item { padding: 8px 12px; cursor: pointer; }
+.theme-dropdown-item:hover { background: var(--card-hover); }
+.font-size-control { display: flex; align-items: center; justify-content: center; gap: 6px; }
+#font-size-label { min-width: 64px; text-align: center; font-size: 0.85em; opacity: 0.85; }
+
+#hamburger-btn { background: none; border: none; color: var(--text-color); font-size: 1.3rem; cursor: pointer; padding: 4px 8px; }
+.hamburger-menu { display: none; position: fixed; width: 220px; background: var(--card-bg); border: 1px solid var(--border-color); box-shadow: var(--shadow-dropdown); z-index: 2000; }
+.hamburger-menu.open { display: block; }
+.hamburger-menu-item { padding: 8px 12px; cursor: pointer; }
+.hamburger-menu-item:hover { background: var(--card-hover); }
+
+/* ── Main content ────────────────────────────────────────────────────── */
+#mainContent { flex: 1; overflow-y: auto; padding: 20px; }
+.view { display: none; }
+.view.active { display: block; }
+
+/* View titles use the accent color specifically, not --primary-text —
+   in some themes --primary-text was too close to the background to
+   read, effectively invisible. h2/h3 stay as-is. */
+h1 { color: var(--primary-color); }
+h2, h3 { color: var(--primary-text); }
+
+.btn { border: var(--btn-border); background: var(--color-btn-bg); color: var(--color-btn-text); padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+.btn:hover { background: var(--color-btn-hover-bg); color: var(--color-btn-hover-text); }
+.btn-primary { border: var(--btn-primary-border); background: var(--color-btn-primary-bg); color: var(--color-btn-primary-text); }
+.btn-primary:hover { background: var(--color-btn-primary-hover-bg); color: var(--color-btn-primary-hover-text); }
+.btn-danger { border: 2px solid var(--error-color); color: var(--error-color); background: transparent; }
+.btn-danger:hover { background: var(--error-color); color: var(--color-danger-text); }
+
+input, select, textarea, button {
+    background: var(--input-bg); color: var(--text-color); border: none;
+    border-bottom: var(--input-border-bottom); padding: 6px 4px; font-family: inherit; font-size: inherit;
+}
+
+table { width: 100%; border-collapse: collapse; box-shadow: var(--shadow-table); }
+th { background: var(--color-table-header-bg); text-align: left; padding: 8px; border: var(--table-th-border); cursor: pointer; }
+th:hover { background: var(--color-table-header-hover); }
+td { padding: 8px; border: var(--table-td-border); }
+tr:hover td { background: var(--color-table-row-hover); }
+
+/* z-index 3000: comfortably above Leaflet's internal panes (tiles,
+   markers, popups all go up to ~700, all sharing the page's root
+   stacking context since nothing on the map container isolates them)
+   and above our own dropdown/hamburger-menu overlays (1500/2000). A
+   modal must always win over everything else, not just most things. */
+.modal-overlay { position: fixed; inset: 0; background: var(--color-modal-overlay); display: flex; align-items: center; justify-content: center; z-index: 3000; }
+.modal { background: var(--card-bg); border-radius: 6px; box-shadow: var(--shadow-modal); padding: 20px; min-width: 360px; max-width: 90vw; max-height: 85vh; overflow-y: auto; }
+
+/* Status bar — visible at all times as an actual bar (background/border),
+   not just reserved blank space. Idle state shows "Ready"; showMessage()
+   (core.js) only ever swaps this one element's text/color, never adds or
+   removes elements, so a message appearing/clearing never shifts the
+   rest of the page. */
+#messageArea { min-height: 2.4em; margin-bottom: 12px; }
+.message-slot {
+    background: var(--color-message-bg); color: var(--color-message-text);
+    padding: 8px 12px; border-radius: 4px; box-shadow: var(--shadow-message);
+    opacity: 0.6; transition: opacity 0.15s, color 0.15s;
+}
+.message-slot.info, .message-slot.error, .message-slot.warning { opacity: 1; }
+.message-slot.error { color: var(--error-color); }
+.message-slot.warning { color: var(--warning-color); }
+
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-color); color: var(--text-color); border-radius: 12px; padding: 2px 10px; margin: 2px; font-size: 0.85em; }
+.tag-chip .remove { cursor: pointer; opacity: 0.7; }
+.tag-chip .remove:hover { opacity: 1; }
+
+/* Custom themeable dropdown — replaces native <select>, whose popup list
+   is rendered by the OS/webview and ignores CSS entirely on most engines
+   (confirmed unreadable regardless of theme on WebKitGTK). Shared across
+   every view via js/dropdown.js's mountDropdown(). */
+.astryx-dropdown { position: relative; }
+.astryx-dropdown-trigger {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.5rem 0.75rem; background: var(--card-bg); border: 1px solid var(--border-color);
+    border-radius: 6px; cursor: pointer; user-select: none; transition: border-color 0.2s;
+}
+.astryx-dropdown-trigger:hover { border-color: var(--primary-color); }
+.astryx-dropdown-arrow { color: var(--text-secondary); font-size: 0.8rem; transition: transform 0.2s; }
+.astryx-dropdown.open .astryx-dropdown-arrow { transform: rotate(180deg); }
+.astryx-dropdown-menu {
+    display: none; position: absolute; top: 100%; left: 0; right: 0; margin-top: 0.25rem;
+    max-height: 360px; overflow-y: auto; background: var(--card-bg); border: 1px solid var(--border-color);
+    border-radius: 6px; box-shadow: var(--shadow-dropdown); z-index: 1500;
+}
+.astryx-dropdown.open .astryx-dropdown-menu { display: block; }
+.astryx-dropdown-item { padding: 0.5rem 0.75rem; cursor: pointer; transition: background 0.2s; }
+.astryx-dropdown-item:hover { background: var(--card-hover); }
+.astryx-dropdown-item.astryx-dropdown-empty { opacity: 0.6; cursor: default; }
+.astryx-dropdown-item.astryx-dropdown-empty:hover { background: transparent; }
+
+/* Generic narrow dropdown wrapper — used wherever a mountDropdown()
+   instance shouldn't stretch to its container's full width (Settings
+   modal fields, the household detail modal's tag-add dropdown, etc). */
+.inline-dropdown { max-width: 260px; margin-bottom: 4px; }
+
+@media (max-width: 768px) {
+    #sidebar { position: fixed; inset: 0; z-index: 40; transform: translateX(-100%); transition: transform .2s; width: 100%; }
+    #appShell.mobile-sidebar-open #sidebar { transform: translateX(0); }
+    .mobile-topbar { display: flex; }
+}
+.mobile-topbar { display: none; align-items: center; padding: 8px; background: var(--sidebar-bg); border-bottom: 1px solid var(--border-color); }

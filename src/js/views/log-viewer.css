@@ -1,0 +1,10 @@
+.lv-toggles { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.lv-check-error span, .lv-check-error { color: var(--error-color); }
+.lv-check-warn { color: var(--warning-color); }
+.lv-line-count { opacity: 0.7; margin-left: auto; }
+.lv-output { max-height: 480px; overflow-y: auto; border: 1px solid var(--border-color); }
+.lv-output table.kw-table { font-family: var(--font-mono, monospace); font-size: 0.85em; }
+.lv-ts { white-space: nowrap; opacity: 0.7; }
+tr.lv-error .lv-level { color: var(--error-color); }
+tr.lv-warning .lv-level { color: var(--warning-color); }
+tr.lv-debug .lv-level { opacity: 0.6; }

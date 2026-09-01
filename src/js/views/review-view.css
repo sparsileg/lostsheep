@@ -1,0 +1,8 @@
+.review-toolbar { margin-bottom: 12px; }
+.review-item { display: flex; gap: 12px; align-items: center; padding: 10px; border-bottom: 1px solid var(--border-color); }
+.review-badge { text-transform: uppercase; font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: var(--secondary-color); }
+.review-new .review-badge { background: var(--success-color); color: #fff; }
+.review-changed .review-badge { background: var(--warning-color); color: #000; }
+.review-removed .review-badge { background: var(--error-color); color: #fff; }
+.review-body { flex: 1; }
+.review-actions { display: flex; gap: 6px; flex-wrap: wrap; }

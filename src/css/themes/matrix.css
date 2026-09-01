@@ -1,0 +1,150 @@
+/*
+  css/themes/matrix.css
+  Matrix theme — variables only. All structural CSS lives in base.css.
+*/
+
+:root {
+    /* ── Fonts (font-body/font-ui are shared across all themes — see
+       base.css. font-mono stays per-theme by choice, message area only) ── */
+    --font-mono:    'Courier New', monospace;
+
+    /* ── Core palette (shared with Astryx) ─────────────────────────────────── */
+    --bg-color:        #000000;
+    --sidebar-bg:      #000000;
+    --card-bg:     rgba(0, 0, 0, 0.8);
+    --color-bg-raised:      rgba(0, 0, 0, 0.9);
+    --card-hover: rgba(0, 0, 0, 0.95);
+
+    --text-color:   #00ff00;
+    --text-secondary: #00ff00;
+    --color-text-muted:     #00ff00;
+    --primary-text: #000000;
+
+    --primary-color:   #00ff00;
+    --primary-hover:   #00cc00;
+    --secondary-color: #00aa00;
+    --secondary-hover: rgba(0, 255, 0, 0.3);
+
+    --success-color: #00ff00;
+    --warning-color: #ffaa00;
+
+    --focus-ring: rgba(0, 255, 0, 0.3);
+
+    --color-label:          #00ff00;
+
+    /* ── Charts (#82) — dedicated to Chart.js line colors, read live by
+       core.js's getThemeColors() via getComputedStyle(). Cyan, not
+       yellow — green+yellow was a near-collision for red-green color
+       vision deficiency (reported directly). Deliberately separate from
+       primary/secondary above so this choice never touches what those
+       mean anywhere else that reads them. ──────────────────────────── */
+    --chart1: #00ff00;
+    --chart2: #00ffff;
+
+    /* ── Borders ────────────────────────────────────────────────────────────── */
+    --border-color:         #00ff00;
+    --border-color-light:  rgba(0, 255, 0, 0.3);
+
+    /* ── Navigation ─────────────────────────────────────────────────────────── */
+    --color-nav-bg:          rgba(0, 255, 0, 0.1);
+    --color-nav-text:        #00ff00;
+    --color-nav-hover-bg:    rgba(0, 255, 0, 0.2);
+    --color-nav-hover-text:  #00ff00;
+    --color-nav-hover-border:#00ff00;
+
+    /* ── Inputs ─────────────────────────────────────────────────────────────── */
+    --input-bg:        rgba(0, 0, 0, 0.9);
+    --color-option-bg:       rgba(0, 0, 0, 0.9);
+    --input-border-bottom:   1px solid #00ff00;
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    --btn-border:            1px solid #00ff00;
+    --color-btn-bg:          rgba(0, 0, 0, 0.8);
+    --color-btn-text:        #00ff00;
+    --color-btn-hover-bg:    rgba(0, 255, 0, 0.2);
+    --color-btn-hover-text:  #00ff00;
+
+    --btn-primary-border:        1px solid #00ff00;
+    --color-btn-primary-bg:      rgba(0, 0, 0, 0.8);
+    --color-btn-primary-text:    #00ff00;
+    --color-btn-primary-hover-bg: rgba(0, 255, 0, 0.2);
+    --color-btn-primary-hover-text: #00ff00;
+
+    --btn-secondary-border:       1px solid #00ff00;
+    --color-btn-secondary-bg:     rgba(0, 0, 0, 0.6);
+    --color-btn-secondary-text:   #00ff00;
+    --color-btn-secondary-hover-bg: rgba(0, 255, 0, 0.15);
+    --color-btn-secondary-hover-text: #00ff00;
+
+    --error-color:       rgba(255, 0, 0, 0.8);
+    --color-danger-text:  #00ff00;
+    --error-hover: rgba(255, 0, 0, 0.9);
+
+    /* ── Tables ─────────────────────────────────────────────────────────────── */
+    --color-table-header-bg:    rgba(0, 50, 0, 0.8);
+    --color-table-header-hover: rgba(0, 100, 0, 0.8);
+    --color-table-row-hover:    rgba(0, 255, 0, 0.1);
+    --table-border:     1px solid #00ff00;
+    --table-th-border:  1px solid #00ff00;
+    --table-td-border:  1px solid rgba(0, 255, 0, 0.3);
+
+    /* ── Message area ───────────────────────────────────────────────────────── */
+    --color-message-bg:   rgba(0, 50, 0, 0.8);
+    --color-message-text: #00ff00;
+
+    /* ── Modal ──────────────────────────────────────────────────────────────── */
+    --color-modal-overlay: rgba(0, 0, 0, 0.5);
+
+    /* ── Sticky headers ─────────────────────────────────────────────────────── */
+    --color-sticky-header-bg: #000000;
+
+    /* ── Misc UI ────────────────────────────────────────────────────────────── */
+    --color-checked-out-bg: rgba(0, 255, 0, 0.15);
+    --color-drag-over-bg:   rgba(0, 255, 0, 0.2);
+
+    /* ── Shadows ────────────────────────────────────────────────────────────── */
+    --shadow-surface:      inset 0 0 50px rgba(0, 255, 0, 0.1);
+    --shadow-card:         0 0 20px rgba(0, 255, 0, 0.2);
+    --shadow-panel:        0 0 20px rgba(0, 255, 0, 0.2);
+    --shadow-table:        0 0 20px rgba(0, 255, 0, 0.2);
+    --shadow-list-item:    0 0 10px rgba(0, 255, 0, 0.3);
+    --shadow-message:      0 0 10px rgba(0, 255, 0, 0.3);
+    --shadow-dropdown:     0 0 20px rgba(0, 255, 0, 0.3);
+    --shadow-modal:        0 0 30px rgba(0, 255, 0, 0.3);
+    --shadow-nav-active:   0 0 15px rgba(0, 255, 0, 0.5);
+    --shadow-btn-hover:    0 0 15px rgba(0, 255, 0, 0.5);
+    --shadow-focus:        0 0 10px rgba(0, 255, 0, 0.5);
+    --shadow-interactive:  0 0 15px rgba(0, 255, 0, 0.5);
+    --shadow-drag-over:    0 0 15px rgba(0, 255, 0, 0.5);
+    --shadow-checked-out:  0 0 10px rgba(0, 255, 0, 0.3);
+    --shadow-export-hover: 0 0 20px rgba(0, 255, 0, 0.3);
+    --shadow-danger-hover: 0 0 15px rgba(255, 0, 0, 0.5);
+
+    /* ── Text shadows ───────────────────────────────────────────────────────── */
+    --text-shadow-accent:      0 0 5px #00ff00;
+    --text-shadow-subtle:      0 0 3px #00ff00;
+    --text-shadow-nav-active:  0 0 5px #00ff00;
+    --text-shadow-btn-hover:   0 0 5px #00ff00;
+
+    /* ── Decoration ─────────────────────────────────────────────────────────── */
+    --header-animation:     glow 2s ease-in-out infinite alternate;
+
+    /* ── Select arrow ───────────────────────────────────────────────────────── */
+    --select-arrow-svg: none;
+
+    /* ── Calendar picker ────────────────────────────────────────────────────── */
+    --calendar-picker-filter: invert(1) hue-rotate(120deg);
+
+    /* ── Export item hover overlay ──────────────────────────────────────────── */
+    --export-item-hover-overlay: rgba(0, 255, 0, 0.02);
+
+    /* ── Body scanline effect ───────────────────────────────────────────────── */
+    --body-before-content: "";
+    --body-before-bg: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 255, 0, 0.03) 2px,
+        rgba(0, 255, 0, 0.03) 4px
+    );
+}

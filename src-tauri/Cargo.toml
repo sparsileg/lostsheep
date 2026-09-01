@@ -1,0 +1,40 @@
+[package]
+name = "lost-sheep"
+version = "0.1.0"
+edition = "2021"
+description = "Lost Sheep — congregational visit-tracking desktop app"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# SQLCipher-backed SQLite. "bundled-sqlcipher" builds SQLCipher itself so
+# we don't depend on a system OpenSSL/SQLCipher install on the target OS.
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher", "chrono"] }
+r2d2 = "0.8"
+r2d2_sqlite = { version = "0.24", features = ["bundled-sqlcipher"] }
+
+# OS keychain access (macOS Keychain / Windows Credential Manager / Linux
+# Secret Service via libsecret).
+keyring = "2"
+
+# Backup passphrase -> encryption key derivation.
+argon2 = "0.5"
+rand = "0.8"
+
+# PDF text extraction for the import parser.
+regex = "1"
+
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+log = "0.4"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
