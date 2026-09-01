@@ -1,0 +1,152 @@
+/*
+  css/themes/light.css
+  Light theme — variables only. All structural CSS lives in base.css.
+  Core palette matches Astryx's light.css (shared color values across both
+  apps); Collectyx-specific variables (nav/button states, shadows, tables)
+  are Collectyx's own and have no Astryx equivalent.
+*/
+
+:root {
+    /* ── Fonts (font-body/font-ui are shared across all themes — see
+       base.css. font-mono stays per-theme by choice, message area only) ── */
+    --font-mono: 'Consolas', 'Monaco', monospace;
+
+    /* ── Core palette (shared with Astryx) ─────────────────────────────────── */
+    --bg-color:     #ffffff;
+    --sidebar-bg:   #f8f9fa;
+    --card-bg:      #f8f9fa;
+    --card-hover:   #e9ecef;
+    --input-bg:     #ffffff;
+
+    --text-color:      #212529;
+    --text-secondary:  #6c757d;
+    --primary-text:    #ffffff;
+
+    --primary-color: #0d6efd;
+    --primary-hover: #0b5ed7;
+
+    --secondary-color: #f8f9fa;
+    --secondary-hover: #e9ecef;
+
+    --border-color:       #dee2e6;
+    --border-color-light: #f1f3f5;
+
+    --success-color: #198754;
+    --warning-color: #fd7e14;
+    --error-color:   #dc3545;
+    --error-hover:   #bb2d3b;
+
+    --focus-ring: rgba(13, 110, 253, 0.25);
+
+    /* ── Charts (#82) — dedicated to Chart.js line colors, read live by
+       core.js's getThemeColors() via getComputedStyle(). Deliberately
+       separate from primary/secondary/tertiary above so a color chosen
+       for chart-line contrast never changes what those mean anywhere
+       else that reads them. ──────────────────────────────────────────── */
+    --chart1: #0d6efd;
+    --chart2: #fd7e14;
+
+    /* ── Collectyx-specific (no Astryx equivalent) ─────────────────────────── */
+    --color-bg-raised:   #e9ecef;
+    --color-text-muted:  #adb5bd;
+    --color-label:       #495057;
+
+    /* ── Navigation ─────────────────────────────────────────────────────────── */
+    --color-nav-bg:           transparent;
+    --color-nav-text:         #495057;
+    --color-nav-hover-bg:     #0d6efd;
+    --color-nav-hover-text:   #ffffff;
+    --color-nav-hover-border: #0d6efd;
+
+    /* ── Inputs ─────────────────────────────────────────────────────────────── */
+    --color-option-bg:     #ffffff;
+    --input-border-bottom: 2px solid #dee2e6;
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    --btn-border:            2px solid #6c757d;
+    --color-btn-bg:          transparent;
+    --color-btn-text:        #6c757d;
+    --color-btn-hover-bg:    #6c757d;
+    --color-btn-hover-text:  #ffffff;
+
+    --btn-primary-border:           2px solid #0d6efd;
+    --color-btn-primary-bg:         transparent;
+    --color-btn-primary-text:       #0d6efd;
+    --color-btn-primary-hover-bg:   #0d6efd;
+    --color-btn-primary-hover-text: #ffffff;
+
+    --btn-secondary-border:            2px solid #6c757d;
+    --color-btn-secondary-bg:          transparent;
+    --color-btn-secondary-text:        #6c757d;
+    --color-btn-secondary-hover-bg:    #6c757d;
+    --color-btn-secondary-hover-text:  #ffffff;
+
+    --color-danger-text: #ffffff;
+
+    /* ── Tables ─────────────────────────────────────────────────────────────── */
+    --color-table-header-bg:    #e9ecef;
+    --color-table-header-hover: #0d6efd;
+    --color-table-row-hover:    #f8f9fa;
+    --table-border:     none;
+    --table-th-border:  none;
+    --table-td-border:  none;
+
+    /* ── Message area ───────────────────────────────────────────────────────── */
+    --color-message-bg:   #e9ecef;
+    --color-message-text: #198754;
+
+    /* ── Modal ──────────────────────────────────────────────────────────────── */
+    --color-modal-overlay: rgba(0, 0, 0, 0.5);
+
+    /* ── Sticky headers ─────────────────────────────────────────────────────── */
+    --color-sticky-header-bg: #ffffff;
+
+    /* ── Misc UI ────────────────────────────────────────────────────────────── */
+    --color-checked-out-bg: #e9ecef;
+    --color-drag-over-bg:   #e9ecef;
+
+    /* ── Shadows ────────────────────────────────────────────────────────────── */
+    --shadow-surface:      0 2px 8px rgba(0, 0, 0, 0.1);
+    --shadow-card:         0 1px 3px rgba(0, 0, 0, 0.1);
+    --shadow-panel:        0 2px 4px rgba(0, 0, 0, 0.1);
+    --shadow-table:        none;
+    --shadow-list-item:    none;
+    --shadow-message:      none;
+    --shadow-dropdown:     0 4px 8px rgba(0, 0, 0, 0.15);
+    --shadow-modal:        0 8px 16px rgba(0, 0, 0, 0.15);
+    --shadow-nav-active:   none;
+    --shadow-btn-hover:    none;
+    --shadow-focus:        none;
+    --shadow-interactive:  none;
+    --shadow-drag-over:    none;
+    --shadow-checked-out:  none;
+    --shadow-export-hover: none;
+    --shadow-danger-hover: none;
+
+    /* ── Text shadows ───────────────────────────────────────────────────────── */
+    --text-shadow-accent:     none;
+    --text-shadow-subtle:     none;
+    --text-shadow-nav-active: none;
+    --text-shadow-btn-hover:  none;
+
+    /* ── Decoration ─────────────────────────────────────────────────────────── */
+    --header-animation: none;
+
+    /* ── Select arrow ───────────────────────────────────────────────────────── */
+    --select-arrow-svg: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23495057' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+
+    /* ── Calendar picker ────────────────────────────────────────────────────── */
+    --calendar-picker-filter: none;
+
+    /* ── Export item hover overlay ──────────────────────────────────────────── */
+    --export-item-hover-overlay: none;
+
+    /* ── Body scanline effect — none for this theme ─────────────────────────── */
+    --body-before-content: none;
+    --body-before-bg: none;
+}
+
+/* Light theme table header hover — text goes light */
+.data-table th:hover {
+    color: #ffffff;
+}

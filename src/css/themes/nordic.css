@@ -1,0 +1,147 @@
+/*
+  css/themes/nordic.css
+  Nordic theme — variables only. All structural CSS lives in base.css.
+  Collectyx's own palette (the soft Nordic blues/grays this project
+  started with) — not intended to match Astryx; that's what dark.css is
+  for now. This is the default theme.
+*/
+
+:root {
+    /* ── Fonts (font-body/font-ui are shared across all themes — see
+       base.css. font-mono stays per-theme by choice, message area only) ── */
+    --font-mono: 'Consolas', 'Monaco', monospace;
+
+    /* ── Core palette ───────────────────────────────────────────────────────── */
+    --bg-color:     #1e2124;
+    --sidebar-bg:   #2e3440;
+    --card-bg:      #2e3440;
+    --card-hover:   #434c5e;
+    --input-bg:     transparent;
+
+    --text-color:      #d8dee9;
+    --text-secondary:  #81a1c1;
+    --primary-text:    #2e3440;
+
+    --primary-color: #88c0d0;
+    --primary-hover: #7aacbd;
+
+    --secondary-color: #5e81ac;
+    --secondary-hover: #4c6e91;
+
+    --border-color:       #4c566a;
+    --border-color-light: #4c566a;
+
+    --success-color: #a3be8c;
+    --warning-color: #ebcb8b;
+    --error-color:   #dc3545;
+    --error-hover:   #c82333;
+
+    --focus-ring: rgba(136, 192, 208, 0.25);
+
+    /* ── Charts (#82) — dedicated to Chart.js line colors, read live by
+       core.js's getThemeColors() via getComputedStyle(). Deliberately
+       separate from primary/secondary/tertiary above so a color chosen
+       for chart-line contrast never changes what those mean anywhere
+       else that reads them. ──────────────────────────────────────────── */
+    --chart1: #88c0d0;
+    --chart2: #ebcb8b;
+
+    /* ── Collectyx-specific (no Astryx equivalent) ─────────────────────────── */
+    --color-bg-raised:   #3b4252;
+    --color-text-muted:  #4c566a;
+    --color-label:       #d8dee9;
+
+    /* ── Navigation ─────────────────────────────────────────────────────────── */
+    --color-nav-bg:           transparent;
+    --color-nav-text:         #d8dee9;
+    --color-nav-hover-bg:     #5e81ac;
+    --color-nav-hover-text:   #eceff4;
+    --color-nav-hover-border: #5e81ac;
+
+    /* ── Inputs ─────────────────────────────────────────────────────────────── */
+    --color-option-bg:     #434c5e;
+    --input-border-bottom: 2px solid #4c566a;
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    --btn-border:            2px solid #5e81ac;
+    --color-btn-bg:          transparent;
+    --color-btn-text:        #5e81ac;
+    --color-btn-hover-bg:    #5e81ac;
+    --color-btn-hover-text:  #eceff4;
+
+    --btn-primary-border:           2px solid #88c0d0;
+    --color-btn-primary-bg:         transparent;
+    --color-btn-primary-text:       #88c0d0;
+    --color-btn-primary-hover-bg:   #88c0d0;
+    --color-btn-primary-hover-text: #2e3440;
+
+    --btn-secondary-border:            2px solid #81a1c1;
+    --color-btn-secondary-bg:          transparent;
+    --color-btn-secondary-text:        #81a1c1;
+    --color-btn-secondary-hover-bg:    #81a1c1;
+    --color-btn-secondary-hover-text:  #2e3440;
+
+    --color-danger-text: #ffffff;
+
+    /* ── Tables ─────────────────────────────────────────────────────────────── */
+    --color-table-header-bg:    #434c5e;
+    --color-table-header-hover: #5e81ac;
+    --color-table-row-hover:    #3b4252;
+    --table-border:     none;
+    --table-th-border:  none;
+    --table-td-border:  none;
+
+    /* ── Message area ───────────────────────────────────────────────────────── */
+    --color-message-bg:   #434c5e;
+    --color-message-text: #a3be8c;
+
+    /* ── Modal ──────────────────────────────────────────────────────────────── */
+    --color-modal-overlay: rgba(46, 52, 64, 0.5);
+
+    /* ── Sticky headers ─────────────────────────────────────────────────────── */
+    --color-sticky-header-bg: #2e3440;
+
+    /* ── Misc UI ────────────────────────────────────────────────────────────── */
+    --color-checked-out-bg: #434c5e;
+    --color-drag-over-bg:   #434c5e;
+
+    /* ── Shadows ────────────────────────────────────────────────────────────── */
+    --shadow-surface:      0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-card:         none;
+    --shadow-panel:        0 2px 4px rgba(0, 0, 0, 0.2);
+    --shadow-table:        none;
+    --shadow-list-item:    none;
+    --shadow-message:      none;
+    --shadow-dropdown:     0 4px 8px rgba(0, 0, 0, 0.3);
+    --shadow-modal:        0 8px 16px rgba(0, 0, 0, 0.4);
+    --shadow-nav-active:   none;
+    --shadow-btn-hover:    none;
+    --shadow-focus:        none;
+    --shadow-interactive:  none;
+    --shadow-drag-over:    none;
+    --shadow-checked-out:  none;
+    --shadow-export-hover: none;
+    --shadow-danger-hover: none;
+
+    /* ── Text shadows ───────────────────────────────────────────────────────── */
+    --text-shadow-accent:     none;
+    --text-shadow-subtle:     none;
+    --text-shadow-nav-active: none;
+    --text-shadow-btn-hover:  none;
+
+    /* ── Decoration ─────────────────────────────────────────────────────────── */
+    --header-animation: none;
+
+    /* ── Select arrow ───────────────────────────────────────────────────────── */
+    --select-arrow-svg: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d8dee9' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+
+    /* ── Calendar picker ────────────────────────────────────────────────────── */
+    --calendar-picker-filter: invert(1);
+
+    /* ── Export item hover overlay ──────────────────────────────────────────── */
+    --export-item-hover-overlay: none;
+
+    /* ── Body scanline effect — none for this theme ─────────────────────────── */
+    --body-before-content: none;
+    --body-before-bg: none;
+}

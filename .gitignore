@@ -1,0 +1,38 @@
+# Rust / Cargo (src-tauri)
+# Cargo.lock is intentionally NOT ignored — this is an application
+# (binary), not a library, so it should be committed for reproducible
+# builds across machines.
+src-tauri/target/
+
+# Tauri build artifacts
+src-tauri/gen/
+
+# Encrypted app database and sidecar files — never commit real user data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Backup files (encrypted, but still don't belong in the repo)
+*-backup-*.db
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Node (if any tooling ever gets added — none currently, but cheap to have)
+node_modules/
+
+# ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# ----------------------------------------------------------------------

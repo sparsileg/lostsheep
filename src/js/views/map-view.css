@@ -1,0 +1,31 @@
+.map-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; position: relative; z-index: 10; }
+#mapVisitListResult ol { max-height: 240px; overflow-y: auto; }
+
+/* Per-tag stat cards — moved here from the old standalone Dashboard view,
+   which no longer exists (this map view IS the Dashboard now). */
+.dash-stats { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; }
+.dash-card { background: var(--card-bg); padding: 16px 24px; border-radius: 6px; box-shadow: var(--shadow-card); text-align: center; }
+.dash-num { font-size: 2em; font-weight: 700; color: var(--primary-color); }
+
+/* Leaflet's own zoom-control corner defaults to z-index:1000, which can
+   tie or beat our toolbar dropdown depending on stacking context. Pin it
+   well below our dropdown's z-index (1500 in base.css) so the tag-filter
+   menu never renders underneath the zoom buttons. */
+.leaflet-top, .leaflet-bottom { z-index: 400 !important; }
+
+.map-star-marker {
+    font-size: 40px; line-height: 52px; text-align: center; color: #ffd700;
+    text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 3px #000;
+}
+
+/* Map fills the remaining viewing area instead of a fixed height. The
+   generic `.view.active { display: block }` rule is overridden here
+   (ID+class beats class alone) so this view can be a flex column with
+   the map growing to fill whatever space is left after the toolbar. */
+#view-map.active {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 40px); /* accounts for #mainContent's 20px top+bottom padding */
+}
+#mapViewRoot { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#mapEl { flex: 1; min-height: 300px; border: 1px solid var(--border-color); }

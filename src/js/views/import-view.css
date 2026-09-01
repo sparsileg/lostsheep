@@ -1,0 +1,4 @@
+.import-actions { display: flex; gap: 12px; margin: 16px 0; }
+#importProgress { padding: 10px 14px; background: var(--card-bg); border-radius: 4px; margin-bottom: 12px; font-weight: 600; }
+#importSummary table { max-width: 420px; margin: 12px 0; }
+#importSummary ul { max-height: 200px; overflow-y: auto; }

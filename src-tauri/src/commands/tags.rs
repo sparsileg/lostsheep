@@ -1,0 +1,115 @@
+use crate::AppState;
+use rusqlite::params;
+use serde::Serialize;
+use tauri::State;
+
+fn norm(s: &str) -> String {
+    s.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Serialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    pub household_count: i64,
+}
+
+#[tauri::command]
+pub fn list_tags(state: State<AppState>) -> Result<Vec<Tag>, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, (SELECT count(*) FROM household_tags ht WHERE ht.tag_id = t.id) AS cnt \
+             FROM tags t ORDER BY t.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Tag { id: row.get(0)?, name: row.get(1)?, household_count: row.get(2)? })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+pub(crate) fn get_or_create_tag_id(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<i64> {
+    let name = name.trim();
+    let name_norm = norm(name);
+    conn.execute(
+        "INSERT INTO tags (name, name_norm) VALUES (?1, ?2) ON CONFLICT(name_norm) DO NOTHING",
+        params![name, name_norm],
+    )?;
+    conn.query_row("SELECT id FROM tags WHERE name_norm = ?1", params![name_norm], |r| r.get(0))
+}
+
+#[tauri::command]
+pub fn create_tag(state: State<AppState>, name: String) -> Result<i64, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    get_or_create_tag_id(&conn, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_tag(state: State<AppState>, id: i64, new_name: String) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE tags SET name = ?1, name_norm = ?2 WHERE id = ?3",
+        params![new_name.trim(), norm(&new_name), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_tag(state: State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM tags WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Tags are capped at one per household — functionally more like a
+/// category than a tag right now, by design. Applying a tag always
+/// clears whatever was there before, on every household in the list.
+#[tauri::command]
+pub fn tag_households(state: State<AppState>, household_ids: Vec<i64>, tag_name: String) -> Result<(), String> {
+    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tag_id = get_or_create_tag_id(&tx, &tag_name).map_err(|e| e.to_string())?;
+    for hid in household_ids {
+        tx.execute("DELETE FROM household_tags WHERE household_id = ?1", params![hid]).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
+            params![hid, tag_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn untag_household(state: State<AppState>, household_id: i64, tag_id: i64) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM household_tags WHERE household_id = ?1 AND tag_id = ?2",
+        params![household_id, tag_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Tags every household matching the given search, not just the current
+/// page — reuses households::search_households's same WHERE logic against
+/// all matching ids (page_size effectively "unbounded" here).
+#[tauri::command]
+pub fn bulk_tag_search_results(
+    state: State<AppState>,
+    search: super::households::SearchParams,
+    tag_name: String,
+) -> Result<i64, String> {
+    let unbounded = super::households::SearchParams { page: 1, page_size: 100000, ..search };
+    let result = super::households::search_households(state.clone(), unbounded)?;
+    let ids: Vec<i64> = result.households.iter().map(|h| h.id).collect();
+    let count = ids.len() as i64;
+    tag_households(state, ids, tag_name)?;
+    Ok(count)
+}

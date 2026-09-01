@@ -1,0 +1,153 @@
+/*
+  css/themes/flat.css
+  Flat theme — variables only. All structural CSS lives in base.css.
+  Core palette matches Astryx's flat.css (shared color values across both
+  apps) — a warm dark brown/tan palette, not a "light" theme despite the
+  name. Achieves the flat look purely through variables rather than
+  Astryx's !important structural overrides: border-color matches card-bg
+  (invisible but structurally present), button borders are removed
+  outright, shadows are minimized. box-sizing: border-box means none of
+  this shifts layout when switching themes. Input fields keep a visible
+  bottom border deliberately, matching Astryx's own choice to preserve
+  that affordance even in an otherwise borderless theme.
+*/
+
+:root {
+    /* ── Fonts (font-body/font-ui are shared across all themes — see
+       base.css. font-mono stays per-theme by choice, message area only) ── */
+    --font-mono: 'Consolas', 'Monaco', monospace;
+
+    /* ── Core palette (shared with Astryx) ─────────────────────────────────── */
+    --bg-color:     #3d3228;
+    --sidebar-bg:   #453a2e;
+    --card-bg:      #4e4035;
+    --card-hover:   #5a4a3d;
+    --input-bg:     #453a2e;
+
+    --text-color:      #e0d0b8;
+    --text-secondary:  #a08870;
+    --primary-text:    #2a2018;
+
+    --primary-color: #d4982e;
+    --primary-hover: #bc8025;
+
+    --secondary-color: #5a4a3d;
+    --secondary-hover: #655545;
+
+    --border-color:       #4e4035;
+    --border-color-light: #453a2e;
+
+    --success-color: #72a85a;
+    --warning-color: #d4982e;
+    --error-color:   #c04848;
+    --error-hover:   #a83838;
+
+    --focus-ring: rgba(212, 152, 46, 0.25);
+
+    /* ── Charts (#82) — dedicated to Chart.js line colors, read live by
+       core.js's getThemeColors() via getComputedStyle(). Deliberately
+       separate from primary/secondary/tertiary above so a color chosen
+       for chart-line contrast never changes what those mean anywhere
+       else that reads them. ──────────────────────────────────────────── */
+    --chart1: #d4982e;
+    --chart2: #5b9bd5;
+
+    /* ── Collectyx-specific (no Astryx equivalent) ─────────────────────────── */
+    --color-bg-raised:   #5a4a3d;
+    --color-text-muted:  #7a6858;
+    --color-label:       #e0d0b8;
+
+    /* ── Navigation ─────────────────────────────────────────────────────────── */
+    --color-nav-bg:           transparent;
+    --color-nav-text:         #e0d0b8;
+    --color-nav-hover-bg:     #d4982e;
+    --color-nav-hover-text:   #2a2018;
+    --color-nav-hover-border: #d4982e;
+
+    /* ── Inputs ─────────────────────────────────────────────────────────────── */
+    --color-option-bg:     #453a2e;
+    --input-border-bottom: 2px solid #6a5848;
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    --btn-border:            none;
+    --color-btn-bg:          transparent;
+    --color-btn-text:        #a08870;
+    --color-btn-hover-bg:    #a08870;
+    --color-btn-hover-text:  #2a2018;
+
+    --btn-primary-border:           none;
+    --color-btn-primary-bg:         transparent;
+    --color-btn-primary-text:       #d4982e;
+    --color-btn-primary-hover-bg:   #d4982e;
+    --color-btn-primary-hover-text: #2a2018;
+
+    --btn-secondary-border:            none;
+    --color-btn-secondary-bg:          transparent;
+    --color-btn-secondary-text:        #a08870;
+    --color-btn-secondary-hover-bg:    #a08870;
+    --color-btn-secondary-hover-text:  #2a2018;
+
+    --color-danger-text: #ffffff;
+
+    /* ── Tables ─────────────────────────────────────────────────────────────── */
+    --color-table-header-bg:    #5a4a3d;
+    --color-table-header-hover: #d4982e;
+    --color-table-row-hover:    #453a2e;
+    --table-border:     none;
+    --table-th-border:  none;
+    --table-td-border:  none;
+
+    /* ── Message area ───────────────────────────────────────────────────────── */
+    --color-message-bg:   #5a4a3d;
+    --color-message-text: #72a85a;
+
+    /* ── Modal ──────────────────────────────────────────────────────────────── */
+    --color-modal-overlay: rgba(0, 0, 0, 0.5);
+
+    /* ── Sticky headers ─────────────────────────────────────────────────────── */
+    --color-sticky-header-bg: #3d3228;
+
+    /* ── Misc UI ────────────────────────────────────────────────────────────── */
+    --color-checked-out-bg: #5a4a3d;
+    --color-drag-over-bg:   #5a4a3d;
+
+    /* ── Shadows — minimized, approximating Astryx's flat look ─────────────── */
+    --shadow-surface:      none;
+    --shadow-card:         none;
+    --shadow-panel:        none;
+    --shadow-table:        none;
+    --shadow-list-item:    none;
+    --shadow-message:      none;
+    --shadow-dropdown:     none;
+    --shadow-modal:        none;
+    --shadow-nav-active:   none;
+    --shadow-btn-hover:    none;
+    --shadow-focus:        none;
+    --shadow-interactive:  none;
+    --shadow-drag-over:    none;
+    --shadow-checked-out:  none;
+    --shadow-export-hover: none;
+    --shadow-danger-hover: none;
+
+    /* ── Text shadows ───────────────────────────────────────────────────────── */
+    --text-shadow-accent:     none;
+    --text-shadow-subtle:     none;
+    --text-shadow-nav-active: none;
+    --text-shadow-btn-hover:  none;
+
+    /* ── Decoration ─────────────────────────────────────────────────────────── */
+    --header-animation: none;
+
+    /* ── Select arrow ───────────────────────────────────────────────────────── */
+    --select-arrow-svg: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e0d0b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+
+    /* ── Calendar picker ────────────────────────────────────────────────────── */
+    --calendar-picker-filter: invert(0.85) sepia(0.3);
+
+    /* ── Export item hover overlay ──────────────────────────────────────────── */
+    --export-item-hover-overlay: none;
+
+    /* ── Body scanline effect — none for this theme ─────────────────────────── */
+    --body-before-content: none;
+    --body-before-bg: none;
+}
