@@ -22,7 +22,7 @@ registerView('logs', {
     async onShow() { await loadLogs(); },
 });
 
-const lvState = { page: 1, pageSize: 200, rows: [] };
+const lvState = { page: 1, pageSize: 200, rows: [], moreAvailable: false };
 
 function activeLevels() {
     return Array.from(document.querySelectorAll('#logsRoot [data-lvl]:checked')).map(cb => cb.dataset.lvl);
@@ -33,15 +33,19 @@ async function loadLogs() {
     // Backend filters by a single level; fetch each active level and
     // merge client-side (log volume here is small — settings caps retention).
     let rows = [];
+    let more = false;
     try {
         for (const lvl of levels) {
             const chunk = await Api.getLogs(lvl, lvState.page, lvState.pageSize);
+            if (chunk.length === lvState.pageSize) more = true;
             rows.push(...chunk);
         }
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
     rows.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     lvState.rows = rows;
+    lvState.moreAvailable = more;
     renderLogRows();
+    renderPager();
 }
 
 function renderLogRows() {
@@ -52,6 +56,19 @@ function renderLogRows() {
         ${lvState.rows.map(r => `<tr class="lv-${r.level}"><td class="lv-ts">${escapeHtml(r.created_at)}</td>
             <td class="lv-level">${r.level.toUpperCase()}</td><td class="lv-msg">${escapeHtml(r.message)}</td></tr>`).join('')}
     </tbody></table>`;
+}
+
+// Was built by init() but never actually populated or wired to anything —
+// page never advanced past 1 no matter how many log rows existed.
+function renderPager() {
+    const pager = document.getElementById('lvPager');
+    if (!pager) return;
+    pager.innerHTML = `
+        <button class="btn" id="lvPrevPage" ${lvState.page <= 1 ? 'disabled' : ''}>‹ Prev</button>
+        Page ${lvState.page}
+        <button class="btn" id="lvNextPage" ${lvState.moreAvailable ? '' : 'disabled'}>Next ›</button>`;
+    document.getElementById('lvPrevPage')?.addEventListener('click', () => { lvState.page--; loadLogs(); });
+    document.getElementById('lvNextPage')?.addEventListener('click', () => { lvState.page++; loadLogs(); });
 }
 
 async function copyVisibleLogs() {

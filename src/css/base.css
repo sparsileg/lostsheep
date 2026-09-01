@@ -43,11 +43,15 @@ body { background: var(--bg-color); color: var(--text-color); font-size: 1rem; }
 .view { display: none; }
 .view.active { display: block; }
 
-/* View titles use the accent color specifically, not --primary-text —
-   in some themes --primary-text was too close to the background to
-   read, effectively invisible. h2/h3 stay as-is. */
+/* View titles use the accent color specifically. h2/h3 (including every
+   modal's title) use --text-color, the normal readable-on-card color —
+   NOT --primary-text, which is meant for text drawn on top of
+   --primary-color (e.g. button fills) and is frequently at or near the
+   same value as --card-bg itself (nordic, light, matrix all had this:
+   the modal title was rendering in a color indistinguishable from the
+   modal background, effectively invisible). */
 h1 { color: var(--primary-color); }
-h2, h3 { color: var(--primary-text); }
+h2, h3 { color: var(--text-color); }
 
 .btn { border: var(--btn-border); background: var(--color-btn-bg); color: var(--color-btn-text); padding: 6px 14px; border-radius: 4px; cursor: pointer; }
 .btn:hover { background: var(--color-btn-hover-bg); color: var(--color-btn-hover-text); }
@@ -80,15 +84,13 @@ tr:hover td { background: var(--color-table-row-hover); }
    (core.js) only ever swaps this one element's text/color, never adds or
    removes elements, so a message appearing/clearing never shifts the
    rest of the page. */
-#messageArea { min-height: 2.4em; margin-bottom: 12px; }
+#messageArea { min-height: 2.4em; margin-bottom: 12px; padding-top: 10px; }
 .message-slot {
-    background: var(--color-message-bg); color: var(--color-message-text);
+    background: var(--color-message-bg); color: var(--text-color);
     padding: 8px 12px; border-radius: 4px; box-shadow: var(--shadow-message);
-    opacity: 0.6; transition: opacity 0.15s, color 0.15s;
+    opacity: 0.6; transition: opacity 0.15s;
 }
 .message-slot.info, .message-slot.error, .message-slot.warning { opacity: 1; }
-.message-slot.error { color: var(--error-color); }
-.message-slot.warning { color: var(--warning-color); }
 
 .tag-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-color); color: var(--text-color); border-radius: 12px; padding: 2px 10px; margin: 2px; font-size: 0.85em; }
 .tag-chip .remove { cursor: pointer; opacity: 0.7; }

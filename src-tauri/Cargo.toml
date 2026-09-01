@@ -27,6 +27,12 @@ keyring = "2"
 argon2 = "0.5"
 rand = "0.8"
 
+# Single-file backup archive (db + salt bundled together). Default
+# features off — we only ever write Stored (uncompressed) entries, since
+# the DB is SQLCipher-encrypted and already looks like random bytes, so
+# there's nothing to gain from pulling in a compression codec.
+zip = { version = "0.6", default-features = false }
+
 # PDF text extraction for the import parser.
 regex = "1"
 

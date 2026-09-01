@@ -38,11 +38,15 @@ const BackupRestore = {
             if (!p1 || p1 !== p2) { showMessage('Passphrases must match and not be empty.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
             const { join } = window.__TAURI__.path;
-            const dest = await join(settings.backupFolder, `lost-sheep-backup-${todayStamp()}.db`);
+            const dest = await join(settings.backupFolder, `lost-sheep-backup-${todayStamp()}.zip`);
 
             try {
-                await Api.backupDatabase(dest, p1);
-                showMessage('Backup complete.', CONSTANTS.MESSAGE_TYPES.INFO);
+                // backup_database returns the path it actually wrote to and
+                // only after confirming the file is really there — echoed
+                // back here so it's obvious where the backup landed instead
+                // of a generic "complete" that gives no way to check.
+                const writtenPath = await Api.backupDatabase(dest, p1);
+                showMessage(`Backup written to ${writtenPath}`, CONSTANTS.MESSAGE_TYPES.INFO, 8000);
                 overlay.remove();
             } catch (e) { showMessage(`Backup failed: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
         });
@@ -65,7 +69,7 @@ const BackupRestore = {
         overlay.querySelector('#rsPick').addEventListener('click', async () => {
             const { open } = window.__TAURI__.dialog;
             const { homeDir } = window.__TAURI__.path;
-            srcPath = await open({ multiple: false, defaultPath: settings.backupFolder || await homeDir(), filters: [{ name: 'Backup', extensions: ['db'] }] });
+            srcPath = await open({ multiple: false, defaultPath: settings.backupFolder || await homeDir(), filters: [{ name: 'Backup', extensions: ['zip'] }] });
             if (srcPath) {
                 overlay.querySelector('#rsPickedPath').textContent = srcPath;
                 overlay.querySelector('#rsPreview').disabled = false;
@@ -87,6 +91,13 @@ function renderDiff(overlay, preview, srcPath, pass) {
     area.innerHTML = `
         <h3>Before / After</h3>
         <p>Current: ${preview.current_household_count} records. Backup: ${preview.backup_household_count} records.</p>
+
+        <h3>By Tag (current → after restore)</h3>
+        <table><thead><tr><th>Tag</th><th>Current</th><th>After Restore</th></tr></thead><tbody>
+            ${(preview.tag_counts || []).map(t => `<tr><td>${escapeHtml(t.name)}</td><td>${t.current_count}</td><td>${t.backup_count}</td></tr>`).join('') || '<tr><td colspan="3">No tags.</td></tr>'}
+        </tbody></table>
+
+        <h3>Household Changes</h3>
         <table><thead><tr><th>Change</th><th>Record</th></tr></thead><tbody>
             ${preview.rows.map(r => `<tr><td>${r.kind}</td><td>${escapeHtml(r.description)}</td></tr>`).join('') || '<tr><td colspan="2">No differences.</td></tr>'}
         </tbody></table>

@@ -5,7 +5,6 @@ registerView('households', {
             <div class="households-toolbar">
                 <input type="text" id="hhSearchInput" placeholder="Search name, address, comments…" />
                 <div id="hhTagFilterDropdown"></div>
-                <button class="btn" id="hhBulkTagBtn">Tag all results…</button>
             </div>
             <div id="hhResultsMeta"></div>
             <table id="hhTable">
@@ -28,7 +27,6 @@ registerView('households', {
                 loadHouseholds();
             },
         });
-        document.getElementById('hhBulkTagBtn').addEventListener('click', bulkTagResults);
     },
     async onShow() {
         const settings = await Api.getSettings().catch(() => ({}));
@@ -104,22 +102,6 @@ async function markKnown(id) {
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
 }
 
-async function bulkTagResults() {
-    const name = prompt('Tag name to apply to ALL matching results (replaces any existing tag on each):');
-    if (!name) return;
-    const params = {
-        query: document.getElementById('hhSearchInput').value,
-        tag_names: state.tagFilter ? [state.tagFilter] : [],
-        page: 1, page_size: 1,
-    };
-    try {
-        const count = await Api.bulkTagSearchResults(params, name);
-        showMessage(`Tagged ${count} household(s) with "${name}".`, CONSTANTS.MESSAGE_TYPES.INFO);
-        await refreshTagFilterOptions();
-        await loadHouseholds();
-    } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
-}
-
 // Household detail modal — mostly read-only, matching the source
 // directory's own layout. Only comments, tags, and visits are editable;
 // name/address/phone corrections happen through re-import + Review, not
@@ -137,8 +119,6 @@ async function openHouseholdModal(id) {
     overlay.innerHTML = `
         <div class="modal hh-detail-modal">
             <div class="hh-detail-scroll">
-                <h2>${escapeHtml(formatDirectoryName(h))}</h2>
-
                 <div class="hh-detail-head">
                     <strong>${escapeHtml(h.first_name)} ${escapeHtml(h.last_name)}</strong>
                     ${h.phone_1 ? `<div>${escapeHtml(h.phone_1)}</div>` : ''}

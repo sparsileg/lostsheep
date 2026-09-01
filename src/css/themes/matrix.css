@@ -89,7 +89,10 @@
     --table-td-border:  1px solid rgba(0, 255, 0, 0.3);
 
     /* ── Message area ───────────────────────────────────────────────────────── */
-    --color-message-bg:   rgba(0, 50, 0, 0.8);
+    /* Brighter/more opaque than the old rgba(0,50,0,0.8) — that was
+       nearly indistinguishable from the pure-black page background,
+       leaving the status bar with no visible shading at all. */
+    --color-message-bg:   rgba(0, 90, 0, 0.9);
     --color-message-text: #00ff00;
 
     /* ── Modal ──────────────────────────────────────────────────────────────── */
