@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "rpm", "dmg", "msi", "nsis"],
-    "icon": ["assets/icon.png"]
+    "icon": ["assets/icon.png"],
+    "externalBin": ["binaries/pdftotext"]
   }
 }

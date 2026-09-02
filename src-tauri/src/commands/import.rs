@@ -33,8 +33,8 @@ fn emit_progress(app: &AppHandle, processed: usize, total: usize) {
 }
 
 #[tauri::command]
-pub fn import_pdf(app: AppHandle, state: State<AppState>, file_path: String) -> Result<ImportSummary, String> {
-    let parsed = pdf_parser::parse_pdf(std::path::Path::new(&file_path)).map_err(|e| e.to_string())?;
+pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: String) -> Result<ImportSummary, String> {
+    let parsed = pdf_parser::parse_pdf(&app, std::path::Path::new(&file_path)).await.map_err(|e| e.to_string())?;
     run_diff(app, state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
 }
 

@@ -87,17 +87,17 @@ async function loadHouseholds() {
     document.getElementById('hhNextPage')?.addEventListener('click', () => { state.page++; loadHouseholds(); });
 }
 
-// Clears whatever tag was there and sets "Known". If the active filter
-// isn't "Known" (or "All"), this household no longer matches the current
-// view, so it should visibly drop out rather than sit there mistagged.
+// Clears whatever tag was there and sets "Known", then reloads the
+// current page from the server. Always reloads now — even when the
+// active filter still matches "Known" or "All" — rather than removing
+// just this row from the DOM: local-only removal left state.page
+// pointing at a numeric offset that no longer matched the (now
+// smaller) filtered result set, silently skipping unreviewed
+// households when the user hit Next (issue #5).
 async function markKnown(id) {
     try {
         await Api.tagHouseholds([id], 'Known');
-        if (state.tagFilter && state.tagFilter !== 'Known') {
-            document.querySelector(`tr[data-open="${id}"]`)?.remove();
-        } else {
-            await loadHouseholds();
-        }
+        await loadHouseholds();
         await refreshTagFilterOptions();
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
 }
