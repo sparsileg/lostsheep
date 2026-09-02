@@ -1,0 +1,5 @@
+$env:PKG_CONFIG_PATH = "J:\vcpkg\installed\x64-windows\lib\pkgconfig"   
+$env:PATH = "J:\vcpkg\installed\x64-windows\tools\pkgconf;J:\vcpkg\installed\x64-windows\bin;$env:PATH"
+$env:OPENSSL_DIR = "C:\Program Files\OpenSSL-Win64"
+setx OPENSSL_LIB_DIR "C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD"
+setx OPENSSL_INCLUDE_DIR "C:\Program Files\OpenSSL-Win64\include"
