@@ -8,6 +8,8 @@ const Api = {
     getHousehold: (id) => invoke('get_household', { id }),
     updateHouseholdComments: (id, comments) => invoke('update_household_comments', { id, comments }),
     softDeleteHousehold: (id, reason) => invoke('soft_delete_household', { id, reason }),
+    listDeletedHouseholds: () => invoke('list_deleted_households'),
+    restoreDeletedHousehold: (id) => invoke('restore_deleted_household', { id }),
 
     // tags
     listTags: () => invoke('list_tags'),

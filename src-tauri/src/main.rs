@@ -45,6 +45,8 @@ fn main() {
             commands::households::get_household,
             commands::households::update_household_comments,
             commands::households::soft_delete_household,
+            commands::households::list_deleted_households,
+            commands::households::restore_deleted_household,
             // tags
             commands::tags::list_tags,
             commands::tags::create_tag,

@@ -7,10 +7,14 @@
 #mapVisitListResult ol { max-height: 240px; overflow-y: auto; }
 
 /* Per-tag stat cards — moved here from the old standalone Dashboard view,
-   which no longer exists (this map view IS the Dashboard now). */
-.dash-stats { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; }
-.dash-card { background: var(--card-bg); padding: 16px 24px; border-radius: 6px; box-shadow: var(--shadow-card); text-align: center; }
-.dash-num { font-size: 2em; font-weight: 700; color: var(--primary-color); }
+   which no longer exists (this map view IS the Dashboard now). Kept
+   deliberately compact (small padding/font) with a tight margin under
+   the page title, so the strip doesn't push the map down more than it
+   has to. */
+#view-map h1 { margin-bottom: 6px; }
+.dash-stats { display: flex; gap: 12px; margin: 6px 0 12px; flex-wrap: wrap; }
+.dash-card { background: var(--card-bg); padding: 8px 16px; border-radius: 6px; box-shadow: var(--shadow-card); text-align: center; }
+.dash-num { font-size: 1.4em; font-weight: 700; color: var(--primary-color); }
 
 /* Leaflet's own zoom-control corner defaults to z-index:1000, which can
    tie or beat our toolbar dropdown depending on stacking context. Pin it
