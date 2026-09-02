@@ -1,0 +1,4 @@
+.vr-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.vr-date-label { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.vr-date-label input { width: 120px; }
+#vrResultsMeta { opacity: 0.7; margin-bottom: 6px; }

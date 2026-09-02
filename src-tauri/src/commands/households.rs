@@ -175,3 +175,79 @@ pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<Str
 fn normalize_tag(s: &str) -> String {
     s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+#[derive(Serialize)]
+pub struct DeletedHousehold {
+    pub id: i64,
+    pub original_id: i64,
+    pub first_name: String,
+    pub last_name: String,
+    pub first_name_2: Option<String>,
+    pub last_name_2: Option<String>,
+    pub address_line1: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub zip: Option<String>,
+    pub deletion_reason: Option<String>,
+    pub deleted_at: String,
+}
+
+#[tauri::command]
+pub fn list_deleted_households(state: State<AppState>) -> Result<Vec<DeletedHousehold>, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, original_id, first_name, last_name, first_name_2, last_name_2, \
+             address_line1, city, state, zip, deletion_reason, deleted_at \
+             FROM deleted_households ORDER BY deleted_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DeletedHousehold {
+                id: row.get(0)?,
+                original_id: row.get(1)?,
+                first_name: row.get(2)?,
+                last_name: row.get(3)?,
+                first_name_2: row.get(4)?,
+                last_name_2: row.get(5)?,
+                address_line1: row.get(6)?,
+                city: row.get(7)?,
+                state: row.get(8)?,
+                zip: row.get(9)?,
+                deletion_reason: row.get(10)?,
+                deleted_at: row.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Moves a deleted_households row back into households — the reverse of
+/// soft_delete_household. role/role_2/latitude/longitude/address_key/
+/// source_key/has_minors/comments all carry over unchanged; only the id
+/// changes (a fresh households.id, not the original one — a household
+/// re-imported or re-tagged since deletion may already occupy that
+/// address_key/source_key pairing, so reusing the old id isn't safe).
+#[tauri::command]
+pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let affected = conn
+        .execute(
+            "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
+             SELECT first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments \
+             FROM deleted_households WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err(format!("no deleted household with id {id}"));
+    }
+    conn.execute("DELETE FROM deleted_households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    crate::commands::logs::log(&conn, "info", &format!("deleted_households {id} restored to households"), None);
+    Ok(())
+}

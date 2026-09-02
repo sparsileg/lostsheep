@@ -87,7 +87,6 @@ CREATE TABLE IF NOT EXISTS tags (
 INSERT OR IGNORE INTO tags (name, name_norm) VALUES
     ('Not known', 'not known'),
     ('Known', 'known'),
-    ('Deleted', 'deleted'),
     ('Do not contact', 'do not contact');
 
 CREATE TABLE IF NOT EXISTS household_tags (
@@ -171,6 +170,13 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 -- after the settings table is created above.
 DROP TABLE IF EXISTS cache_regions;
 DELETE FROM settings WHERE key = 'mapOfflineCacheEnabled';
+
+-- The seeded "Deleted" tag was a manual label that got confused with
+-- actual soft-delete (soft_delete_household moves a row out of
+-- households entirely, into deleted_households — a different mechanism).
+-- Removed as a tag option; household_tags rows referencing it are
+-- cleaned up automatically via ON DELETE CASCADE.
+DELETE FROM tags WHERE name = 'Deleted';
 
 CREATE TABLE IF NOT EXISTS logs (
     id         INTEGER PRIMARY KEY,
