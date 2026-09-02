@@ -10,6 +10,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Sidecar execution — bundles a self-contained pdftotext (poppler-utils)
+# binary per platform so PDF import doesn't depend on a separately
+# installed poppler on the end user's machine. See pdf_parser.rs.
+tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

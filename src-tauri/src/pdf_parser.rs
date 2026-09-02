@@ -168,21 +168,29 @@ fn split_first_middle(h: &str) -> (String, String) {
 /// individual digits ("100" comes out "1 0 0"), while letters are
 /// unaffected. Confirmed against the real file: `-raw` mode gives correct
 /// digit grouping AND the right reading order (name-then-address,
-/// glued onto one line exactly like this grammar already expects).
+/// glued onto one line exactly like this grammar already expects). Do
+/// not swap this back to `pdf-extract` without re-confirming that bug
+/// is actually fixed upstream first.
 ///
-/// Trade-off, flagged rather than hidden: this makes the app depend on
-/// poppler-utils (`pdftotext`) being present at runtime. Fine for local
-/// dev where it's already installed; for shipping to non-technical
-/// end users on Windows/Mac, poppler isn't there by default and either
-/// needs bundling per-platform or a swap to a statically-linked PDF
-/// library (e.g. pdfium-render) — a decision for later, not blocking now.
-pub fn parse_pdf(path: &Path) -> anyhow::Result<ParseResult> {
-    let output = std::process::Command::new("pdftotext")
-        .arg("-raw")
-        .arg(path)
-        .arg("-")
+/// `pdftotext` ships as a bundled Tauri sidecar (see tauri.conf.json's
+/// bundle.externalBin and src-tauri/binaries/), not a system dependency
+/// — end users never need poppler installed separately. Resolving the
+/// sidecar binary requires an `AppHandle`, so this is async now.
+pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<ParseResult> {
+    use tauri_plugin_shell::ShellExt;
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("PDF path is not valid UTF-8: {}", path.display()))?;
+
+    let output = app
+        .shell()
+        .sidecar("pdftotext")
+        .map_err(|e| anyhow::anyhow!("could not launch bundled pdftotext sidecar: {e}"))?
+        .args(["-raw", path_str, "-"])
         .output()
-        .map_err(|e| anyhow::anyhow!("could not run pdftotext (poppler-utils) — is it installed? {e}"))?;
+        .await
+        .map_err(|e| anyhow::anyhow!("pdftotext sidecar failed to run: {e}"))?;
 
     if !output.status.success() {
         return Err(anyhow::anyhow!("pdftotext failed: {}", String::from_utf8_lossy(&output.stderr)));

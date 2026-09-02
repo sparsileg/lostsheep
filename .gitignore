@@ -33,6 +33,11 @@ npm-debug.log*
 # Node (if any tooling ever gets added — none currently, but cheap to have)
 node_modules/
 
+# Tauri sidecar binaries (pdftotext, per platform) — large downloaded
+# executables, not source. Each dev fetches and renames these locally
+# per the Tauri sidecar naming convention; see docs/Architecture_Build.md.
+src-tauri/binaries/
+
 # ----------------------------------------------------------------------
 # ----------------------------------------------------------------------
 # ----------------------------------------------------------------------
