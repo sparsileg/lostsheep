@@ -15,8 +15,43 @@ pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, S
     Ok(rows)
 }
 
+/// Route start point (#13) is either fully set (label + both coords) or
+/// fully unset — a label with no coordinates, or coordinates with no
+/// label, is rejected the same way a malformed lat/lon pair would be.
+/// Single validation path for this setting; save_settings is the only
+/// place values ever get written, so this is the only place it needs to
+/// live.
+fn validate_route_start(values: &HashMap<String, String>) -> Result<(), String> {
+    let label = values.get("routeStartLabel").map(|s| s.trim()).unwrap_or("");
+    let lat_raw = values.get("routeStartLat").map(|s| s.trim()).unwrap_or("");
+    let lon_raw = values.get("routeStartLon").map(|s| s.trim()).unwrap_or("");
+
+    let filled_count = [!label.is_empty(), !lat_raw.is_empty(), !lon_raw.is_empty()]
+        .iter()
+        .filter(|&&b| b)
+        .count();
+
+    if filled_count == 0 {
+        return Ok(());
+    }
+    if filled_count != 3 {
+        return Err("Route start point needs a label and both coordinates, or leave all three blank".to_string());
+    }
+
+    let lat: f64 = lat_raw.parse().map_err(|_| "Route start latitude must be a number".to_string())?;
+    let lon: f64 = lon_raw.parse().map_err(|_| "Route start longitude must be a number".to_string())?;
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err("Route start latitude must be between -90 and 90".to_string());
+    }
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err("Route start longitude must be between -180 and 180".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) -> Result<(), String> {
+    validate_route_start(&values)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     for (k, v) in values {
         conn.execute(
