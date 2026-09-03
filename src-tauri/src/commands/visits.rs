@@ -103,6 +103,14 @@ pub struct VisitListEntry {
     pub household_ids: Vec<i64>, // all records sharing this address, included as a unit
     pub names: Vec<String>,
     pub phones: Vec<String>,
+    /// "seed" — distance_meters is straight-line distance from the
+    /// clicked seed household (today's behavior). "route" — the
+    /// routeStartLat/routeStartLon setting is configured, and
+    /// distance_meters is the leg distance from the previous stop in a
+    /// nearest-neighbor walk (first entry's leg is from the configured
+    /// start point). Selection (#13's N addresses) is always seed-based
+    /// either way — this only changes ordering/labeling.
+    pub distance_context: String,
 }
 
 /// Nearest-N generation, grouped by address so multi-head households are
@@ -193,12 +201,61 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
                 household_ids: members.iter().map(|m| m.id).collect(),
                 names: members.iter().map(|m| m.name.clone()).collect(),
                 phones: members.iter().flat_map(|m| m.phones.clone()).collect(),
+                distance_context: "seed".to_string(),
             }
         })
         .collect();
 
+    // Selection stays seed-distance-based regardless of route mode (#13):
+    // this sort+truncate picks which N addresses are included, unchanged.
     entries.sort_by(|a, b| a.distance_meters.partial_cmp(&b.distance_meters).unwrap());
     entries.truncate(params.count as usize);
+
+    // Ordering, though, uses the configured route start point when one
+    // exists — nearest-neighbor walk over the already-selected N
+    // addresses, recomputing distance_meters as per-leg distance rather
+    // than distance-from-seed. Falls back to today's seed-sorted order
+    // (already produced above) when the setting is unconfigured.
+    let route_start: Option<(f64, f64)> = {
+        let get = |key: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                rusqlite::params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        };
+        match (
+            get("routeStartLat").and_then(|s| s.parse::<f64>().ok()),
+            get("routeStartLon").and_then(|s| s.parse::<f64>().ok()),
+        ) {
+            (Some(lat), Some(lon)) => Some((lat, lon)),
+            _ => None,
+        }
+    };
+
+    if let Some((start_lat, start_lon)) = route_start {
+        let mut remaining = entries;
+        let mut ordered: Vec<VisitListEntry> = Vec::with_capacity(remaining.len());
+        let mut cur = (start_lat, start_lon);
+        while !remaining.is_empty() {
+            let mut best_idx = 0;
+            let mut best_dist = f64::MAX;
+            for (i, e) in remaining.iter().enumerate() {
+                let d = crate::geo::haversine_meters(cur.0, cur.1, e.latitude, e.longitude);
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = i;
+                }
+            }
+            let mut next = remaining.remove(best_idx);
+            next.distance_meters = best_dist;
+            next.distance_context = "route".to_string();
+            cur = (next.latitude, next.longitude);
+            ordered.push(next);
+        }
+        entries = ordered;
+    }
 
     let _dedupe_guard: HashSet<String> = HashSet::new(); // reserved: cross-group id collision guard if needed later
     Ok(entries)

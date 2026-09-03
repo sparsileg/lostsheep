@@ -21,6 +21,12 @@ async function openSettingsModal() {
             <div class="settings-row"><label>Households page size</label><div id="sPageSizeDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label for="sVisitSize">Default visit-list size</label><input type="number" id="sVisitSize" min="1"></div>
 
+            <label>Visit route start point</label>
+            <div class="settings-row"><label for="sRouteStartLabel">Label</label><input type="text" id="sRouteStartLabel" placeholder="e.g. Church"></div>
+            <div class="settings-row"><label for="sRouteStartLat">Latitude</label><input type="number" id="sRouteStartLat" step="any" placeholder="-90 to 90"></div>
+            <div class="settings-row"><label for="sRouteStartLon">Longitude</label><input type="number" id="sRouteStartLon" step="any" placeholder="-180 to 180"></div>
+            <p style="opacity:.6; margin-top:-8px;">Fill in all three to route generated visit lists from this point, or leave all three blank.</p>
+
             <label>Backup folder</label>
             <div class="settings-folder-row">
                 <input type="text" id="sBackupFolder" readonly placeholder="Not set">
@@ -43,6 +49,9 @@ async function openSettingsModal() {
         document.getElementById('sDeletedDays').value = settings.deletedRetentionDays || 365;
         document.getElementById('sLogDays').value = settings.logRetentionDays || 30;
         document.getElementById('sVisitSize').value = settings.defaultVisitGroupSize || 10;
+        document.getElementById('sRouteStartLabel').value = settings.routeStartLabel || '';
+        document.getElementById('sRouteStartLat').value = settings.routeStartLat || '';
+        document.getElementById('sRouteStartLon').value = settings.routeStartLon || '';
         document.getElementById('sBackupFolder').value = settings.backupFolder || '';
 
         document.getElementById('sChooseFolderBtn').addEventListener('click', async () => {
@@ -69,6 +78,9 @@ async function openSettingsModal() {
             pending.deletedRetentionDays = document.getElementById('sDeletedDays').value;
             pending.logRetentionDays = document.getElementById('sLogDays').value;
             pending.defaultVisitGroupSize = document.getElementById('sVisitSize').value;
+            pending.routeStartLabel = document.getElementById('sRouteStartLabel').value.trim();
+            pending.routeStartLat = document.getElementById('sRouteStartLat').value.trim();
+            pending.routeStartLon = document.getElementById('sRouteStartLon').value.trim();
             try {
                 await Api.saveSettings(pending);
                 await Api.pruneOldDeletedAndLogs();

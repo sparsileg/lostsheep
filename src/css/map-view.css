@@ -22,9 +22,18 @@
    menu never renders underneath the zoom buttons. */
 .leaflet-top, .leaflet-bottom { z-index: 400 !important; }
 
-.map-star-marker {
-    font-size: 40px; line-height: 52px; text-align: center; color: #ffd700;
-    text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 3px #000;
+/* Numbered visit-order badge, replacing the old star (#13 follow-up) —
+   shows each generated visit list's stop number directly on its marker
+   so the route's actual shape (and how well it's optimized) is visible
+   at a glance, not just "which N households were picked". Circle sized
+   to comfortably hold two digits; ring uses --bg-color rather than a
+   hardcoded white so it reads correctly against every theme, dark ones
+   included. */
+.map-route-marker {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--primary-color); color: var(--bg-color);
+    font-size: 14px; font-weight: 700; line-height: 28px; text-align: center;
+    box-shadow: 0 0 0 2px var(--bg-color), 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
 /* Map fills the remaining viewing area instead of a fixed height. The
