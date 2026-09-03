@@ -94,6 +94,7 @@ function handleHamburgerMenuClick(e) {
         case 'settings': openSettingsModal(); break;
         case 'backup': BackupRestore.showBackupModal(); break;
         case 'restore': BackupRestore.showRestoreModal(); break;
+        case 'roads': RoadsIngest.showModal(); break;
         case 'logs': showView('logs'); break;
         case 'about': showAboutModal(); break;
         case 'help': showHelpModal(); break;

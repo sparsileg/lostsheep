@@ -187,3 +187,22 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_logs_level   ON logs(level);
+
+-- Local road graph (issue #7), built from a user-prepared roads-only
+-- .pbf via commands::roads::ingest_road_database. Re-ingesting wipes and
+-- replaces both tables inside one transaction — no orphaned data.
+CREATE TABLE IF NOT EXISTS road_nodes (
+    id     INTEGER PRIMARY KEY,
+    osm_id INTEGER NOT NULL UNIQUE,
+    lat    REAL NOT NULL,
+    lon    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS road_edges (
+    id            INTEGER PRIMARY KEY,
+    from_node_id  INTEGER NOT NULL REFERENCES road_nodes(id) ON DELETE CASCADE,
+    to_node_id    INTEGER NOT NULL REFERENCES road_nodes(id) ON DELETE CASCADE,
+    distance_m    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_road_edges_from ON road_edges(from_node_id);
+CREATE INDEX IF NOT EXISTS idx_road_edges_to   ON road_edges(to_node_id);

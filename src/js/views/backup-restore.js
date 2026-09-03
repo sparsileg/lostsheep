@@ -48,7 +48,7 @@ const BackupRestore = {
                 // back here so it's obvious where the backup landed instead
                 // of a generic "complete" that gives no way to check.
                 const writtenPath = await Api.backupDatabase(dest, p1);
-                showMessage(`Backup written to ${writtenPath}`, CONSTANTS.MESSAGE_TYPES.INFO, 8000);
+                showMessage(`Backup written to ${writtenPath} (road graph not included — re-ingest after restore if needed)`, CONSTANTS.MESSAGE_TYPES.INFO, 8000);
                 overlay.remove();
             } catch (e) { showMessage(`Backup failed: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
         });

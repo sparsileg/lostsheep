@@ -73,6 +73,8 @@ fn main() {
             commands::backup::backup_database,
             commands::backup::restore_preview,
             commands::backup::restore_commit,
+            // roads
+            commands::roads::ingest_road_database,
             // settings / logs
             commands::settings::get_settings,
             commands::settings::save_settings,
