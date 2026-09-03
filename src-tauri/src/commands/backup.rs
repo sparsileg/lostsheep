@@ -36,6 +36,13 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     let tmp_db = TmpFile(tmp_path("lost-sheep-backup"));
     db::rekey_copy(&state.db_path, &state.live_key_hex, &tmp_db.0, &dest_key).map_err(|e| e.to_string())?;
 
+    // The road graph (issue #7) is ingested from a user-held, easily
+    // re-fetched .pbf and can run 10x+ larger than the rest of the DB —
+    // no reason to bloat every backup with data that isn't backup-worthy
+    // in the first place. Stripped from this copy only, after the export,
+    // so the live DB itself is untouched.
+    strip_road_graph(&tmp_db.0, &dest_key)?;
+
     write_backup_zip(&dest_path, &tmp_db.0, &salt)?;
 
     // Confirm the file actually landed before telling the user it
@@ -51,6 +58,17 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(&conn, "info", &format!("backup written to {dest_path} ({} bytes)", meta.len()), None);
     Ok(dest_path)
+}
+
+/// Deletes the road graph from a backup-bound *copy* of the DB and
+/// reclaims the freed space — the copy is a scratch file the caller
+/// deletes when done (TmpFile), never the live DB, so this never touches
+/// what's actually ingested via ingest_road_database.
+fn strip_road_graph(path: &std::path::Path, key_hex: &str) -> Result<(), String> {
+    let conn = db::open_with_key(&path.to_path_buf(), key_hex).map_err(|e| e.to_string())?;
+    conn.execute_batch("DELETE FROM road_edges; DELETE FROM road_nodes; VACUUM;")
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str) -> Result<(), String> {

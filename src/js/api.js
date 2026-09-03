@@ -42,6 +42,9 @@ const Api = {
     restorePreview: (srcPath, passphrase) => invoke('restore_preview', { srcPath, passphrase }),
     restoreCommit: (srcPath, passphrase) => invoke('restore_commit', { srcPath, passphrase }),
 
+    // roads
+    ingestRoadDatabase: (filePath) => invoke('ingest_road_database', { filePath }),
+
     // settings / logs
     getSettings: () => invoke('get_settings'),
     saveSettings: (values) => invoke('save_settings', { values }),
