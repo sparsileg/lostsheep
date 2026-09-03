@@ -95,8 +95,28 @@ function handleHamburgerMenuClick(e) {
         case 'backup': BackupRestore.showBackupModal(); break;
         case 'restore': BackupRestore.showRestoreModal(); break;
         case 'logs': showView('logs'); break;
+        case 'about': showAboutModal(); break;
         case 'help': showHelpModal(); break;
     }
+}
+
+function showAboutModal() {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal">
+        <h2>About Lost Sheep</h2>
+        <p>Version ${CONSTANTS.APP_VERSION}</p>
+        <h3>Third-Party Software</h3>
+        <p><strong>pdftotext</strong> (poppler-utils) is bundled for PDF import.
+        Licensed under the GPL. Source:
+        <a href="https://github.com/unpins/poppler-utils/releases" target="_blank" rel="noopener">unpins/poppler-utils</a>.</p>
+        <p>Road and map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>,
+        licensed under the Open Database License (ODbL).</p>
+        <button class="btn" id="closeAbout">Close</button>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#closeAbout').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 function showHelpModal() {

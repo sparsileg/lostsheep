@@ -4,7 +4,7 @@
    menu actually renders on top of the map instead of underneath it.
    Still well below the hamburger menu (2000) and modals (3000). */
 .map-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; position: relative; z-index: 900; }
-#mapVisitListResult ol { max-height: 240px; overflow-y: auto; }
+.visit-list-items { max-height: 240px; overflow-y: auto; }
 
 /* Per-tag stat cards — moved here from the old standalone Dashboard view,
    which no longer exists (this map view IS the Dashboard now). Kept

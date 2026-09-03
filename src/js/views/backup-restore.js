@@ -13,13 +13,12 @@ const BackupRestore = {
             <label>Passphrase
                 <div class="passphrase-row">
                     <input type="password" id="bkPass" size="20">
-                    <button type="button" class="btn passphrase-toggle" data-toggle="bkPass">👁</button>
                 </div>
             </label>
             <label>Confirm passphrase
                 <div class="passphrase-row">
                     <input type="password" id="bkPass2" size="20">
-                    <button type="button" class="btn passphrase-toggle" data-toggle="bkPass2">👁</button>
+                    <button type="button" class="btn passphrase-toggle" id="bkPassToggle">👁</button>
                 </div>
             </label>
             <div class="modal-buttons">
@@ -27,10 +26,13 @@ const BackupRestore = {
                 <button class="btn" id="bkCancel">Cancel</button>
             </div>
         `);
-        overlay.querySelectorAll('[data-toggle]').forEach(btn => btn.addEventListener('click', () => {
-            const input = overlay.querySelector(`#${btn.dataset.toggle}`);
-            input.type = input.type === 'password' ? 'text' : 'password';
-        }));
+        overlay.querySelector('#bkPassToggle').addEventListener('click', () => {
+            const p1 = overlay.querySelector('#bkPass');
+            const p2 = overlay.querySelector('#bkPass2');
+            const nextType = p1.type === 'password' ? 'text' : 'password';
+            p1.type = nextType;
+            p2.type = nextType;
+        });
         overlay.querySelector('#bkCancel').addEventListener('click', () => overlay.remove());
         overlay.querySelector('#bkGo').addEventListener('click', async () => {
             const p1 = overlay.querySelector('#bkPass').value;
