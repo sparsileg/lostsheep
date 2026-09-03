@@ -10,7 +10,6 @@ registerView('map', {
                 <button class="btn" id="mapResetSeedBtn">Reset Seed</button>
             </div>
             <div id="mapEl"></div>
-            <div id="mapVisitListResult"></div>
         `;
         this.map = L.map('mapEl').setView([39.5, -98.35], 4);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -123,17 +122,22 @@ async function generateVisitList() {
     });
 
     MapView.lastVisitListText = buildVisitListText(entries);
-    document.getElementById('mapVisitListResult').innerHTML = `
+    const overlay = modalShell(`
         <h2>Visit List (${entries.length} addresses)</h2>
         <button class="btn" id="mapCopyVisitListBtn">⎘ Copy</button>
-        <ol>${entries.map(e => {
+        <ol class="visit-list-items">${entries.map(e => {
             const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
             const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
             return `<li>${escapeHtml(e.address_line1 || '(no address on file)')}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
                 — ${e.names.map(escapeHtml).join(', ')}${phones}
                 <span style="opacity:.6;"> (${Math.round(e.distance_meters)} m from seed)</span></li>`;
-        }).join('')}</ol>`;
-    document.getElementById('mapCopyVisitListBtn').addEventListener('click', copyVisitList);
+        }).join('')}</ol>
+        <div class="modal-buttons">
+            <button class="btn" id="mapCloseVisitListBtn">Close</button>
+        </div>
+    `);
+    overlay.querySelector('#mapCopyVisitListBtn').addEventListener('click', () => copyVisitList(overlay));
+    overlay.querySelector('#mapCloseVisitListBtn').addEventListener('click', () => overlay.remove());
 }
 
 function buildVisitListText(entries) {
@@ -144,8 +148,8 @@ function buildVisitListText(entries) {
     }).join('\n');
 }
 
-async function copyVisitList() {
-    const btn = document.getElementById('mapCopyVisitListBtn');
+async function copyVisitList(overlay) {
+    const btn = overlay.querySelector('#mapCopyVisitListBtn');
     try { await navigator.clipboard.writeText(MapView.lastVisitListText || ''); btn.textContent = 'Copied!'; }
     catch (e) { btn.textContent = 'Copy failed'; }
     setTimeout(() => { if (btn) btn.textContent = '⎘ Copy'; }, 1500);
@@ -155,7 +159,6 @@ function resetSeed() {
     MapView.seedGroupKey = null;
     MapView.seedHouseholdId = null;
     document.getElementById('mapGenerateBtn').disabled = true;
-    document.getElementById('mapVisitListResult').innerHTML = '';
     Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
     showMessage('Seed cleared.', CONSTANTS.MESSAGE_TYPES.INFO, 2000);
 }
