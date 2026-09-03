@@ -64,18 +64,23 @@ async function loadHouseholds() {
     state.lastResult = result;
 
     document.getElementById('hhResultsMeta').textContent = `${result.total} household record(s)`;
-    document.getElementById('hhTableBody').innerHTML = result.households.map(h => `
+    document.getElementById('hhTableBody').innerHTML = result.households.map(h => {
+        const isKnown = (h.tags || []).includes('Known');
+        const label = isKnown ? 'Not Known' : 'Known';
+        const targetTag = isKnown ? 'Not known' : 'Known';
+        return `
         <tr class="hh-row" data-open="${h.id}">
             <td>${escapeHtml(formatDirectoryName(h))}</td>
             <td>${escapeHtml(h.address_line1)}${h.city ? ', ' + escapeHtml(h.city) : ''}</td>
             <td>${renderTagChips(h.tags)}</td>
-            <td><button class="btn" data-known="${h.id}">Known</button></td>
-        </tr>`).join('');
+            <td><button class="btn" data-known="${h.id}" data-target-tag="${escapeHtml(targetTag)}">${label}</button></td>
+        </tr>`;
+    }).join('');
 
     document.querySelectorAll('[data-open]').forEach(tr => tr.addEventListener('click', () => openHouseholdModal(Number(tr.dataset.open))));
     document.querySelectorAll('[data-known]').forEach(btn => btn.addEventListener('click', (e) => {
         e.stopPropagation(); // don't also trigger the row's open-modal click
-        markKnown(Number(btn.dataset.known));
+        markKnown(Number(btn.dataset.known), btn.dataset.targetTag);
     }));
 
     const totalPages = Math.max(1, Math.ceil(result.total / state.pageSize));
@@ -87,16 +92,16 @@ async function loadHouseholds() {
     document.getElementById('hhNextPage')?.addEventListener('click', () => { state.page++; loadHouseholds(); });
 }
 
-// Clears whatever tag was there and sets "Known", then reloads the
-// current page from the server. Always reloads now — even when the
-// active filter still matches "Known" or "All" — rather than removing
-// just this row from the DOM: local-only removal left state.page
-// pointing at a numeric offset that no longer matched the (now
-// smaller) filtered result set, silently skipping unreviewed
-// households when the user hit Next (issue #5).
-async function markKnown(id) {
+// Clears whatever tag was there and sets targetTag ("Known" or "Not
+// known"), then reloads the current page from the server. Always
+// reloads now — even when the active filter still matches the new tag
+// or "All" — rather than removing just this row from the DOM:
+// local-only removal left state.page pointing at a numeric offset that
+// no longer matched the (now smaller) filtered result set, silently
+// skipping unreviewed households when the user hit Next (issue #5).
+async function markKnown(id, targetTag) {
     try {
-        await Api.tagHouseholds([id], 'Known');
+        await Api.tagHouseholds([id], targetTag);
         await loadHouseholds();
         await refreshTagFilterOptions();
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
