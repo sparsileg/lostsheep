@@ -36,14 +36,13 @@
     box-shadow: 0 0 0 2px var(--bg-color), 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-/* Map fills the remaining viewing area instead of a fixed height. The
-   generic `.view.active { display: block }` rule is overridden here
-   (ID+class beats class alone) so this view can be a flex column with
-   the map growing to fill whatever space is left after the toolbar. */
-#view-map.active {
-    display: flex;
-    flex-direction: column;
-    height: calc(100vh - 40px); /* accounts for #mainContent's 20px top+bottom padding */
-}
-#mapViewRoot { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#mapEl { flex: 1; min-height: 300px; border: 1px solid var(--border-color); }
+/* Map height is set at runtime (map-view.js resizeMapEl()) from the
+   element's own actual position, not guessed here. A static
+   calc(100vh - 40px) only accounted for #mainContent's own padding —
+   it never knew about #messageArea's height sitting above this view in
+   the flow, so the map was always short by roughly that much and always
+   carried a scrollbar, at every window size (#15 follow-up). min-height
+   is just the pre-JS/fallback floor. */
+#view-map.active { display: flex; flex-direction: column; }
+#mapViewRoot { display: flex; flex-direction: column; }
+#mapEl { min-height: 300px; border: 1px solid var(--border-color); }
