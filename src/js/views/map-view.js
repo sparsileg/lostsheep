@@ -74,6 +74,8 @@ async function loadTagStats() {
 
 async function populateMapTagSelect() {
     const tags = await Api.listTags().catch(() => []);
+    MapView.tagsById = {};
+    tags.forEach(t => { MapView.tagsById[String(t.id)] = t.name; });
     MapView.tagDropdown?.setItems([
         { value: '', label: 'All households with coordinates' },
         ...tags.map(t => ({ value: String(t.id), label: t.name })),
@@ -133,6 +135,26 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Visit-list distances display in miles, not meters — the backend
+// (distance_meters) and haversineMeters() above still compute/return
+// meters throughout; this only converts at render time.
+function metersToMiles(m) {
+    return m / 1609.344;
+}
+
+// Configured route start point — label + coords straight from Settings
+// (routeStartLabel/Lat/Lon). No geocoding: the label the user already
+// typed in Settings is the address, used verbatim for both the "Starting
+// at" line and the return leg below. Returns null when unconfigured.
+async function getRouteStartInfo() {
+    let settings;
+    try { settings = await Api.getSettings(); } catch (e) { return null; }
+    const lat = parseFloat(settings.routeStartLat);
+    const lon = parseFloat(settings.routeStartLon);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) return null;
+    return { label: settings.routeStartLabel || 'start point', lat, lon };
+}
+
 // Closing leg — last stop back to the configured route start point.
 // Only meaningful when the route-start setting is actually in play
 // (distance_context === 'route' on the last entry); an unconfigured
@@ -140,32 +162,36 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // optimization (that reorders the whole walk to account for the return
 // trip) — just surfaces the cost of the naive close so a lopsided route
 // is visible. Real loop optimization is a follow-on, not part of this.
-async function computeReturnLeg(entries) {
-    if (!entries.length || entries[entries.length - 1].distance_context !== 'route') return null;
-    let settings;
-    try { settings = await Api.getSettings(); } catch (e) { return null; }
-    const startLat = parseFloat(settings.routeStartLat);
-    const startLon = parseFloat(settings.routeStartLon);
-    if (Number.isNaN(startLat) || Number.isNaN(startLon)) return null;
+function computeReturnLeg(entries, startInfo) {
+    if (!startInfo || !entries.length || entries[entries.length - 1].distance_context !== 'route') return null;
     const last = entries[entries.length - 1];
     return {
-        label: settings.routeStartLabel || 'start point',
-        meters: haversineMeters(last.latitude, last.longitude, startLat, startLon),
+        label: startInfo.label,
+        meters: haversineMeters(last.latitude, last.longitude, startInfo.lat, startInfo.lon),
     };
 }
 
-// The generated visit list is always restricted to "Not known" households,
-// regardless of whatever tag the dashboard's own filter dropdown currently
-// has selected (that dropdown only controls what's plotted on the map).
-async function notKnownTagId() {
-    const tags = await Api.listTags().catch(() => []);
-    const tag = tags.find(t => t.name === 'Not known');
-    return tag ? tag.id : null;
+// The generated visit list now pulls from whatever tag the dashboard's
+// own filter dropdown has selected — the same pool that's plotted on
+// the map — rather than always hardcoding "Not known" (#15 follow-up).
+// '' means "All households with coordinates": no tag restriction.
+function currentTagLabel() {
+    if (!MapView.selectedTagId) return 'All households with coordinates';
+    return (MapView.tagsById && MapView.tagsById[MapView.selectedTagId]) || 'Tag';
+}
+
+// Filesystem-safe form of the current tag label, for PDF filenames.
+// "All households with coordinates" collapses to the shorter
+// "All_Households" per spec; any other tag just gets its spaces
+// replaced (tags can contain spaces — Functional_Requirements.md).
+function tagLabelForFilename(label) {
+    if (label === 'All households with coordinates') return 'All_Households';
+    return label.replace(/\s+/g, '_');
 }
 
 async function generateVisitList() {
     if (!MapView.seedHouseholdId) return;
-    const tagId = await notKnownTagId();
+    const tagId = MapView.selectedTagId ? Number(MapView.selectedTagId) : null;
     const count = parseInt(document.getElementById('mapVisitCount').value, 10) || 10;
     let entries;
     try {
@@ -186,39 +212,108 @@ async function generateVisitList() {
         if (marker) marker.setIcon(routeMarkerIcon(idx + 1));
     });
 
-    const returnLeg = await computeReturnLeg(entries);
+    const startInfo = await getRouteStartInfo();
+    const startsAtRoute = entries.length > 0 && entries[0].distance_context === 'route' && !!startInfo;
+    const returnLeg = computeReturnLeg(entries, startInfo);
+    const tagLabel = currentTagLabel();
 
-    MapView.lastVisitListText = buildVisitListText(entries, returnLeg);
+    MapView.lastVisitListText = buildVisitListText(entries, returnLeg, startsAtRoute ? startInfo : null);
+    MapView.lastVisitEntries = entries;
+    MapView.lastVisitReturnLeg = returnLeg;
+    MapView.lastVisitTagLabel = tagLabel;
+    MapView.lastVisitStartInfo = startsAtRoute ? startInfo : null;
+
     const overlay = modalShell(`
         <h2>Visit List (${entries.length} addresses)</h2>
         <button class="btn" id="mapCopyVisitListBtn">⎘ Copy</button>
+        <button class="btn" id="mapPdfVisitListBtn">⎙ PDF</button>
+        ${startsAtRoute ? `<div class="visit-list-start">Starting at ${escapeHtml(startInfo.label)}</div>` : ''}
         <ol class="visit-list-items">${entries.map((e, idx) => {
             const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
             const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
             const distLabel = e.distance_context === 'route'
-                ? (idx === 0 ? 'm from start point' : 'm from previous stop')
-                : 'm from seed';
+                ? (idx === 0 ? 'from start point' : 'from previous stop')
+                : 'from seed';
             return `<li>${escapeHtml(e.address_line1 || '(no address on file)')}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
                 — ${e.names.map(escapeHtml).join(', ')}${phones}
-                <span style="opacity:.6;"> (${Math.round(e.distance_meters)} ${distLabel})</span></li>`;
-        }).join('')}${returnLeg ? `<li style="opacity:.75;">↩ Back to ${escapeHtml(returnLeg.label)}
-                <span style="opacity:.6;"> (${Math.round(returnLeg.meters)} m)</span></li>` : ''}</ol>
+                <span style="opacity:.6;"> (${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})</span></li>`;
+        }).join('')}${returnLeg ? `<li style="list-style:none; margin-top:8px; opacity:.75;">↩ Back to ${escapeHtml(returnLeg.label)}
+                <span style="opacity:.6;"> (${metersToMiles(returnLeg.meters).toFixed(2)} mi)</span></li>` : ''}</ol>
         <div class="modal-buttons">
             <button class="btn" id="mapCloseVisitListBtn">Close</button>
         </div>
     `);
     overlay.querySelector('#mapCopyVisitListBtn').addEventListener('click', () => copyVisitList(overlay));
+    overlay.querySelector('#mapPdfVisitListBtn').addEventListener('click', () => downloadVisitListPdf());
     overlay.querySelector('#mapCloseVisitListBtn').addEventListener('click', () => overlay.remove());
 }
 
-function buildVisitListText(entries, returnLeg) {
-    const lines = entries.map(e => {
+function buildVisitListText(entries, returnLeg, startInfo) {
+    const lines = [];
+    if (startInfo) lines.push(`Starting at ${startInfo.label}`);
+    entries.forEach(e => {
         const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
         const phones = e.phones.length ? ` — ${e.phones.join(', ')}` : '';
-        return `${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`;
+        lines.push(`${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`);
     });
-    if (returnLeg) lines.push(`↩ Back to ${returnLeg.label} (${Math.round(returnLeg.meters)} m)`);
+    if (returnLeg) lines.push(`↩ Back to ${returnLeg.label} (${metersToMiles(returnLeg.meters).toFixed(2)} mi)`);
     return lines.join('\n');
+}
+
+// PDF export of the currently-open Visit List modal (#15 follow-up).
+// Single-column list, not the two-column directory-pdf.js layout — kept
+// inline here rather than a separate file given its size; flag if a
+// dedicated visit-route-pdf.js is preferred for consistency later.
+function downloadVisitListPdf() {
+    const entries = MapView.lastVisitEntries || [];
+    if (entries.length === 0) return;
+    const returnLeg = MapView.lastVisitReturnLeg;
+    const tagLabel = MapView.lastVisitTagLabel || 'All households with coordinates';
+    const startInfo = MapView.lastVisitStartInfo;
+
+    const faint = '#777777';
+    const body = entries.map((e, idx) => {
+        const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
+        const phones = e.phones.length ? ` — ${e.phones.join(', ')}` : '';
+        const distLabel = e.distance_context === 'route'
+            ? (idx === 0 ? 'from start point' : 'from previous stop')
+            : 'from seed';
+        return {
+            margin: [0, 0, 0, 6],
+            text: [
+                { text: `${idx + 1}. `, bold: true },
+                `${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones} `,
+                { text: `(${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})`, color: faint, fontSize: 8 },
+            ],
+        };
+    });
+    if (returnLeg) {
+        body.push({
+            italics: true,
+            margin: [0, 8, 0, 0],
+            text: [
+                `↩ Back to ${returnLeg.label} `,
+                { text: `(${metersToMiles(returnLeg.meters).toFixed(2)} mi)`, color: faint, fontSize: 8 },
+            ],
+        });
+    }
+
+    const docDefinition = {
+        pageSize: 'LETTER',
+        pageMargins: [54, 54, 54, 40],
+        defaultStyle: { font: 'Roboto', fontSize: 10 },
+        content: [
+            { text: `Visit Route — ${tagLabel}`, fontSize: 14, bold: true, color: '#2c3e50', margin: [0, 0, 0, 12] },
+            ...(startInfo ? [{ text: `Starting at ${startInfo.label}`, italics: true, margin: [0, 4, 0, 8] }] : []),
+            ...body,
+        ],
+        footer: (currentPage, pageCount) => ({
+            text: `Page ${currentPage} of ${pageCount}`, alignment: 'center', fontSize: 8, color: faint, margin: [0, 10, 0, 0],
+        }),
+    };
+
+    const filename = `LostSheep-Visits-${tagLabelForFilename(tagLabel)}.pdf`;
+    pdfMake.createPdf(docDefinition).download(filename);
 }
 
 async function copyVisitList(overlay) {
