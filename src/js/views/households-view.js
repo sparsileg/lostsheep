@@ -5,6 +5,7 @@ registerView('households', {
             <div class="households-toolbar">
                 <input type="text" id="hhSearchInput" placeholder="Search name, address, comments…" />
                 <div id="hhTagFilterDropdown"></div>
+                <button class="btn" id="hhGenerateDirectoryBtn">Generate Directory PDF</button>
             </div>
             <div id="hhResultsMeta"></div>
             <table id="hhTable">
@@ -27,6 +28,7 @@ registerView('households', {
                 loadHouseholds();
             },
         });
+        document.getElementById('hhGenerateDirectoryBtn').addEventListener('click', generateDirectoryPdf);
     },
     async onShow() {
         const settings = await Api.getSettings().catch(() => ({}));
@@ -90,6 +92,49 @@ async function loadHouseholds() {
         <button class="btn" id="hhNextPage" ${state.page >= totalPages ? 'disabled' : ''}>Next ›</button>`;
     document.getElementById('hhPrevPage')?.addEventListener('click', () => { state.page--; loadHouseholds(); });
     document.getElementById('hhNextPage')?.addEventListener('click', () => { state.page++; loadHouseholds(); });
+}
+
+// Issue #15 — pulls every household matching the current search/tag
+// filter, not just the page on screen, for the PDF directory export.
+// Reuses search_households (same query the table already shows) rather
+// than a second filtering implementation. page_size is server-clamped to
+// 500 (households.rs), so results beyond that are paged through here;
+// household counts in this app are documented to stay well under that
+// per page in practice, but the loop is unconditional so it's correct
+// regardless of scale.
+async function fetchAllFilteredHouseholds() {
+    const query = document.getElementById('hhSearchInput').value;
+    const tag_names = state.tagFilter ? [state.tagFilter] : [];
+    const page_size = 500;
+    let page = 1;
+    let all = [];
+    for (;;) {
+        const result = await Api.searchHouseholds({ query, tag_names, page, page_size });
+        all = all.concat(result.households);
+        if (all.length >= result.total || result.households.length === 0) break;
+        page += 1;
+    }
+    return all;
+}
+
+async function generateDirectoryPdf() {
+    const btn = document.getElementById('hhGenerateDirectoryBtn');
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'Generating…';
+    try {
+        const households = await fetchAllFilteredHouseholds();
+        if (households.length === 0) {
+            showMessage('No households match the current filter.', CONSTANTS.MESSAGE_TYPES.INFO);
+            return;
+        }
+        DirectoryPdf.download(households, state.tagFilter || 'All');
+    } catch (e) {
+        showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+    }
 }
 
 // Clears whatever tag was there and sets targetTag ("Known" or "Not

@@ -5,7 +5,7 @@ registerView('map', {
             <div class="dash-stats" id="dashTagStats"></div>
             <div class="map-toolbar">
                 <div id="mapTagDropdown" style="min-width:260px;"></div>
-                <input type="number" id="mapVisitCount" min="1" value="10" style="width:70px;" title="Number of addresses to include">
+                <input type="number" id="mapVisitCount" min="1" value="10" style="width:70px;" title="Number of households to visit">
                 <button class="btn btn-primary" id="mapGenerateBtn" disabled>Generate visit list from selected seed</button>
                 <button class="btn" id="mapResetSeedBtn">Reset Seed</button>
             </div>
@@ -27,15 +27,40 @@ registerView('map', {
         });
         document.getElementById('mapGenerateBtn').addEventListener('click', generateVisitList);
         document.getElementById('mapResetSeedBtn').addEventListener('click', resetSeed);
+        wireMapResize();
     },
     async onShow() {
         await populateMapTagSelect();
         await loadTagStats();
-        setTimeout(() => MapView.map.invalidateSize(), 50);
+        setTimeout(resizeMapEl, 50);
         await loadMapData();
     },
 });
 const MapView = ViewRegistry.map; // convenient alias for handlers below
+
+// Sizes #mapEl from its own actual on-screen position, not a guessed
+// vh-minus-padding constant (#15 follow-up — the old calc(100vh - 40px)
+// never accounted for #messageArea's height above this view, so the map
+// was always short by roughly that much and always carried a scrollbar,
+// regardless of window size). 20 matches #mainContent's own bottom
+// padding (base.css). Re-run on every onShow (dash-stats/toolbar content
+// can change row count between visits) and on window resize.
+function resizeMapEl() {
+    const el = document.getElementById('mapEl');
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    const mainContentBottomPadding = 20;
+    const height = Math.max(300, window.innerHeight - top - mainContentBottomPadding);
+    el.style.height = `${height}px`;
+    if (MapView.map) MapView.map.invalidateSize();
+}
+
+let _mapResizeWired = false;
+function wireMapResize() {
+    if (_mapResizeWired) return;
+    window.addEventListener('resize', resizeMapEl);
+    _mapResizeWired = true;
+}
 
 // Dashboard's per-tag breakdown — replaces the old separate Dashboard
 // view's "how many tags exist" stat, which wasn't useful; a count per

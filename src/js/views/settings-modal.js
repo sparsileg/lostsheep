@@ -21,17 +21,17 @@ async function openSettingsModal() {
             <div class="settings-row"><label>Households page size</label><div id="sPageSizeDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label for="sVisitSize">Default visit-list size</label><input type="number" id="sVisitSize" min="1"></div>
 
-            <label>Visit route start point</label>
-            <div class="settings-row"><label for="sRouteStartLabel">Label</label><input type="text" id="sRouteStartLabel" placeholder="e.g. Church"></div>
-            <div class="settings-row"><label for="sRouteStartLat">Latitude</label><input type="number" id="sRouteStartLat" step="any" placeholder="-90 to 90"></div>
-            <div class="settings-row"><label for="sRouteStartLon">Longitude</label><input type="number" id="sRouteStartLon" step="any" placeholder="-180 to 180"></div>
-            <p style="opacity:.6; margin-top:-8px;">Fill in all three to route generated visit lists from this point, or leave all three blank.</p>
-
             <label>Backup folder</label>
             <div class="settings-folder-row">
                 <input type="text" id="sBackupFolder" readonly placeholder="Not set">
                 <button class="btn" id="sChooseFolderBtn">Choose…</button>
             </div>
+
+            <label>Visit route start point</label>
+            <div class="settings-row"><label for="sRouteStartLabel">Label</label><input type="text" id="sRouteStartLabel" placeholder="e.g. Church"></div>
+            <div class="settings-row"><label for="sRouteStartLat">Latitude</label><input type="number" id="sRouteStartLat" step="any" placeholder="-90 to 90"></div>
+            <div class="settings-row"><label for="sRouteStartLon">Longitude</label><input type="number" id="sRouteStartLon" step="any" placeholder="-180 to 180"></div>
+            <p style="opacity:.6; margin-top:-8px;">Fill in all three to route generated visit lists from this point, or leave all three blank.</p>
 
             <div class="modal-buttons">
                 <button class="btn btn-primary" id="sSaveBtn">Save</button>
