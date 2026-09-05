@@ -102,25 +102,54 @@ fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str) -> Re
     Ok(())
 }
 
+// Issue #25: caps on what a hostile/corrupted archive can make this
+// process read into memory before the passphrase is even checked. Well
+// above any legitimate size here (10,000 households is a few MB).
+const MAX_DB_ENTRY_BYTES: u64 = 200 * 1024 * 1024;
+const MAX_SALT_ENTRY_BYTES: u64 = 1024;
+
 /// Unpacks a backup zip's DB entry into a scratch file (SQLCipher needs a
 /// real path) and returns it alongside the salt entry's contents.
 fn extract_backup_zip(src_path: &str) -> Result<(TmpFile, String), String> {
     let file = std::fs::File::open(src_path).map_err(|e| format!("could not open {src_path}: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{src_path} is not a valid backup file: {e}"))?;
 
-    let mut db_bytes = Vec::new();
-    archive
-        .by_name(DB_ENTRY)
-        .map_err(|_| format!("backup file is missing its {DB_ENTRY} entry — not a valid Lost Sheep backup"))?
-        .read_to_end(&mut db_bytes)
-        .map_err(|e| e.to_string())?;
+    // A genuine backup always has exactly these two entries. Any other
+    // count means the file isn't a Lost Sheep backup — reject by shape
+    // before trusting anything else about it.
+    if archive.len() != 2 {
+        return Err(format!(
+            "backup file has {} entries, expected 2 — not a valid Lost Sheep backup",
+            archive.len()
+        ));
+    }
 
-    let mut salt = String::new();
-    archive
-        .by_name(SALT_ENTRY)
-        .map_err(|_| format!("backup file is missing its {SALT_ENTRY} entry — not a valid Lost Sheep backup"))?
-        .read_to_string(&mut salt)
-        .map_err(|e| e.to_string())?;
+    let db_bytes = {
+        let mut entry = archive
+            .by_name(DB_ENTRY)
+            .map_err(|_| format!("backup file is missing its {DB_ENTRY} entry — not a valid Lost Sheep backup"))?;
+        if entry.size() > MAX_DB_ENTRY_BYTES {
+            return Err(format!(
+                "backup's {DB_ENTRY} entry is {} bytes, over the {MAX_DB_ENTRY_BYTES}-byte limit — refusing to read",
+                entry.size()
+            ));
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        buf
+    };
+
+    let salt = {
+        let mut entry = archive
+            .by_name(SALT_ENTRY)
+            .map_err(|_| format!("backup file is missing its {SALT_ENTRY} entry — not a valid Lost Sheep backup"))?;
+        if entry.size() > MAX_SALT_ENTRY_BYTES {
+            return Err(format!("backup's {SALT_ENTRY} entry is too large — not a valid Lost Sheep backup"));
+        }
+        let mut s = String::new();
+        entry.read_to_string(&mut s).map_err(|e| e.to_string())?;
+        s
+    };
 
     let tmp_db = TmpFile(tmp_path("lost-sheep-restore"));
     std::fs::write(&tmp_db.0, &db_bytes).map_err(|e| e.to_string())?;
