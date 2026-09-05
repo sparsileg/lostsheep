@@ -30,6 +30,14 @@ fn tmp_path(prefix: &str) -> std::path::PathBuf {
 /// two to get separated or for only one to actually land on disk.
 #[tauri::command]
 pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: String) -> Result<String, String> {
+    // Issue #32: dest_path is a plain frontend-supplied String — never
+    // trusted as-is. Must resolve to a not-yet-existing file directly
+    // inside the configured backupFolder setting, read straight from the
+    // DB here (not from anything the caller claims).
+    let dest_path = super::paths::resolve_write_dest(&state, &dest_path)?
+        .to_string_lossy()
+        .to_string();
+
     let salt = crypto::random_salt_hex();
     let dest_key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
 
@@ -72,12 +80,10 @@ fn strip_road_graph(path: &std::path::Path, key_hex: &str) -> Result<(), String>
 }
 
 fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(dest_path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("could not create backup folder {}: {e}", parent.display()))?;
-        }
-    }
+    // Issue #32: no create_dir_all here — resolve_write_dest already
+    // requires the configured backupFolder to exist and requires
+    // dest_path to sit directly inside it, so there is no legitimate
+    // case where a directory still needs creating at this point.
     let file = std::fs::File::create(dest_path).map_err(|e| format!("could not create {dest_path}: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -161,6 +167,9 @@ fn tag_counts(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<S
 /// not just the raw add/remove list.
 #[tauri::command]
 pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: String) -> Result<RestorePreview, String> {
+    // Issue #32: confirm src_path is under the user's home directory
+    // before ever opening it.
+    let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
     let (tmp_db, salt) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
     let backup_conn = db::open_with_key(&tmp_db.0, &key).map_err(|e| e.to_string())?;
@@ -225,6 +234,9 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
 /// SQLCipher key (the one in the OS keychain) and swaps it in atomically.
 #[tauri::command]
 pub fn restore_commit(state: State<AppState>, src_path: String, passphrase: String) -> Result<(), String> {
+    // Issue #32: same check as restore_preview — this is the destructive
+    // half, so it gets no less scrutiny just because preview already ran.
+    let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
     let (tmp_db, salt) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
     let rekeyed = TmpFile(state.db_path.with_extension("restoring"));

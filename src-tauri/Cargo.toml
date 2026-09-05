@@ -50,5 +50,9 @@ anyhow = "1"
 thiserror = "1"
 log = "0.4"
 
+# Cross-platform home-directory lookup for the path-safety checks in
+# commands/paths.rs (issue #32) — std has no portable equivalent.
+dirs = "5"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

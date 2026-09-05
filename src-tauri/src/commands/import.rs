@@ -34,7 +34,11 @@ fn emit_progress(app: &AppHandle, processed: usize, total: usize) {
 
 #[tauri::command]
 pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: String) -> Result<ImportSummary, String> {
-    let parsed = pdf_parser::parse_pdf(&app, std::path::Path::new(&file_path)).await.map_err(|e| e.to_string())?;
+    // Issue #32: resolved path is what actually gets opened / handed to
+    // the pdftotext sidecar; file_path (raw, unvalidated) is kept around
+    // only for the display filename in run_diff below.
+    let resolved = crate::commands::paths::resolve_read_path(&file_path)?;
+    let parsed = pdf_parser::parse_pdf(&app, &resolved).await.map_err(|e| e.to_string())?;
     run_diff(app, state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
 }
 
@@ -63,7 +67,9 @@ fn normalize_role(raw: &str, row_num: usize, warnings: &mut Vec<String>) -> Stri
 /// Real column layout TBD once a sample CSV export is available.
 #[tauri::command]
 pub fn import_csv(app: AppHandle, state: State<AppState>, file_path: String) -> Result<ImportSummary, String> {
-    let text = std::fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+    // Issue #32: resolved path is what's actually read.
+    let resolved = super::paths::resolve_read_path(&file_path)?;
+    let text = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
     let mut records = Vec::new();
     let mut warnings = Vec::new();
     for (i, line) in text.lines().enumerate().skip(1) {

@@ -36,6 +36,30 @@ fn main() {
 
             let pool = db::open_pool(&db_path, &key_hex).expect("failed to open encrypted database");
 
+            // #28: retention pruning runs unattended at startup now, not
+            // as a side effect of Settings Save. run_prune() takes a
+            // plain connection rather than State<AppState> specifically
+            // so it can be called here, before app.manage() below exists.
+            // Best-effort — a failure here must not block the app from
+            // opening.
+            {
+                let conn = pool.get().expect("failed to get db connection for startup prune");
+                match commands::settings::run_prune(&conn) {
+                    Ok(result) => {
+                        commands::logs::log(
+                            &conn,
+                            "info",
+                            &format!(
+                                "startup prune: removed {} deleted household(s), {} log row(s)",
+                                result.deleted_households, result.logs
+                            ),
+                            None,
+                        );
+                    }
+                    Err(e) => eprintln!("startup prune failed (non-fatal): {e}"),
+                }
+            }
+
             app.manage(AppState { pool, db_path, live_key_hex: key_hex });
             Ok(())
         })
@@ -79,6 +103,7 @@ fn main() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::prune_old_deleted_and_logs,
+            commands::settings::preview_prune_impact,
             commands::logs::get_logs,
         ])
         .run(tauri::generate_context!())

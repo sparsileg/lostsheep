@@ -135,10 +135,21 @@ pub struct PruneResult {
 /// of this patch. Left as a #[tauri::command] (not made private) so it
 /// stays available for issue #28's suggested on-demand "Prune Now"
 /// hamburger-menu entry later, with its own confirmation.
-#[tauri::command]
-pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<PruneResult, String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let settings: HashMap<String, String> = get_settings(State::clone(&state))?;
+/// The actual sweep, over a plain connection — extracted so main.rs can
+/// call this directly at startup without needing a managed `State`
+/// (which doesn't exist yet that early in setup()). The #[tauri::command]
+/// below is now a thin wrapper over this, kept for the on-demand "Prune
+/// Now" hamburger-menu entry (#28) that still goes through IPC.
+pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
+    let settings: HashMap<String, String> = {
+        let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
     // Falls back to the default if the stored value somehow isn't one of
     // the allowed values (e.g. a database from before this fix that still
     // has a stray "0" in it) — defensive, since this runs unattended.
@@ -174,4 +185,10 @@ pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<PruneResult,
         )
         .map_err(|e| e.to_string())? as i64;
     Ok(PruneResult { deleted_households, logs })
+}
+
+#[tauri::command]
+pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<PruneResult, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    run_prune(&conn)
 }
