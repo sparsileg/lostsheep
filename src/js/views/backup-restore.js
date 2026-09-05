@@ -2,6 +2,12 @@
 import { join, homeDir } from '../../include/tauri-api/path.js';
 import { open } from '../../include/tauri-api/dialog.js';
 
+// Issue #25: this passphrase is the only thing protecting the entire
+// congregation directory once it leaves the OS keychain's protection
+// (email, shared drive, USB stick). Argon2id can't compensate for a
+// one-character secret, so a floor is enforced here.
+const MIN_PASSPHRASE_LEN = 10;
+
 const BackupRestore = {
     async showBackupModal() {
         const settings = await Api.getSettings().catch(() => ({}));
@@ -12,7 +18,9 @@ const BackupRestore = {
 
         const overlay = modalShell(`
             <h2>Backup Database</h2>
-            <p>Choose a passphrase to protect the backup — store it safely, it's required to restore.</p>
+            <p>Choose a passphrase to protect the backup — store it safely, it's required to restore.
+               This passphrase is the only protection on the file once it leaves this computer.
+               Minimum ${MIN_PASSPHRASE_LEN} characters.</p>
             <label>Passphrase
                 <div class="passphrase-row">
                     <input type="password" id="bkPass" size="20">
@@ -41,6 +49,7 @@ const BackupRestore = {
             const p1 = overlay.querySelector('#bkPass').value;
             const p2 = overlay.querySelector('#bkPass2').value;
             if (!p1 || p1 !== p2) { showMessage('Passphrases must match and not be empty.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+            if (p1.length < MIN_PASSPHRASE_LEN) { showMessage(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
             const dest = await join(settings.backupFolder, `lost-sheep-backup-${todayStamp()}.zip`);
 

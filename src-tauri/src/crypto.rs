@@ -36,9 +36,20 @@ mod hex {
         bytes.as_ref().iter().map(|b| format!("{:02x}", b)).collect()
     }
     pub fn decode(s: &str) -> anyhow::Result<Vec<u8>> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(anyhow::Error::from))
+        let bytes = s.as_bytes();
+        if bytes.len() % 2 != 0 {
+            return Err(anyhow::anyhow!("hex string has odd length"));
+        }
+        if !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+            return Err(anyhow::anyhow!("hex string contains non-hex characters"));
+        }
+        // Safe: every byte already confirmed ASCII hex above, so chunks
+        // can never land mid-character and from_utf8 can never fail.
+        bytes
+            .chunks(2)
+            .map(|c| {
+                u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).map_err(anyhow::Error::from)
+            })
             .collect()
     }
 }
