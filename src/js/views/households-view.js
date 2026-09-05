@@ -90,8 +90,14 @@ async function loadHouseholds() {
         <button class="btn" id="hhPrevPage" ${state.page <= 1 ? 'disabled' : ''}>‹ Prev</button>
         Page ${state.page} / ${totalPages}
         <button class="btn" id="hhNextPage" ${state.page >= totalPages ? 'disabled' : ''}>Next ›</button>`;
-    document.getElementById('hhPrevPage')?.addEventListener('click', () => { state.page--; loadHouseholds(); });
-    document.getElementById('hhNextPage')?.addEventListener('click', () => { state.page++; loadHouseholds(); });
+    document.getElementById('hhPrevPage')?.addEventListener('click', () => {
+        state.page = Math.max(1, state.page - 1);
+        loadHouseholds();
+    });
+    document.getElementById('hhNextPage')?.addEventListener('click', () => {
+        state.page = Math.min(totalPages, state.page + 1);
+        loadHouseholds();
+    });
 }
 
 // Issue #15 — pulls every household matching the current search/tag

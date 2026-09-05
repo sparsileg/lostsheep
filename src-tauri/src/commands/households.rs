@@ -131,13 +131,22 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
     let conn = state.pool.get().map_err(|e| e.to_string())?;
 
     let (where_sql, mut binds) = build_where(&params);
+    let count_sql = format!("SELECT count(*) FROM households h WHERE {}", where_sql);
     let mut count_stmt = conn.prepare(&count_sql).map_err(|e| e.to_string())?;
     let total: i64 = count_stmt
         .query_row(rusqlite::params_from_iter(binds.iter()), |r| r.get(0))
         .map_err(|e| e.to_string())?;
 
-    let page = params.page.max(1);
-    let page_size = params.page_size.clamp(1, 500);
+    let page_size = params.page_size.clamp(1, 500) as i64;
+    // Derive the real last page from `total` (just computed above) and
+    // clamp the requested page to it — an absurd page number returns the
+    // last real page instead of an empty result. All arithmetic here is
+    // i64: page arrives as u32 with no upper bound from the IPC caller,
+    // and (page - 1) * page_size in u32 could overflow for a page above
+    // ~8.6 million, either panicking (debug) or wrapping to a silently
+    // wrong offset (release) (#33).
+    let max_page = if total > 0 { (total - 1) / page_size + 1 } else { 1 };
+    let page = (params.page.max(1) as i64).min(max_page);
     let offset = (page - 1) * page_size;
 
     let list_sql = format!(
@@ -147,8 +156,8 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
         binds.len() + 2
     );
     let mut list_stmt = conn.prepare(&list_sql).map_err(|e| e.to_string())?;
-    binds.push(Box::new(page_size as i64));
-    binds.push(Box::new(offset as i64));
+    binds.push(Box::new(page_size));
+    binds.push(Box::new(offset));
     let households = list_stmt
         .query_map(rusqlite::params_from_iter(binds.iter()), |row| row_to_household(&conn, row))
         .map_err(|e| e.to_string())?
