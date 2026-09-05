@@ -27,6 +27,7 @@ recorded as "Do not contact". This is sensitive personal data about identifiable
 private individuals, including children, held by a non-technical user.
 
 **Adversaries.**
+
 1. Content the user imports — a directory PDF or CSV received from elsewhere.
 2. A backup archive received from elsewhere and opened via Restore.
 3. Any third party able to influence code the application loads at runtime.
@@ -45,28 +46,28 @@ misuse them.
 
 Every finding below is filed in `sparsileg/lostsheep`. Ordered by issue number.
 
-| Issue | Severity | Finding |
-|---|---|---|
-| [#17](https://github.com/sparsileg/lostsheep/issues/17) | Critical | Remote script loaded into a privileged webview |
-| [#18](https://github.com/sparsileg/lostsheep/issues/18) | Critical | Stored XSS via unescaped `role` from imported files |
-| [#19](https://github.com/sparsileg/lostsheep/issues/19) | High | Visit history destroyed by cascade |
-| [#20](https://github.com/sparsileg/lostsheep/issues/20) | High | Household comments overwritten on replace/merge |
-| [#21](https://github.com/sparsileg/lostsheep/issues/21) | High | Destructive operations are not transactional |
-| [#22](https://github.com/sparsileg/lostsheep/issues/22) | High | Bulk tagging silently truncates at 500 |
-| [#23](https://github.com/sparsileg/lostsheep/issues/23) | High | "Do not contact" depends on a hardcoded tag name |
-| [#24](https://github.com/sparsileg/lostsheep/issues/24) | High | NaN coordinate panics visit-list generation and the map |
-| [#25](https://github.com/sparsileg/lostsheep/issues/25) | Medium | Restore trusts a malformed backup archive |
-| [#26](https://github.com/sparsileg/lostsheep/issues/26) | Medium | Restore replaces the database under a live pool |
-| [#27](https://github.com/sparsileg/lostsheep/issues/27) | Medium | Only `info` is ever logged; log level setting is inert |
-| [#28](https://github.com/sparsileg/lostsheep/issues/28) | Medium | Saving Settings silently deletes records; settings mass assignment |
-| [#29](https://github.com/sparsileg/lostsheep/issues/29) | Medium | Search misses fields; no multi-keyword AND |
-| [#30](https://github.com/sparsileg/lostsheep/issues/30) | Medium | Import name-match picks an arbitrary row |
-| [#31](https://github.com/sparsileg/lostsheep/issues/31) | Medium | Blocking commands and quadratic hot paths |
-| [#32](https://github.com/sparsileg/lostsheep/issues/32) | Medium | Commands accept arbitrary filesystem paths |
-| [#33](https://github.com/sparsileg/lostsheep/issues/33) | Low | Integer overflow in page offset arithmetic |
-| [#34](https://github.com/sparsileg/lostsheep/issues/34) | Medium | CSV import splits on commas with no quote handling |
-| [#35](https://github.com/sparsileg/lostsheep/issues/35) | Medium | Visit dates are unvalidated free text |
-| [#36](https://github.com/sparsileg/lostsheep/issues/36) | High (functional) | Reporting cannot identify households needing a visit |
+| Issue                                                   | Severity          | Finding                                                            |
+| ------------------------------------------------------- | ----------------- | ------------------------------------------------------------------ |
+| [#17](https://github.com/sparsileg/lostsheep/issues/17) | Critical          | Remote script loaded into a privileged webview                     |
+| [#18](https://github.com/sparsileg/lostsheep/issues/18) | Critical          | Stored XSS via unescaped `role` from imported files                |
+| [#19](https://github.com/sparsileg/lostsheep/issues/19) | High              | Visit history destroyed by cascade                                 |
+| [#20](https://github.com/sparsileg/lostsheep/issues/20) | High              | Household comments overwritten on replace/merge                    |
+| [#21](https://github.com/sparsileg/lostsheep/issues/21) | High              | Destructive operations are not transactional                       |
+| [#22](https://github.com/sparsileg/lostsheep/issues/22) | High              | Bulk tagging silently truncates at 500                             |
+| [#23](https://github.com/sparsileg/lostsheep/issues/23) | High              | "Do not contact" depends on a hardcoded tag name                   |
+| [#24](https://github.com/sparsileg/lostsheep/issues/24) | High              | NaN coordinate panics visit-list generation and the map            |
+| [#25](https://github.com/sparsileg/lostsheep/issues/25) | Medium            | Restore trusts a malformed backup archive                          |
+| [#26](https://github.com/sparsileg/lostsheep/issues/26) | Medium            | Restore replaces the database under a live pool                    |
+| [#27](https://github.com/sparsileg/lostsheep/issues/27) | Medium            | Only `info` is ever logged; log level setting is inert             |
+| [#28](https://github.com/sparsileg/lostsheep/issues/28) | Medium            | Saving Settings silently deletes records; settings mass assignment |
+| [#29](https://github.com/sparsileg/lostsheep/issues/29) | Medium            | Search misses fields; no multi-keyword AND                         |
+| [#30](https://github.com/sparsileg/lostsheep/issues/30) | Medium            | Import name-match picks an arbitrary row                           |
+| [#31](https://github.com/sparsileg/lostsheep/issues/31) | Medium            | Blocking commands and quadratic hot paths                          |
+| [#32](https://github.com/sparsileg/lostsheep/issues/32) | Medium            | Commands accept arbitrary filesystem paths                         |
+| [#33](https://github.com/sparsileg/lostsheep/issues/33) | Low               | Integer overflow in page offset arithmetic                         |
+| [#34](https://github.com/sparsileg/lostsheep/issues/34) | Medium            | CSV import splits on commas with no quote handling                 |
+| [#35](https://github.com/sparsileg/lostsheep/issues/35) | Medium            | Visit dates are unvalidated free text                              |
+| [#36](https://github.com/sparsileg/lostsheep/issues/36) | High (functional) | Reporting cannot identify households needing a visit               |
 
 Second-pass findings N-1 to N-8 are not filed; see that section.
 
@@ -168,6 +169,7 @@ at `https://github.com/sparsileg/lostsheep/issues/<n>`.
 ---
 
 #### Issue #17 — Remote script loaded into a privileged webview
+
 **Severity: Critical · Confidence: High**
 `src/index.html:17,77` · `src-tauri/tauri.conf.json:13,15`
 
@@ -201,6 +203,7 @@ process execution.
 ---
 
 #### Issue #18 — Stored XSS via unescaped `role` from imported files
+
 **Severity: Critical · Confidence: High**
 `src/js/views/review-view.js:46` · `src-tauri/src/commands/import.rs:58`
 
@@ -230,6 +233,7 @@ server-controlled enumerations today.
 ---
 
 #### Issue #25 — Restore trusts a malformed backup archive
+
 **Severity: Medium · Confidence: High**
 `src-tauri/src/crypto.rs:38-43` · `src-tauri/src/commands/backup.rs:101-122`
 
@@ -255,6 +259,7 @@ will therefore be copied to places the SQLCipher key never goes.
 ---
 
 #### Issue #26 — Restore replaces the database under a live connection pool
+
 **Severity: Medium · Confidence: High**
 `src-tauri/src/commands/backup.rs:227-251`
 
@@ -271,6 +276,7 @@ UI convention rather than an enforced step.
 ---
 
 #### Issue #32 — Commands accept arbitrary filesystem paths
+
 **Severity: Medium · Confidence: High**
 `backup.rs:32,74,163,227` · `import.rs:36,44` · `roads.rs:47`
 
@@ -296,6 +302,7 @@ but a leading `-` would be read as an option.
 ---
 
 #### Issue #28 (in part) — Mass assignment on settings
+
 **Severity: Low · Confidence: High**
 `src-tauri/src/commands/settings.rs:53`
 
@@ -341,6 +348,7 @@ zeroized in Rust either.
 ---
 
 #### Issue #19 — Visit history destroyed by cascade
+
 **Severity: High · Confidence: High**
 `schema.sql:102` · `households.rs:160,235` · `import.rs:341,378`
 
@@ -368,6 +376,7 @@ re-geocoded; tags are one click. Visit dates and notes cannot be recovered.
 ---
 
 #### Issue #20 — Household comments overwritten on replace/merge
+
 **Severity: High · Confidence: High**
 `src-tauri/src/commands/import.rs:344`
 
@@ -385,6 +394,7 @@ choosing a label that does nothing.
 ---
 
 #### Issue #21 — Destructive operations are not transactional
+
 **Severity: High · Confidence: High**
 `households.rs:160,235` · `import.rs:309`
 
@@ -404,6 +414,7 @@ Also: `soft_delete_household` returns `Ok(())` for a nonexistent id.
 ---
 
 #### Issue #23 — "Do not contact" depends on a hardcoded tag name
+
 **Severity: High · Confidence: High**
 `visits.rs:141,147` · `tags.rs:52,63` · `schema.sql:90,179`
 
@@ -428,6 +439,7 @@ but a person arriving at a door where they were explicitly asked not to.
 ---
 
 #### Issue #24 — NaN coordinate panics visit-list generation and the map
+
 **Severity: High · Confidence: High**
 `visits.rs:211` · `geo.rs:8` · `import.rs:71-72`
 
@@ -455,6 +467,7 @@ have this failure mode. Three copies of the same function, two formulations.
 ---
 
 #### Issue #22 — Bulk tagging silently truncates at 500
+
 **Severity: High · Confidence: High**
 `src-tauri/src/commands/tags.rs:109`
 
@@ -470,6 +483,7 @@ exist. Note there is currently no UI caller for this command at all.
 ---
 
 #### Issue #27 — Only `info` is ever logged; the log level setting is inert
+
 **Severity: Medium · Confidence: High**
 `logs.rs` · `settings-modal.js:66` · six call sites
 
@@ -491,6 +505,7 @@ sees.
 ---
 
 #### Issue #28 — Saving Settings silently and irreversibly deletes records
+
 **Severity: Medium · Confidence: High**
 `settings-modal.js:86` · `settings.rs:67`
 
@@ -505,6 +520,7 @@ silently no-ops.
 ---
 
 #### Issue #30 — Import matches a changed household on name alone, arbitrarily
+
 **Severity: Medium · Confidence: High**
 `src-tauri/src/commands/import.rs:137`
 
@@ -518,6 +534,7 @@ mis-paired household's visits and comments.
 ---
 
 #### Issue #29 — Search misses tags and five stored fields; no multi-keyword AND
+
 **Severity: Medium · Confidence: High**
 `src-tauri/src/commands/households.rs:90-96`
 
@@ -532,6 +549,7 @@ keywords". `%` and `_` in user input act as wildcards; no `ESCAPE` clause.
 ---
 
 #### Issue #31 — Heavy commands block the UI thread; three quadratic hot paths
+
 **Severity: Medium · Confidence: Medium (threading) / High (complexity)**
 `roads.rs:47` · `map_data.rs:9` · `import.rs:177` · `visits.rs:237`
 
@@ -551,6 +569,7 @@ household (10⁸ string comparisons at the documented 10,000-record ceiling).
 ---
 
 #### Issue #34 — CSV import splits on commas with no quote handling
+
 **Severity: Medium · Confidence: High**
 `src-tauri/src/commands/import.rs:50`
 
@@ -564,6 +583,7 @@ but wired to a live UI button that fails silently rather than declining.
 ---
 
 #### Issue #33 — Integer overflow in page offset arithmetic
+
 **Severity: Low · Confidence: High**
 `households.rs:114` · `logs.rs:27`
 
@@ -574,6 +594,7 @@ silently in release. Not reachable from the UI; reachable over IPC.
 ---
 
 #### Issue #35 — Visit dates are unvalidated free text
+
 **Severity: Medium · Confidence: High**
 `visits.rs:8` · `schema.sql:103`
 
@@ -588,6 +609,7 @@ never-visited.
 ---
 
 #### Issue #36 — Reporting cannot identify households needing a visit
+
 **Severity: High (functional) · Confidence: High**
 
 `get_visits_report` is `FROM visits v JOIN households h` — an inner join from
