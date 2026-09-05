@@ -12,6 +12,10 @@ pub struct Tag {
     pub id: i64,
     pub name: String,
     pub household_count: i64,
+    /// Set for tags the app itself depends on (currently just "Do not
+    /// contact") — lets callers like the Dashboard map's tag filter
+    /// exclude them from user-facing pickers without hardcoding names.
+    pub system_key: Option<String>,
 }
 
 #[tauri::command]
@@ -19,13 +23,13 @@ pub fn list_tags(state: State<AppState>) -> Result<Vec<Tag>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT t.id, t.name, (SELECT count(*) FROM household_tags ht WHERE ht.tag_id = t.id) AS cnt \
+            "SELECT t.id, t.name, (SELECT count(*) FROM household_tags ht WHERE ht.tag_id = t.id) AS cnt, t.system_key \
              FROM tags t ORDER BY t.name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(Tag { id: row.get(0)?, name: row.get(1)?, household_count: row.get(2)? })
+            Ok(Tag { id: row.get(0)?, name: row.get(1)?, household_count: row.get(2)?, system_key: row.get(3)? })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
@@ -59,11 +63,59 @@ pub fn rename_tag(state: State<AppState>, id: i64, new_name: String) -> Result<(
     Ok(())
 }
 
+/// substitute_tag_id: households carrying the deleted tag are re-pointed
+/// to this tag instead of being silently un-categorised. None is only
+/// accepted when the tag isn't applied to anyone. Returns the number of
+/// households affected — tags-modal.js's TagDeleteModal.confirm() already
+/// expects this shape (`const affected = await DBManager.deleteTag(...)`).
 #[tauri::command]
-pub fn delete_tag(state: State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM tags WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-    Ok(())
+pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64>) -> Result<i64, String> {
+    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // System tags (system_key set — e.g. "Do not contact") guard a
+    // safety exclusion with no meaningful substitute. Refuse outright
+    // rather than let generate_visit_list's exclusion silently stop
+    // matching anything (#23).
+    let system_key: Option<String> = tx
+        .query_row("SELECT system_key FROM tags WHERE id = ?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if system_key.is_some() {
+        return Err("this tag is required by the app and cannot be deleted".to_string());
+    }
+
+    let affected: i64 = tx
+        .query_row("SELECT count(*) FROM household_tags WHERE tag_id = ?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    if affected > 0 {
+        match substitute_tag_id {
+            Some(sub_id) => {
+                if sub_id == id {
+                    return Err("substitute tag must be different from the tag being deleted".to_string());
+                }
+                // OR IGNORE: a household that already carries the
+                // substitute tag would otherwise hit household_tags'
+                // (household_id, tag_id) primary key.
+                tx.execute(
+                    "INSERT OR IGNORE INTO household_tags (household_id, tag_id) \
+                     SELECT household_id, ?1 FROM household_tags WHERE tag_id = ?2",
+                    params![sub_id, id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM household_tags WHERE tag_id = ?1", params![id]).map_err(|e| e.to_string())?;
+            }
+            None => {
+                return Err(format!(
+                    "tag is applied to {affected} household(s) — choose a substitute tag or remove it from those households first"
+                ));
+            }
+        }
+    }
+
+    tx.execute("DELETE FROM tags WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(affected)
 }
 
 /// Tags are capped at one per household — functionally more like a

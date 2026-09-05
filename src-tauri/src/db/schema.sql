@@ -79,15 +79,29 @@ CREATE TABLE IF NOT EXISTS deleted_households (
 );
 
 CREATE TABLE IF NOT EXISTS tags (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL UNIQUE,      -- stored trimmed; spaces allowed inside
-    name_norm  TEXT NOT NULL UNIQUE,      -- lowercased, collapsed-whitespace, for case-insensitive lookup
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,      -- stored trimmed; spaces allowed inside
+    name_norm   TEXT NOT NULL UNIQUE,      -- lowercased, collapsed-whitespace, for case-insensitive lookup
+    -- Stable identifier for tags the app itself depends on (e.g. the
+    -- visit-list "do not contact" exclusion, #23). NULL for ordinary
+    -- user tags. Unlike name/name_norm, this never changes on rename,
+    -- so app logic keyed off it survives the user relabeling the tag.
+    -- Plain column, not UNIQUE inline — SQLite's ALTER TABLE ADD COLUMN
+    -- refuses a UNIQUE column outright ("Cannot add a UNIQUE column"),
+    -- which matters because db/mod.rs's migrate_tags_system_key() has
+    -- to add this same column to existing databases via ALTER. Uniqueness
+    -- comes from the partial index below instead, on both fresh and
+    -- migrated databases alike.
+    system_key  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-INSERT OR IGNORE INTO tags (name, name_norm) VALUES
-    ('Not known', 'not known'),
-    ('Known', 'known'),
-    ('Do not contact', 'do not contact');
+-- WHERE system_key IS NOT NULL: any number of ordinary tags (system_key
+-- NULL) coexist fine; only real system_key values must be unique.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_system_key ON tags(system_key) WHERE system_key IS NOT NULL;
+INSERT OR IGNORE INTO tags (name, name_norm, system_key) VALUES
+    ('Not known', 'not known', NULL),
+    ('Known', 'known', NULL),
+    ('Do not contact', 'do not contact', 'do_not_contact');
 
 CREATE TABLE IF NOT EXISTS household_tags (
     household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,

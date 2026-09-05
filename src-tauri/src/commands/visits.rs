@@ -138,13 +138,13 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
              h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.phone_1, h.phone_2 \
              FROM households h JOIN household_tags ht ON ht.household_id = h.id \
              WHERE ht.tag_id = ?1 AND h.latitude IS NOT NULL AND h.longitude IS NOT NULL \
-             AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.name_norm = 'do not contact')"
+             AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact')"
         }
         None => {
             "SELECT h.id, h.address_key, h.address_line1, h.city, h.state, h.zip, h.latitude, h.longitude, \
              h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.phone_1, h.phone_2 \
              FROM households h WHERE h.latitude IS NOT NULL AND h.longitude IS NOT NULL \
-             AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.name_norm = 'do not contact')"
+             AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact')"
         }
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -208,7 +208,16 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
 
     // Selection stays seed-distance-based regardless of route mode (#13):
     // this sort+truncate picks which N addresses are included, unchanged.
-    entries.sort_by(|a, b| a.distance_meters.partial_cmp(&b.distance_meters).unwrap());
+    // total_cmp is total by construction (NaN sorts consistently instead
+    // of panicking) — replaces the partial_cmp().unwrap() that crashed on
+    // a NaN distance_meters (#24). address_key tiebreak makes ordering
+    // reproducible across runs when HashMap iteration puts two groups at
+    // the same distance in a different relative order each time.
+    entries.sort_by(|a, b| {
+        a.distance_meters
+            .total_cmp(&b.distance_meters)
+            .then_with(|| a.address_key.cmp(&b.address_key))
+    });
     entries.truncate(params.count as usize);
 
     // Ordering, though, uses the configured route start point when one
