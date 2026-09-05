@@ -331,10 +331,27 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
 }
 
 /// User-driven resolution of one review item: replace|merge|add|delete|ignore.
+///
+/// Fully transactional (issue #21) — a failure at any point leaves the
+/// review item and every table it touches exactly as they were before the
+/// call.
+///
+/// replace/merge no longer destroy the outgoing household's visit history
+/// or comments (issue #19/#20): visits are re-pointed at the new row's id
+/// BEFORE the old row is deleted, so ON DELETE CASCADE has nothing left to
+/// remove by the time the DELETE runs; comments are preserved the same way
+/// tags already were, concatenated with the incoming value on the rare
+/// occasion both are present (the 3+-heads warning case) rather than
+/// discarding one. Merge and Replace are treated identically for this
+/// purpose — making them behave differently for other fields (address,
+/// phone, etc.) is a separate product decision the issue explicitly left
+/// open for discussion and is not implemented here.
 #[tauri::command]
 pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String, comment: Option<String>) -> Result<(), String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let (match_type, incoming_json, existing_id): (String, Option<String>, Option<i64>) = conn
+    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (match_type, incoming_json, existing_id): (String, Option<String>, Option<i64>) = tx
         .query_row(
             "SELECT match_type, incoming_data, existing_household_id FROM review_queue WHERE id = ?1",
             params![item_id],
@@ -351,57 +368,130 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
             let address_key = pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
             let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
 
-            // replace/merge delete the existing row, and ON DELETE CASCADE
-            // would silently wipe its tag along with it — preserve it here
-            // and restore it after the reinsert, since only a GENUINELY
-            // new household should ever get auto-tagged/reset.
+            // replace/merge preserve the outgoing household's tag(s) and
+            // comments before the old row is touched — ON DELETE CASCADE
+            // would otherwise wipe the tag along with it (the original #19
+            // finding), and the parser's own comments value is almost
+            // always None, so an unconditional overwrite silently erased
+            // whatever the user had typed (#20). Only a GENUINELY new
+            // household should ever get auto-tagged/reset.
             let mut preserved_tag_ids: Vec<i64> = Vec::new();
+            let mut existing_comments: Option<String> = None;
             if action == "replace" || action == "merge" {
-                if let Some(id) = existing_id {
-                    let mut stmt = conn.prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1").map_err(|e| e.to_string())?;
-                    preserved_tag_ids = stmt
-                        .query_map(params![id], |r| r.get(0))
+                if let Some(old_id) = existing_id {
+                    {
+                        let mut stmt = tx
+                            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
+                            .map_err(|e| e.to_string())?;
+                        preserved_tag_ids = stmt
+                            .query_map(params![old_id], |r| r.get(0))
+                            .map_err(|e| e.to_string())?
+                            .collect::<Result<_, _>>()
+                            .map_err(|e| e.to_string())?;
+                    }
+                    existing_comments = tx
+                        .query_row("SELECT comments FROM households WHERE id = ?1", params![old_id], |r| r.get::<_, Option<String>>(0))
+                        .optional()
                         .map_err(|e| e.to_string())?
-                        .filter_map(Result::ok)
-                        .collect();
-                    conn.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+                        .flatten();
                 }
             }
-            conn.execute(
+
+            let final_comments = match (rec.comments.as_deref(), existing_comments.as_deref()) {
+                (None, None) => None,
+                (Some(incoming), None) => Some(incoming.to_string()),
+                (None, Some(existing)) => Some(existing.to_string()),
+                (Some(incoming), Some(existing)) if incoming == existing => Some(existing.to_string()),
+                (Some(incoming), Some(existing)) => Some(format!("{incoming}\n\n{existing}")),
+            };
+
+            tx.execute(
                 "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
                  address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
                 params![
                     rec.first_name, rec.last_name, rec.role, rec.phone_1, rec.email_1, rec.first_name_2, rec.last_name_2, rec.role_2,
                     rec.phone_2, rec.email_2, rec.address_line1, rec.address_line2, rec.city, rec.state, rec.zip, rec.latitude, rec.longitude,
-                    address_key, source_key, rec.has_minors, rec.comments
+                    address_key, source_key, rec.has_minors, final_comments
                 ],
             )
             .map_err(|e| e.to_string())?;
-            let new_id = conn.last_insert_rowid();
+            let new_id = tx.last_insert_rowid();
 
             if action == "add" {
-                let not_known_id = crate::commands::tags::get_or_create_tag_id(&conn, "Not known").map_err(|e| e.to_string())?;
-                conn.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, not_known_id])
+                let not_known_id = crate::commands::tags::get_or_create_tag_id(&tx, "Not known").map_err(|e| e.to_string())?;
+                tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, not_known_id])
                     .map_err(|e| e.to_string())?;
             } else {
                 for tag_id in preserved_tag_ids {
-                    conn.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, tag_id])
+                    tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, tag_id])
                         .map_err(|e| e.to_string())?;
+                }
+                if let Some(old_id) = existing_id {
+                    // Re-point visits at the new row BEFORE the old one is
+                    // deleted, so the cascade below has nothing left to
+                    // remove (#19) — order matters: this must run before
+                    // the DELETE, not after.
+                    tx.execute("UPDATE visits SET household_id = ?1 WHERE household_id = ?2", params![new_id, old_id])
+                        .map_err(|e| e.to_string())?;
+                    tx.execute("DELETE FROM households WHERE id = ?1", params![old_id]).map_err(|e| e.to_string())?;
                 }
             }
         }
         "delete" => {
             if let Some(id) = existing_id {
-                conn.execute(
-                    "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-                     address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
-                     SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
-                     latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
-                    params![id, comment],
-                )
-                .map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+                let affected = tx
+                    .execute(
+                        "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+                         address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
+                         SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
+                         latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
+                        params![id, comment],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if affected == 0 {
+                    return Err(format!("no household with id {id}"));
+                }
+                let deleted_id = tx.last_insert_rowid();
+
+                // Mirror visits and tags before the DELETE cascades them
+                // away — same treatment as soft_delete_household (#19).
+                {
+                    let mut stmt = tx
+                        .prepare("SELECT visit_date, comments FROM visits WHERE household_id = ?1")
+                        .map_err(|e| e.to_string())?;
+                    let visits: Vec<(String, Option<String>)> = stmt
+                        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| e.to_string())?;
+                    for (visit_date, v_comments) in visits {
+                        tx.execute(
+                            "INSERT INTO deleted_visits (deleted_household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
+                            params![deleted_id, visit_date, v_comments],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+                {
+                    let mut stmt = tx
+                        .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
+                        .map_err(|e| e.to_string())?;
+                    let tag_ids: Vec<i64> = stmt
+                        .query_map(params![id], |r| r.get(0))
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| e.to_string())?;
+                    for tag_id in tag_ids {
+                        tx.execute(
+                            "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) VALUES (?1, ?2)",
+                            params![deleted_id, tag_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                tx.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
             }
         }
         "ignore" => {}
@@ -409,11 +499,12 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
     }
 
     let _ = match_type;
-    conn.execute(
+    tx.execute(
         "UPDATE review_queue SET resolution = ?1, resolution_comment = ?2, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3",
         params![action, comment, item_id],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 

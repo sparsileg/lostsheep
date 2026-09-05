@@ -156,19 +156,71 @@ pub fn update_household_comments(state: State<AppState>, id: i64, comments: Opti
     Ok(())
 }
 
+/// Deletes are transactional (issue #21) and mirror both the household's
+/// visit history and its tag(s) into deleted_visits/deleted_household_tags
+/// before the DELETE cascades those away (issue #19) — restore_deleted_household
+/// below reverses all three.
 #[tauri::command]
 pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<String>) -> Result<(), String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-         address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
-         SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
-         latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
-        params![id, reason],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-    crate::commands::logs::log(&conn, "info", &format!("household {id} soft-deleted"), None);
+    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let affected = tx
+        .execute(
+            "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
+             SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
+             latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
+            params![id, reason],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err(format!("no household with id {id}"));
+    }
+    let deleted_id = tx.last_insert_rowid();
+
+    // Mirror visits and tags before the DELETE below cascades them away.
+    // Scoped blocks so each prepared statement (and its borrow of tx) is
+    // dropped before the next tx.execute() call — the E0597 shape noted in
+    // issue #21's constraints.
+    {
+        let mut stmt = tx
+            .prepare("SELECT visit_date, comments FROM visits WHERE household_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let visits: Vec<(String, Option<String>)> = stmt
+            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for (visit_date, comments) in visits {
+            tx.execute(
+                "INSERT INTO deleted_visits (deleted_household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
+                params![deleted_id, visit_date, comments],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    {
+        let mut stmt = tx
+            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let tag_ids: Vec<i64> = stmt
+            .query_map(params![id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for tag_id in tag_ids {
+            tx.execute(
+                "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) VALUES (?1, ?2)",
+                params![deleted_id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    tx.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    crate::commands::logs::log(&tx, "info", &format!("household {id} soft-deleted"), None);
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -233,8 +285,10 @@ pub fn list_deleted_households(state: State<AppState>) -> Result<Vec<DeletedHous
 /// address_key/source_key pairing, so reusing the old id isn't safe).
 #[tauri::command]
 pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let affected = conn
+    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let affected = tx
         .execute(
             "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
              address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
@@ -247,7 +301,48 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
     if affected == 0 {
         return Err(format!("no deleted household with id {id}"));
     }
-    conn.execute("DELETE FROM deleted_households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-    crate::commands::logs::log(&conn, "info", &format!("deleted_households {id} restored to households"), None);
+    let new_id = tx.last_insert_rowid();
+
+    // Restore tags and visits from their mirrors before the DELETE below
+    // cascades the mirror rows away (both reference deleted_households(id)
+    // ON DELETE CASCADE).
+    {
+        let mut stmt = tx
+            .prepare("SELECT tag_id FROM deleted_household_tags WHERE deleted_household_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let tag_ids: Vec<i64> = stmt
+            .query_map(params![id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for tag_id in tag_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
+                params![new_id, tag_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    {
+        let mut stmt = tx
+            .prepare("SELECT visit_date, comments FROM deleted_visits WHERE deleted_household_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let visits: Vec<(String, Option<String>)> = stmt
+            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for (visit_date, comments) in visits {
+            tx.execute(
+                "INSERT INTO visits (household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
+                params![new_id, visit_date, comments],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    tx.execute("DELETE FROM deleted_households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    crate::commands::logs::log(&tx, "info", &format!("deleted_households {id} restored to households"), None);
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
