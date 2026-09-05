@@ -149,18 +149,23 @@ pub fn untag_household(state: State<AppState>, household_id: i64, tag_id: i64) -
     Ok(())
 }
 
-/// Tags every household matching the given search, not just the current
-/// page — reuses households::search_households's same WHERE logic against
-/// all matching ids (page_size effectively "unbounded" here).
+/// Tags every household matching the given search, not just a page of
+/// it. Goes through matching_household_ids/build_where
+/// (commands::households) rather than search_households itself — that
+/// path applies the 500-row display cap, which this used to try to opt
+/// out of with page_size: 100000 and get silently clamped back down
+/// (issue #22). The returned count is exactly how many ids were tagged,
+/// not an assumed page size.
 #[tauri::command]
 pub fn bulk_tag_search_results(
     state: State<AppState>,
     search: super::households::SearchParams,
     tag_name: String,
 ) -> Result<i64, String> {
-    let unbounded = super::households::SearchParams { page: 1, page_size: 100000, ..search };
-    let result = super::households::search_households(state.clone(), unbounded)?;
-    let ids: Vec<i64> = result.households.iter().map(|h| h.id).collect();
+    let ids = {
+        let conn = state.pool.get().map_err(|e| e.to_string())?;
+        super::households::matching_household_ids(&conn, &search)?
+    };
     let count = ids.len() as i64;
     tag_households(state, ids, tag_name)?;
     Ok(count)

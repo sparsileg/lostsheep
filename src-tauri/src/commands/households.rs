@@ -75,14 +75,11 @@ fn row_to_household(conn: &rusqlite::Connection, row: &rusqlite::Row) -> rusqlit
     })
 }
 
-/// Free-text search across name/address/comments (deliberately NOT tags —
-/// use the tag filter dropdown for that). AND-combined with tag filters.
-/// bulk-tagging (tags::bulk_tag_search_results) reuses this same query so
-/// "tag the complete result set" always matches what's on screen.
-#[tauri::command]
-pub fn search_households(state: State<AppState>, params: SearchParams) -> Result<SearchResult, String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-
+/// Builds the shared WHERE clause + bound params for both the paginated
+/// on-screen search and the ids-only bulk-tag path below — the two must
+/// never drift into separately-maintained copies of the same filter
+/// logic (#22).
+fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut where_clauses = vec!["1=1".to_string()];
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
@@ -102,8 +99,38 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
         binds.push(Box::new(normalize_tag(tag)));
     }
 
-    let where_sql = where_clauses.join(" AND ");
-    let count_sql = format!("SELECT count(*) FROM households h WHERE {}", where_sql);
+    (where_clauses.join(" AND "), binds)
+}
+
+/// Every id matching the search/filter, with no page cap and no per-row
+/// tag subquery — for callers that need the complete result set rather
+/// than a page of full records (issue #22). bulk_tag_search_results used
+/// to ask search_households for page_size: 100000, which the 500-row
+/// clamp below silently truncated with no indication that anything was
+/// dropped. This isn't just "the same query minus the cap" — skipping
+/// row_to_household's tag subquery per row also makes it far cheaper at
+/// 10k rows, where that would otherwise be 10k extra queries just to
+/// read an id.
+pub(crate) fn matching_household_ids(conn: &rusqlite::Connection, params: &SearchParams) -> Result<Vec<i64>, String> {
+    let (where_sql, binds) = build_where(params);
+    let sql = format!("SELECT h.id FROM households h WHERE {}", where_sql);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// Free-text search across name/address/comments (deliberately NOT tags —
+/// use the tag filter dropdown for that). AND-combined with tag filters.
+/// bulk-tagging (tags::bulk_tag_search_results) matches the same
+/// households via matching_household_ids/build_where above, not this
+/// function directly — that path needs every match, not one capped page.
+#[tauri::command]
+pub fn search_households(state: State<AppState>, params: SearchParams) -> Result<SearchResult, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+
+    let (where_sql, mut binds) = build_where(&params);
     let mut count_stmt = conn.prepare(&count_sql).map_err(|e| e.to_string())?;
     let total: i64 = count_stmt
         .query_row(rusqlite::params_from_iter(binds.iter()), |r| r.get(0))
