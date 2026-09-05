@@ -107,6 +107,25 @@ CREATE TABLE IF NOT EXISTS visits (
 CREATE INDEX IF NOT EXISTS idx_visits_household ON visits(household_id);
 CREATE INDEX IF NOT EXISTS idx_visits_date      ON visits(visit_date);
 
+-- Mirrors for soft_delete_household/restore_deleted_household (issue #19).
+-- ON DELETE CASCADE FROM deleted_households(id) means retention pruning
+-- (settings::prune_old_deleted_and_logs) cleans these up automatically —
+-- no separate sweep needed, and no orphaned rows possible.
+CREATE TABLE IF NOT EXISTS deleted_visits (
+    id                    INTEGER PRIMARY KEY,
+    deleted_household_id  INTEGER NOT NULL REFERENCES deleted_households(id) ON DELETE CASCADE,
+    visit_date            TEXT NOT NULL,
+    comments              TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deleted_visits_household ON deleted_visits(deleted_household_id);
+
+CREATE TABLE IF NOT EXISTS deleted_household_tags (
+    deleted_household_id INTEGER NOT NULL REFERENCES deleted_households(id) ON DELETE CASCADE,
+    tag_id                INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (deleted_household_id, tag_id)
+);
+
 -- One row per PDF/CSV import run.
 CREATE TABLE IF NOT EXISTS import_batches (
     id           INTEGER PRIMARY KEY,
