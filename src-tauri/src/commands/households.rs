@@ -115,10 +115,12 @@ pub(crate) fn matching_household_ids(conn: &rusqlite::Connection, params: &Searc
     let (where_sql, binds) = build_where(params);
     let sql = format!("SELECT h.id FROM households h WHERE {}", where_sql);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| r.get(0))
+    let ids = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| r.get(0))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
 }
 
 /// Free-text search across name/address/comments (deliberately NOT tags —
