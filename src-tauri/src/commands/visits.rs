@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tauri::State;
 
+/// Parses a date string strictly as a real calendar date in YYYY-MM-DD
+/// form. chrono is lenient about zero-padding — "2026-6-5" parses to a
+/// valid NaiveDate — so callers must store the value returned by
+/// formatting this NaiveDate back out (see record_visit), not the raw
+/// input string. Otherwise a non-padded-but-real date still corrupts
+/// get_visits_report's lexicographic BETWEEN comparison, which is the
+/// core failure this issue is about (#35).
+fn parse_iso_date(s: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| format!("'{s}' is not a valid date — use YYYY-MM-DD (e.g. 2026-03-05)"))
+}
+
 #[tauri::command]
 pub fn record_visit(
     state: State<AppState>,
@@ -11,10 +23,15 @@ pub fn record_visit(
     visit_date: String,
     comments: Option<String>,
 ) -> Result<i64, String> {
+    let parsed = parse_iso_date(&visit_date)?;
+    // Store the canonical zero-padded form chrono formats back out, not
+    // whatever the caller sent — this is the backend, load-bearing check
+    // (the frontend's is a convenience, not a control, per the issue).
+    let normalized = parsed.format("%Y-%m-%d").to_string();
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO visits (household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
-        params![household_id, visit_date, comments],
+        params![household_id, normalized, comments],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
@@ -31,6 +48,13 @@ pub struct VisitRecord {
 
 #[tauri::command]
 pub fn get_visits_report(state: State<AppState>, date_from: String, date_to: String) -> Result<Vec<VisitRecord>, String> {
+    // A malformed range used to just return an empty table — indistinguishable
+    // from "no visits in this period" (#35). Reject it explicitly instead.
+    // Normalizing both bounds also means a non-zero-padded but otherwise valid
+    // range (e.g. "2026-6-1") compares correctly against the zero-padded
+    // dates record_visit now guarantees are in the table.
+    let date_from = parse_iso_date(&date_from)?.format("%Y-%m-%d").to_string();
+    let date_to = parse_iso_date(&date_to)?.format("%Y-%m-%d").to_string();
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(

@@ -55,11 +55,25 @@ const vrState = { sort: 'desc', rows: [] };
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 
+// Duplicated from households-view.js's isValidIsoDate rather than shared —
+// small enough that adding a load-order dependency between the two view
+// files isn't worth it. Old check only required non-empty fields, so a
+// malformed From/To silently returned an empty table, indistinguishable
+// from "no visits in range" (#35). Backend validation in get_visits_report
+// is still the load-bearing check; this is fail-fast for the common case.
+function isValidIsoDate(str) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+    if (!m) return false;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
 async function runVisitsReport() {
     const dateFrom = document.getElementById('vrDateFrom').value.trim();
     const dateTo = document.getElementById('vrDateTo').value.trim();
-    if (!dateFrom || !dateTo) {
-        showMessage('Enter both a From and To date (YYYY-MM-DD).', CONSTANTS.MESSAGE_TYPES.ERROR);
+    if (!isValidIsoDate(dateFrom) || !isValidIsoDate(dateTo)) {
+        showMessage('Enter both From and To as a real date, YYYY-MM-DD (e.g. 2026-03-05).', CONSTANTS.MESSAGE_TYPES.ERROR);
         return;
     }
     try {
