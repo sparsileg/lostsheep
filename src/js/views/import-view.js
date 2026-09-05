@@ -1,3 +1,6 @@
+import { open } from '../../include/tauri-api/dialog.js';
+import { listen } from '../../include/tauri-api/event.js';
+
 registerView('import', {
     init() {
         document.getElementById('importRoot').innerHTML = `
@@ -17,7 +20,6 @@ registerView('import', {
 });
 
 async function runImport(kind) {
-    const { open } = window.__TAURI__.dialog;
     const filters = kind === 'pdf' ? [{ name: 'PDF', extensions: ['pdf'] }] : [{ name: 'CSV', extensions: ['csv'] }];
     const filePath = await open({ multiple: false, filters });
     if (!filePath) return;
@@ -37,7 +39,7 @@ async function runImport(kind) {
 
     let unlisten = () => {};
     try {
-        unlisten = await window.__TAURI__.event.listen('import-progress', (event) => {
+        unlisten = await listen('import-progress', (event) => {
             const { processed, total } = event.payload;
             console.debug('import-progress', processed, total);
             progressEl.textContent = `Processing ${processed} / ${total} records…`;

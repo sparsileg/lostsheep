@@ -43,7 +43,7 @@ async function loadReviewQueue() {
 function renderReviewItem(item) {
     const incoming = item.incoming_data ? JSON.parse(item.incoming_data) : null;
     const incomingHtml = incoming
-        ? `${escapeHtml(incoming.first_name)} ${escapeHtml(incoming.last_name)} (${incoming.role}) — ${escapeHtml(incoming.address_line1)}`
+        ? `${escapeHtml(incoming.first_name)} ${escapeHtml(incoming.last_name)} (${escapeHtml(incoming.role)}) — ${escapeHtml(incoming.address_line1)}`
         : '<em>(record removed from source)</em>';
 
     let actions = '';

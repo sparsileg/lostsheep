@@ -15,7 +15,7 @@
         {
           "name": "binaries/pdftotext",
           "sidecar": true,
-          "args": ["-raw", { "validator": ".+" }, "-"]
+          "args": ["-raw", { "validator": "^[^-].*$" }, "-"]
         }
       ]
     }

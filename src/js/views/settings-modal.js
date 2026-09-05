@@ -2,6 +2,7 @@
 // are held locally and only written via Api.saveSettings on "Save";
 // "Cancel" just closes without touching anything. Cache-region deletes
 // are still immediate (they're not really a "setting" to stage/undo).
+import { open } from '../../include/tauri-api/dialog.js';
 
 async function openSettingsModal() {
     // Defensive: if a previous modal (this one or any other) didn't get
@@ -55,7 +56,6 @@ async function openSettingsModal() {
         document.getElementById('sBackupFolder').value = settings.backupFolder || '';
 
         document.getElementById('sChooseFolderBtn').addEventListener('click', async () => {
-            const { open } = window.__TAURI__.dialog;
             const folder = await open({ directory: true, defaultPath: settings.backupFolder || undefined });
             if (folder) {
                 pending.backupFolder = folder;

@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="css/settings-modal.css" />
 <link rel="stylesheet" href="css/log-viewer.css" />
 <link rel="stylesheet" href="css/backup-restore.css" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link rel="stylesheet" href="include/leaflet/leaflet.css" />
 </head>
 <body>
 <div id="appShell">
@@ -74,19 +74,19 @@
   </main>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script src="js/api.js"></script>
+<script src="include/leaflet/leaflet.js"></script>
+<script type="module" src="js/api.js"></script>
 <script src="js/dropdown.js"></script>
 <script src="js/core.js"></script>
 <script src="js/sidebar.js"></script>
 <script src="js/tag-chip-input.js"></script>
-<script src="js/views/import-view.js"></script>
+<script type="module" src="js/views/import-view.js"></script>
 <script src="js/views/review-view.js"></script>
 <script src="js/views/map-view.js"></script>
-<script src="js/views/settings-modal.js"></script>
+<script type="module" src="js/views/settings-modal.js"></script>
 <script src="js/views/log-viewer.js"></script>
-<script src="js/views/backup-restore.js"></script>
-<script src="js/views/roads-ingest.js"></script>
+<script type="module" src="js/views/backup-restore.js"></script>
+<script type="module" src="js/views/roads-ingest.js"></script>
 <script src="js/views/households-view.js"></script>
 <script src="include/pdfmake.min.js"></script>
 <script src="include/vfs_fonts.js"></script>
