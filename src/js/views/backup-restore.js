@@ -1,4 +1,7 @@
 // backup-restore.js — modal flows invoked from the hamburger menu.
+import { join, homeDir } from '../../include/tauri-api/path.js';
+import { open } from '../../include/tauri-api/dialog.js';
+
 const BackupRestore = {
     async showBackupModal() {
         const settings = await Api.getSettings().catch(() => ({}));
@@ -39,7 +42,6 @@ const BackupRestore = {
             const p2 = overlay.querySelector('#bkPass2').value;
             if (!p1 || p1 !== p2) { showMessage('Passphrases must match and not be empty.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
-            const { join } = window.__TAURI__.path;
             const dest = await join(settings.backupFolder, `lost-sheep-backup-${todayStamp()}.zip`);
 
             try {
@@ -69,8 +71,6 @@ const BackupRestore = {
         let srcPath = null;
         overlay.querySelector('#rsCancel').addEventListener('click', () => overlay.remove());
         overlay.querySelector('#rsPick').addEventListener('click', async () => {
-            const { open } = window.__TAURI__.dialog;
-            const { homeDir } = window.__TAURI__.path;
             srcPath = await open({ multiple: false, defaultPath: settings.backupFolder || await homeDir(), filters: [{ name: 'Backup', extensions: ['zip'] }] });
             if (srcPath) {
                 overlay.querySelector('#rsPickedPath').textContent = srcPath;
@@ -101,7 +101,7 @@ function renderDiff(overlay, preview, srcPath, pass) {
 
         <h3>Household Changes</h3>
         <table><thead><tr><th>Change</th><th>Record</th></tr></thead><tbody>
-            ${preview.rows.map(r => `<tr><td>${r.kind}</td><td>${escapeHtml(r.description)}</td></tr>`).join('') || '<tr><td colspan="2">No differences.</td></tr>'}
+            ${preview.rows.map(r => `<tr><td>${escapeHtml(r.kind)}</td><td>${escapeHtml(r.description)}</td></tr>`).join('') || '<tr><td colspan="2">No differences.</td></tr>'}
         </tbody></table>
         <button class="btn btn-danger" id="rsCommit">Restore Now</button>
     `;
@@ -126,4 +126,9 @@ function modalShell(innerHtml) {
 
 function todayStamp() { return new Date().toISOString().slice(0, 10); }
 
+// Modules don't leak top-level declarations onto `window` the way classic
+// scripts did — roads-ingest.js uses this as a bare global (see its own
+// header comment), so it needs an explicit export now that both files are
+// modules (withGlobalTauri: false follow-on, issue #17/#18).
+window.modalShell = modalShell;
 window.BackupRestore = BackupRestore;

@@ -1,6 +1,6 @@
 // api.js — every backend call goes through here. One place to see the
 // full surface of Rust commands the frontend depends on.
-const { invoke } = window.__TAURI__.core;
+import { invoke } from '../include/tauri-api/core.js';
 
 const Api = {
     // households

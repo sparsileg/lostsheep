@@ -38,6 +38,27 @@ pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: S
     run_diff(app, state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
 }
 
+/// One of the six values `households.role`/`role_2` CHECK constraints permit
+/// (schema.sql). Anything else is rejected here rather than carried forward —
+/// an out-of-vocabulary role previously survived the whole review pipeline
+/// and only failed at INSERT with a raw SQLite constraint error, and an
+/// unescaped copy of it was also the vector for a stored-XSS finding in the
+/// Review view (issue #18). Case-insensitive match against the schema's own
+/// lowercase vocabulary; anything else defaults to "head" with a warning.
+const VALID_ROLES: [&str; 6] = ["head", "husband", "wife", "minor", "grandparent", "other"];
+
+fn normalize_role(raw: &str, row_num: usize, warnings: &mut Vec<String>) -> String {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_lowercase();
+    if VALID_ROLES.contains(&lower.as_str()) {
+        return lower;
+    }
+    warnings.push(format!(
+        "row {row_num}: role '{trimmed}' is not one of {VALID_ROLES:?} — defaulted to 'head'"
+    ));
+    "head".to_string()
+}
+
 /// CSV import stub — same diff pipeline as PDF, minimal column mapping.
 /// Real column layout TBD once a sample CSV export is available.
 #[tauri::command]
@@ -52,10 +73,15 @@ pub fn import_csv(app: AppHandle, state: State<AppState>, file_path: String) -> 
             warnings.push(format!("row {}: expected at least 4 columns, got {}", i + 1, f.len()));
             continue;
         }
+        let role = if f.len() > 2 && !f[2].is_empty() {
+            normalize_role(f[2], i + 1, &mut warnings)
+        } else {
+            "head".to_string()
+        };
         records.push(ParsedRecord {
             first_name: f[0].to_string(),
             last_name: f[1].to_string(),
-            role: if f.len() > 2 { f[2].to_string() } else { "head".to_string() },
+            role,
             first_name_2: None,
             last_name_2: None,
             role_2: None,

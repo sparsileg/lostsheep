@@ -54,7 +54,7 @@ function renderLogRows() {
     if (!lvState.rows.length) { out.innerHTML = '<div class="modal-loading">No entries match the active filters.</div>'; return; }
     out.innerHTML = `<table class="kw-table"><thead><tr><th>Timestamp</th><th>Level</th><th>Message</th></tr></thead><tbody>
         ${lvState.rows.map(r => `<tr class="lv-${r.level}"><td class="lv-ts">${escapeHtml(r.created_at)}</td>
-            <td class="lv-level">${r.level.toUpperCase()}</td><td class="lv-msg">${escapeHtml(r.message)}</td></tr>`).join('')}
+            <td class="lv-level">${escapeHtml(r.level.toUpperCase())}</td><td class="lv-msg">${escapeHtml(r.message)}</td></tr>`).join('')}
     </tbody></table>`;
 }
 

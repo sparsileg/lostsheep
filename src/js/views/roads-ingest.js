@@ -4,6 +4,12 @@
 // events as it parses/builds/stores. Depends on modalShell() and
 // escapeHtml()/showMessage() from backup-restore.js/core.js, which load
 // before this file — same reuse pattern backup-restore.js itself follows.
+// modalShell is now an explicit window export (see backup-restore.js) since
+// module scripts don't leak top-level declarations onto `window`.
+import { open } from '../../include/tauri-api/dialog.js';
+import { homeDir } from '../../include/tauri-api/path.js';
+import { listen } from '../../include/tauri-api/event.js';
+
 const RoadsIngest = {
     async showModal() {
         const overlay = modalShell(`
@@ -28,8 +34,6 @@ const RoadsIngest = {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
 
         overlay.querySelector('#riPick').addEventListener('click', async () => {
-            const { open } = window.__TAURI__.dialog;
-            const { homeDir } = window.__TAURI__.path;
             srcPath = await open({ multiple: false, defaultPath: await homeDir(), filters: [{ name: 'Road data', extensions: ['pbf'] }] });
             if (srcPath) {
                 overlay.querySelector('#riPickedPath').textContent = srcPath;
@@ -45,7 +49,7 @@ const RoadsIngest = {
             goBtn.disabled = true;
             pickBtn.disabled = true;
 
-            unlisten = await window.__TAURI__.event.listen('road-ingest-progress', (event) => {
+            unlisten = await listen('road-ingest-progress', (event) => {
                 stageEl.textContent = event.payload.stage;
             });
 
