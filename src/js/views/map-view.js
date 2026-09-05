@@ -76,9 +76,15 @@ async function populateMapTagSelect() {
     const tags = await Api.listTags().catch(() => []);
     MapView.tagsById = {};
     tags.forEach(t => { MapView.tagsById[String(t.id)] = t.name; });
+    // System tags (system_key set) are excluded from generate_visit_list/
+    // get_map_data on the backend regardless of what's selected here — so
+    // offering one in this dropdown only ever produced a silently empty
+    // map (#23). Filtering here keeps the picker honest about what it can
+    // actually show, and works for any future system tag automatically.
+    const pickable = tags.filter(t => !t.system_key);
     MapView.tagDropdown?.setItems([
         { value: '', label: 'All households with coordinates' },
-        ...tags.map(t => ({ value: String(t.id), label: t.name })),
+        ...pickable.map(t => ({ value: String(t.id), label: t.name })),
     ]);
 }
 

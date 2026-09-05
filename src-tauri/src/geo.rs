@@ -5,5 +5,9 @@ pub fn haversine_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let dlat = (lat2 - lat1).to_radians();
     let dlon = (lon2 - lon1).to_radians();
     let a = (dlat / 2.0).sin().powi(2) + lat1r.cos() * lat2r.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * R * a.sqrt().asin()
+    // Floating-point rounding can push `a` marginally above 1.0 for
+    // near-antipodal points, making sqrt(a) > 1.0 and asin() NaN (#24).
+    // Clamping is the total-function fix; a.sqrt() is otherwise always
+    // in [0, ~1] by construction so this never masks a real bug.
+    2.0 * R * a.sqrt().min(1.0).asin()
 }

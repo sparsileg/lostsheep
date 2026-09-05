@@ -69,6 +69,15 @@ fn name_line_re() -> &'static Regex {
     // (addresses, coordinates, phones, minors lists all lack a comma).
     RE.get_or_init(|| Regex::new(r"^([A-Z][^,\n]{0,60}), (.+)$").unwrap())
 }
+/// Rejects a coordinate that failed to parse, or parsed to NaN/inf
+/// (`f64::from_str` accepts both), or falls outside the valid range for
+/// its axis. Same bounds `settings::validate_route_start` already uses
+/// for the one coordinate the user types by hand — extended here to the
+/// thousands that arrive by import (#24).
+fn valid_coord(v: Option<f64>, min: f64, max: f64) -> Option<f64> {
+    v.filter(|n| n.is_finite() && (min..=max).contains(n))
+}
+
 fn street_start_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^\d").unwrap())
@@ -286,8 +295,32 @@ fn parse_directory_text(text: &str) -> ParseResult {
         if let Some(first) = remaining.first() {
             if coord_re().is_match(first) {
                 let parts: Vec<&str> = first.split(',').collect();
-                latitude = parts.first().and_then(|s| s.trim().parse().ok());
-                longitude = parts.get(1).and_then(|s| s.trim().parse().ok());
+                let raw_lat: Option<f64> = parts.first().and_then(|s| s.trim().parse().ok());
+                let raw_lon: Option<f64> = parts.get(1).and_then(|s| s.trim().parse().ok());
+                // coord_re only checks shape (digits/dot/sign) — it happily
+                // matches "999.999,-999.999", nowhere on Earth, and Rust's
+                // f64::from_str accepts "NaN"/"inf" as valid floats too.
+                // Neither is caught until this point. A rejected value is
+                // dropped to NULL (already handled gracefully everywhere
+                // downstream) rather than stored and later crashing
+                // visit-list generation or the map (#24).
+                match (
+                    valid_coord(raw_lat, -90.0, 90.0),
+                    valid_coord(raw_lon, -180.0, 180.0),
+                ) {
+                    (Some(lat), Some(lon)) => {
+                        latitude = Some(lat);
+                        longitude = Some(lon);
+                    }
+                    _ => {
+                        warnings.push(ParseWarning {
+                            context: format!("{last_name}, {names_part}"),
+                            message: format!(
+                                "coordinate '{first}' is missing, non-finite, or out of range — stored as no coordinates"
+                            ),
+                        });
+                    }
+                }
                 remaining.remove(0);
             }
         }
