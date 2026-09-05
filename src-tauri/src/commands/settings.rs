@@ -1,7 +1,16 @@
 use crate::AppState;
 use rusqlite::params;
+use serde::Serialize;
 use std::collections::HashMap;
 use tauri::State;
+
+/// Retention is now a fixed dropdown in the UI (30/90/180/365 days) rather
+/// than free-text — but save_settings has no whitelist otherwise and any
+/// value can still reach it over IPC, so this is validated here too, not
+/// just constrained in the frontend. Closes the "0 means delete
+/// everything" and "negative value silently no-ops" cases (#28) by
+/// construction: neither is a member of this set.
+pub const ALLOWED_RETENTION_DAYS: [i64; 4] = [30, 90, 180, 365];
 
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, String> {
@@ -13,6 +22,18 @@ pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, S
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+
+fn validate_retention(values: &HashMap<String, String>) -> Result<(), String> {
+    for key in ["deletedRetentionDays", "logRetentionDays"] {
+        if let Some(raw) = values.get(key) {
+            let n: i64 = raw.trim().parse().map_err(|_| format!("{key} must be a number"))?;
+            if !ALLOWED_RETENTION_DAYS.contains(&n) {
+                return Err(format!("{key} must be one of 30, 90, 180, or 365 days"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Route start point (#13) is either fully set (label + both coords) or
@@ -52,6 +73,7 @@ fn validate_route_start(values: &HashMap<String, String>) -> Result<(), String> 
 #[tauri::command]
 pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) -> Result<(), String> {
     validate_route_start(&values)?;
+    validate_retention(&values)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     for (k, v) in values {
         conn.execute(
@@ -63,22 +85,93 @@ pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) ->
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct PruneImpact {
+    pub deleted_households: i64,
+    pub logs: i64,
+}
+
+/// Counts what prune_old_deleted_and_logs *would* remove under the given
+/// retention values, without deleting anything. settings-modal.js calls
+/// this with the pending (not-yet-saved) values before Save commits, so
+/// the confirmation the person sees reflects the choice they're about to
+/// make, not the retention that's currently in effect (#28).
 #[tauri::command]
-pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<(), String> {
+pub fn preview_prune_impact(state: State<AppState>, deleted_days: i64, log_days: i64) -> Result<PruneImpact, String> {
+    if !ALLOWED_RETENTION_DAYS.contains(&deleted_days) || !ALLOWED_RETENTION_DAYS.contains(&log_days) {
+        return Err("retention values must be one of 30, 90, 180, or 365 days".to_string());
+    }
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let deleted_modifier = format!("-{deleted_days} days");
+    let log_modifier = format!("-{log_days} days");
+    let deleted_households: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM deleted_households WHERE deleted_at < datetime('now', ?1)",
+            params![deleted_modifier],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let logs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM logs WHERE created_at < datetime('now', ?1)",
+            params![log_modifier],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(PruneImpact { deleted_households, logs })
+}
+
+#[derive(Serialize)]
+pub struct PruneResult {
+    pub deleted_households: i64,
+    pub logs: i64,
+}
+
+/// No longer called from Save (#28) — retention is a policy setting, not
+/// a trigger. This needs to be called at application startup instead,
+/// where an unattended sweep is expected housekeeping rather than a
+/// side effect of an unrelated button. NOT YET WIRED UP: that call needs
+/// to go in main.rs's setup, after db::open_pool() — main.rs wasn't part
+/// of this patch. Left as a #[tauri::command] (not made private) so it
+/// stays available for issue #28's suggested on-demand "Prune Now"
+/// hamburger-menu entry later, with its own confirmation.
+#[tauri::command]
+pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<PruneResult, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let settings: HashMap<String, String> = get_settings(State::clone(&state))?;
-    let deleted_days: i64 = settings.get("deletedRetentionDays").and_then(|v| v.parse().ok()).unwrap_or(365);
-    let log_days: i64 = settings.get("logRetentionDays").and_then(|v| v.parse().ok()).unwrap_or(30);
+    // Falls back to the default if the stored value somehow isn't one of
+    // the allowed values (e.g. a database from before this fix that still
+    // has a stray "0" in it) — defensive, since this runs unattended.
+    let deleted_days: i64 = settings
+        .get("deletedRetentionDays")
+        .and_then(|v| v.parse().ok())
+        .filter(|n| ALLOWED_RETENTION_DAYS.contains(n))
+        .unwrap_or(365);
+    let log_days: i64 = settings
+        .get("logRetentionDays")
+        .and_then(|v| v.parse().ok())
+        .filter(|n| ALLOWED_RETENTION_DAYS.contains(n))
+        .unwrap_or(30);
 
-    conn.execute(
-        &format!("DELETE FROM deleted_households WHERE deleted_at < datetime('now', '-{deleted_days} days')"),
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        &format!("DELETE FROM logs WHERE created_at < datetime('now', '-{log_days} days')"),
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    // Bound parameters (#28) — the modifier string is still built in Rust,
+    // but it now reaches SQLite as a parameter, not spliced into the SQL
+    // text. The previous version's safety depended entirely on the
+    // .parse::<i64>() two lines above the format!; this doesn't depend on
+    // that at all.
+    let deleted_modifier = format!("-{deleted_days} days");
+    let log_modifier = format!("-{log_days} days");
+
+    let deleted_households = conn
+        .execute(
+            "DELETE FROM deleted_households WHERE deleted_at < datetime('now', ?1)",
+            params![deleted_modifier],
+        )
+        .map_err(|e| e.to_string())? as i64;
+    let logs = conn
+        .execute(
+            "DELETE FROM logs WHERE created_at < datetime('now', ?1)",
+            params![log_modifier],
+        )
+        .map_err(|e| e.to_string())? as i64;
+    Ok(PruneResult { deleted_households, logs })
 }

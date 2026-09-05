@@ -16,8 +16,8 @@ async function openSettingsModal() {
     overlay.innerHTML = `
         <div class="modal settings-modal">
             <h2>Settings</h2>
-            <div class="settings-row"><label for="sDeletedDays">Deleted-record retention (days)</label><input type="number" id="sDeletedDays" min="0"></div>
-            <div class="settings-row"><label for="sLogDays">Log retention (days)</label><input type="number" id="sLogDays" min="0"></div>
+            <div class="settings-row"><label>Deleted-record retention</label><div id="sDeletedDaysDropdown" class="inline-dropdown"></div></div>
+            <div class="settings-row"><label>Log retention</label><div id="sLogDaysDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label>Minimum log level</label><div id="sLogLevelDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label>Households page size</label><div id="sPageSizeDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label for="sVisitSize">Default visit-list size</label><input type="number" id="sVisitSize" min="1"></div>
@@ -47,8 +47,6 @@ async function openSettingsModal() {
         const settings = await Api.getSettings().catch(() => ({}));
         const pending = { ...settings };
 
-        document.getElementById('sDeletedDays').value = settings.deletedRetentionDays || 365;
-        document.getElementById('sLogDays').value = settings.logRetentionDays || 30;
         document.getElementById('sVisitSize').value = settings.defaultVisitGroupSize || 10;
         document.getElementById('sRouteStartLabel').value = settings.routeStartLabel || '';
         document.getElementById('sRouteStartLat').value = settings.routeStartLat || '';
@@ -73,18 +71,43 @@ async function openSettingsModal() {
             value: settings.pageSize || '25',
             onSelect: (val) => { pending.pageSize = val; },
         });
+        const retentionItems = ['30', '90', '180', '365'].map(n => ({ value: n, label: `${n} days` }));
+        mountDropdown(document.getElementById('sDeletedDaysDropdown'), {
+            items: retentionItems,
+            value: settings.deletedRetentionDays || '365',
+            onSelect: (val) => { pending.deletedRetentionDays = val; },
+        });
+        mountDropdown(document.getElementById('sLogDaysDropdown'), {
+            items: retentionItems,
+            value: settings.logRetentionDays || '30',
+            onSelect: (val) => { pending.logRetentionDays = val; },
+        });
 
         document.getElementById('sSaveBtn').addEventListener('click', async () => {
-            pending.deletedRetentionDays = document.getElementById('sDeletedDays').value;
-            pending.logRetentionDays = document.getElementById('sLogDays').value;
             pending.defaultVisitGroupSize = document.getElementById('sVisitSize').value;
             pending.routeStartLabel = document.getElementById('sRouteStartLabel').value.trim();
             pending.routeStartLat = document.getElementById('sRouteStartLat').value.trim();
             pending.routeStartLon = document.getElementById('sRouteStartLon').value.trim();
+            // deletedRetentionDays/logRetentionDays already live on `pending`
+            // via the dropdowns' onSelect above — nothing to read from an
+            // input here now that they're fixed values, not free text.
             try {
+                const deletedDays = parseInt(pending.deletedRetentionDays, 10);
+                const logDays = parseInt(pending.logRetentionDays, 10);
+                const impact = await Api.previewPruneImpact(deletedDays, logDays);
+                if (impact.deleted_households > 0 || impact.logs > 0) {
+                    const proceed = window.confirm(
+                        `At these retention settings, ${impact.deleted_households} deleted record(s) and ` +
+                        `${impact.logs} log entrie(s) will be permanently removed the next time the app starts. ` +
+                        `This cannot be undone. Continue?`
+                    );
+                    if (!proceed) return;
+                }
+                // Saving only stores the setting — it does not delete
+                // anything itself (#28). The actual prune runs unattended
+                // at the next app startup.
                 await Api.saveSettings(pending);
-                await Api.pruneOldDeletedAndLogs();
-                showMessage('Settings saved.', CONSTANTS.MESSAGE_TYPES.INFO);
+                showMessage('Settings saved. Retention pruning runs on next app start.', CONSTANTS.MESSAGE_TYPES.INFO);
                 overlay.remove();
             } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
         });
