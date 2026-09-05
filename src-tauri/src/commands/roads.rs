@@ -45,6 +45,11 @@ fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// (not the UI thread) same as import_pdf — no explicit spawn needed.
 #[tauri::command]
 pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: String) -> Result<String, String> {
+    // Issue #32: resolved, home-dir-checked path used for both passes
+    // below. file_path (raw) is kept only for log messages/error text.
+    let resolved = super::paths::resolve_read_path(&file_path)?;
+    let file_path = resolved.to_string_lossy().to_string();
+
     emit_progress(&app, "reading ways");
 
     let ways_reader = ElementReader::from_path(&file_path)
