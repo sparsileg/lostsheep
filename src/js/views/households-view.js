@@ -42,6 +42,18 @@ const state = { page: 1, pageSize: 25, tagFilter: null, lastResult: null };
 
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
+// The old /^\d{4}-\d{2}-\d{2}$/ check only validated shape, not whether the
+// date exists — it happily accepted "2026-13-45" and "2026-02-30" (#35).
+// This is a convenience check only; record_visit on the backend is the
+// load-bearing validation and rejects the same cases plus non-padded input.
+function isValidIsoDate(str) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+    if (!m) return false;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
 // "Lastname, First1[ & First2]" — mimics the source directory's own
 // header-line format for a household entry.
 function formatDirectoryName(h) {
@@ -265,7 +277,7 @@ async function openHouseholdModal(id) {
     });
     document.getElementById('fAddVisit').addEventListener('click', async () => {
         const date = document.getElementById('fVisitDate').value.trim();
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { showMessage('Enter the date as YYYY-MM-DD.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+        if (!isValidIsoDate(date)) { showMessage('Enter a real date as YYYY-MM-DD (e.g. 2026-03-05).', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
         try {
             await Api.recordVisit(id, date, document.getElementById('fVisitComments').value || null);
             document.getElementById('fVisitComments').value = '';
