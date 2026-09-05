@@ -67,8 +67,14 @@ function renderPager() {
         <button class="btn" id="lvPrevPage" ${lvState.page <= 1 ? 'disabled' : ''}>‹ Prev</button>
         Page ${lvState.page}
         <button class="btn" id="lvNextPage" ${lvState.moreAvailable ? '' : 'disabled'}>Next ›</button>`;
-    document.getElementById('lvPrevPage')?.addEventListener('click', () => { lvState.page--; loadLogs(); });
-    document.getElementById('lvNextPage')?.addEventListener('click', () => { lvState.page++; loadLogs(); });
+    document.getElementById('lvPrevPage')?.addEventListener('click', () => {
+        lvState.page = Math.max(1, lvState.page - 1);
+        loadLogs();
+    });
+    document.getElementById('lvNextPage')?.addEventListener('click', () => {
+        if (lvState.moreAvailable) lvState.page += 1;
+        loadLogs();
+    });
 }
 
 async function copyVisibleLogs() {

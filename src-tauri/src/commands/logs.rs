@@ -24,7 +24,13 @@ pub struct LogEntry {
 #[tauri::command]
 pub fn get_logs(state: State<AppState>, level: Option<String>, page: u32, page_size: u32) -> Result<Vec<LogEntry>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let offset = (page.max(1) - 1) * page_size.clamp(1, 1000);
+    // i64 throughout: page arrives as u32 with no upper bound from the
+    // IPC caller, and (page - 1) * page_size in u32 could overflow for a
+    // page above ~4.3 million, either panicking (debug) or wrapping to a
+    // silently wrong offset (release). i64 has no realistic overflow risk
+    // at these magnitudes (#33).
+    let page_size: i64 = (page_size.clamp(1, 1000)) as i64;
+    let offset: i64 = (page.max(1) as i64 - 1) * page_size;
     let sql = match &level {
         Some(_) => "SELECT id, level, message, context, created_at FROM logs WHERE level = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         None => "SELECT id, level, message, context, created_at FROM logs ORDER BY id DESC LIMIT ?2 OFFSET ?3",
