@@ -34,7 +34,9 @@ pub fn record_visit(
         params![household_id, normalized, comments],
     )
     .map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    let visit_id = conn.last_insert_rowid();
+    super::logs::log(&conn, "info", &format!("visit recorded for household {household_id} on {normalized}"), None);
+    Ok(visit_id)
 }
 
 #[derive(Serialize)]

@@ -34,12 +34,28 @@ fn emit_progress(app: &AppHandle, processed: usize, total: usize) {
 
 #[tauri::command]
 pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: String) -> Result<ImportSummary, String> {
-    // Issue #32: resolved path is what actually gets opened / handed to
-    // the pdftotext sidecar; file_path (raw, unvalidated) is kept around
-    // only for the display filename in run_diff below.
-    let resolved = crate::commands::paths::resolve_read_path(&file_path)?;
-    let parsed = pdf_parser::parse_pdf(&app, &resolved).await.map_err(|e| e.to_string())?;
-    run_diff(app, state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
+    // run_diff takes state by value, so a handle to the pool is cloned
+    // out first (cheap — r2d2::Pool is just an Arc-backed share) to
+    // still have DB access for error logging after state is consumed.
+    let pool = state.pool.clone();
+    let result: Result<ImportSummary, String> = async {
+        // Issue #32: resolved path is what actually gets opened / handed to
+        // the pdftotext sidecar; file_path (raw, unvalidated) is kept around
+        // only for the display filename in run_diff below.
+        let resolved = crate::commands::paths::resolve_read_path(&file_path)?;
+        let parsed = pdf_parser::parse_pdf(&app, &resolved).await.map_err(|e| e.to_string())?;
+        run_diff(app.clone(), state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
+    }
+    .await;
+
+    // Issue #27: a failed import previously vanished into the frontend's
+    // 4-second message bar with no trace anywhere else.
+    if let Err(e) = &result {
+        if let Ok(conn) = pool.get() {
+            super::logs::log(&conn, "error", &format!("PDF import failed ({file_path}): {e}"), None);
+        }
+    }
+    result
 }
 
 /// One of the six values `households.role`/`role_2` CHECK constraints permit
@@ -67,46 +83,56 @@ fn normalize_role(raw: &str, row_num: usize, warnings: &mut Vec<String>) -> Stri
 /// Real column layout TBD once a sample CSV export is available.
 #[tauri::command]
 pub fn import_csv(app: AppHandle, state: State<AppState>, file_path: String) -> Result<ImportSummary, String> {
-    // Issue #32: resolved path is what's actually read.
-    let resolved = super::paths::resolve_read_path(&file_path)?;
-    let text = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
-    let mut records = Vec::new();
-    let mut warnings = Vec::new();
-    for (i, line) in text.lines().enumerate().skip(1) {
-        // first_name,last_name,role,address1,address2,city,state,zip,lat,long
-        let f: Vec<&str> = line.split(',').map(str::trim).collect();
-        if f.len() < 4 {
-            warnings.push(format!("row {}: expected at least 4 columns, got {}", i + 1, f.len()));
-            continue;
+    let pool = state.pool.clone();
+    let result: Result<ImportSummary, String> = (|| {
+        // Issue #32: resolved path is what's actually read.
+        let resolved = super::paths::resolve_read_path(&file_path)?;
+        let text = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
+        let mut records = Vec::new();
+        let mut warnings = Vec::new();
+        for (i, line) in text.lines().enumerate().skip(1) {
+            // first_name,last_name,role,address1,address2,city,state,zip,lat,long
+            let f: Vec<&str> = line.split(',').map(str::trim).collect();
+            if f.len() < 4 {
+                warnings.push(format!("row {}: expected at least 4 columns, got {}", i + 1, f.len()));
+                continue;
+            }
+            let role = if f.len() > 2 && !f[2].is_empty() {
+                normalize_role(f[2], i + 1, &mut warnings)
+            } else {
+                "head".to_string()
+            };
+            records.push(ParsedRecord {
+                first_name: f[0].to_string(),
+                last_name: f[1].to_string(),
+                role,
+                first_name_2: None,
+                last_name_2: None,
+                role_2: None,
+                phone_1: None,
+                email_1: None,
+                phone_2: None,
+                email_2: None,
+                address_line1: f.get(3).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                address_line2: f.get(4).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                city: f.get(5).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                state: f.get(6).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                zip: f.get(7).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                latitude: f.get(8).and_then(|s| s.parse().ok()),
+                longitude: f.get(9).and_then(|s| s.parse().ok()),
+                has_minors: false,
+                comments: None,
+            });
         }
-        let role = if f.len() > 2 && !f[2].is_empty() {
-            normalize_role(f[2], i + 1, &mut warnings)
-        } else {
-            "head".to_string()
-        };
-        records.push(ParsedRecord {
-            first_name: f[0].to_string(),
-            last_name: f[1].to_string(),
-            role,
-            first_name_2: None,
-            last_name_2: None,
-            role_2: None,
-            phone_1: None,
-            email_1: None,
-            phone_2: None,
-            email_2: None,
-            address_line1: f.get(3).filter(|s| !s.is_empty()).map(|s| s.to_string()),
-            address_line2: f.get(4).filter(|s| !s.is_empty()).map(|s| s.to_string()),
-            city: f.get(5).filter(|s| !s.is_empty()).map(|s| s.to_string()),
-            state: f.get(6).filter(|s| !s.is_empty()).map(|s| s.to_string()),
-            zip: f.get(7).filter(|s| !s.is_empty()).map(|s| s.to_string()),
-            latitude: f.get(8).and_then(|s| s.parse().ok()),
-            longitude: f.get(9).and_then(|s| s.parse().ok()),
-            has_minors: false,
-            comments: None,
-        });
+        run_diff(app, state, "csv", &file_path, records, warnings)
+    })();
+
+    if let Err(e) = &result {
+        if let Ok(conn) = pool.get() {
+            super::logs::log(&conn, "error", &format!("CSV import failed ({file_path}): {e}"), None);
+        }
     }
-    run_diff(app, state, "csv", &file_path, records, warnings)
+    result
 }
 
 fn run_diff(
@@ -405,6 +431,7 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
 /// open for discussion and is not implemented here.
 #[tauri::command]
 pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String, comment: Option<String>) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -584,6 +611,18 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+    })();
+
+    // Issue #27: this is the only place households are destroyed and
+    // recreated (replace/merge/delete) — an audit trail matters here
+    // more than almost anywhere else in the app.
+    if let Ok(conn) = state.pool.get() {
+        match &result {
+            Ok(()) => super::logs::log(&conn, "info", &format!("review item {item_id} resolved: {action}"), None),
+            Err(e) => super::logs::log(&conn, "error", &format!("review item {item_id} resolution ({action}) failed: {e}"), None),
+        }
+    }
+    result
 }
 
 #[tauri::command]

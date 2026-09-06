@@ -79,18 +79,41 @@ fn row_to_household(conn: &rusqlite::Connection, row: &rusqlite::Row) -> rusqlit
 /// on-screen search and the ids-only bulk-tag path below — the two must
 /// never drift into separately-maintained copies of the same filter
 /// logic (#22).
+// Issue #29: LIKE metacharacters (% and _) are not otherwise special to
+// SQLite outside a LIKE pattern, so escaping them here and pairing with
+// ESCAPE '\' in the query makes a literal % or _ in the search box match
+// literally instead of acting as a wildcard.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut where_clauses = vec!["1=1".to_string()];
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(q) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
-        where_clauses.push(
-            "(h.first_name || ' ' || h.last_name || ' ' || coalesce(h.first_name_2,'') || ' ' || coalesce(h.last_name_2,'') || ' ' || \
-              coalesce(h.address_line1,'') || ' ' || \
-              coalesce(h.city,'') || ' ' || coalesce(h.comments,'') \
-             ) LIKE ?".to_string(),
-        );
-        binds.push(Box::new(format!("%{}%", q.trim())));
+        // Issue #29: "Search is always an implicit AND between
+        // keywords" (Functional_Requirements.md) — previously the whole
+        // input was one contiguous substring, so "Smith Winchester"
+        // never matched unless those two words were adjacent in that
+        // exact order. Now each whitespace-separated token gets its own
+        // LIKE clause, ANDed together, so token order and position don't
+        // matter. Tags are deliberately NOT included here — capped at
+        // one per household and already covered by the dedicated tag
+        // filter dropdown; Functional_Requirements.md has been amended
+        // to record that as the intended mechanism.
+        for token in q.split_whitespace() {
+            where_clauses.push(
+                "(h.first_name || ' ' || h.last_name || ' ' || coalesce(h.first_name_2,'') || ' ' || coalesce(h.last_name_2,'') || ' ' || \
+                  coalesce(h.address_line1,'') || ' ' || coalesce(h.address_line2,'') || ' ' || \
+                  coalesce(h.city,'') || ' ' || coalesce(h.state,'') || ' ' || coalesce(h.zip,'') || ' ' || \
+                  coalesce(h.phone_1,'') || ' ' || coalesce(h.phone_2,'') || ' ' || \
+                  coalesce(h.email_1,'') || ' ' || coalesce(h.email_2,'') || ' ' || \
+                  coalesce(h.comments,'') \
+                 ) LIKE ? ESCAPE '\\'".to_string(),
+            );
+            binds.push(Box::new(format!("%{}%", escape_like(token))));
+        }
     }
     for tag in &params.tag_names {
         where_clauses.push(

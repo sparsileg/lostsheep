@@ -3,7 +3,7 @@ registerView('households', {
         document.getElementById('householdsRoot').innerHTML = `
             <h1>Households</h1>
             <div class="households-toolbar">
-                <input type="text" id="hhSearchInput" placeholder="Search name, address, comments…" />
+                <input type="text" id="hhSearchInput" placeholder="Search name, address, phone, email, comments…" />
                 <div id="hhTagFilterDropdown"></div>
                 <button class="btn" id="hhGenerateDirectoryBtn">Generate Directory PDF</button>
             </div>

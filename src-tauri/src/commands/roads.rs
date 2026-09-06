@@ -45,6 +45,7 @@ fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// (not the UI thread) same as import_pdf — no explicit spawn needed.
 #[tauri::command]
 pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: String) -> Result<String, String> {
+    let result = (|| -> Result<String, String> {
     // Issue #32: resolved, home-dir-checked path used for both passes
     // below. file_path (raw) is kept only for log messages/error text.
     let resolved = super::paths::resolve_read_path(&file_path)?;
@@ -194,4 +195,13 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     emit_progress(&app, "done");
     Ok(format!("{} nodes, {} edges", node_rows.len(), edge_rows.len()))
+    })();
+
+    // Issue #27: a failed road ingest previously vanished with no trace.
+    if let Err(e) = &result {
+        if let Ok(conn) = state.pool.get() {
+            super::logs::log(&conn, "error", &format!("road graph ingest failed ({file_path}): {e}"), None);
+        }
+    }
+    result
 }
