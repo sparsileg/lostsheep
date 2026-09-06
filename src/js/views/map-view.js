@@ -6,8 +6,8 @@ registerView('map', {
             <div class="map-toolbar">
                 <div id="mapTagDropdown" style="min-width:260px;"></div>
                 <input type="number" id="mapVisitCount" min="1" value="10" style="width:70px;" title="Number of households to visit">
-                <button class="btn btn-primary" id="mapGenerateBtn" disabled>Generate visit list from selected seed</button>
-                <button class="btn" id="mapResetSeedBtn">Reset Seed</button>
+                <button class="btn btn-primary" id="mapGenerateBtn" disabled>Generate visit list</button>
+                <button class="btn" id="mapResetSeedBtn">Reset</button>
             </div>
             <div id="mapEl"></div>
         `;
@@ -19,6 +19,18 @@ registerView('map', {
         this.markersByAddressKey = {};
         this.seedGroupKey = null;
         this.selectedTagId = '';
+
+        // Issue #40 — Road Management overlays. Both layers start
+        // detached; applyRoadSettings() (called from onShow() below, and
+        // from the Road Management modal on toggle) adds/removes them
+        // based on the persisted showRoadsOverlay/showRouteOverlay
+        // settings. Roads redraw on pan/zoom since a bounds-bound query
+        // only covers the viewport at the time it ran.
+        this.roadsLayer = L.layerGroup();
+        this.routeLayer = L.layerGroup();
+        this.roadsOverlayEnabled = false;
+        this.routeOverlayEnabled = false;
+        this.map.on('moveend zoomend', () => { if (this.roadsOverlayEnabled) loadRoadsOverlay(); });
 
         this.tagDropdown = mountDropdown(document.getElementById('mapTagDropdown'), {
             items: [{ value: '', label: 'All households with coordinates' }],
@@ -34,9 +46,18 @@ registerView('map', {
         await loadTagStats();
         setTimeout(resizeMapEl, 50);
         await loadMapData();
+        // loadMapData() just rebuilt every marker fresh (badges reset to
+        // default) — a leftover route from before this view was left
+        // would otherwise still get redrawn by applyRoadSettings() below
+        // from stale lastVisitEntries, leaving default-icon markers next
+        // to a route that no longer corresponds to anything selected.
+        MapView.lastVisitEntries = null;
+        MapView.routeLayer.clearLayers();
+        await applyRoadSettings();
     },
 });
 const MapView = ViewRegistry.map; // convenient alias for handlers below
+MapView.applyRoadSettings = applyRoadSettings;
 
 // Sizes #mapEl from its own actual on-screen position, not a guessed
 // vh-minus-padding constant (#15 follow-up — the old calc(100vh - 40px)
@@ -60,6 +81,121 @@ function wireMapResize() {
     if (_mapResizeWired) return;
     window.addEventListener('resize', resizeMapEl);
     _mapResizeWired = true;
+}
+
+// Reads a CSS custom property's current computed value — used so the
+// road/route overlay lines follow whatever theme is active rather than
+// a hardcoded color, same spirit as base.css's --chart1/--chart2 (#82).
+function themeColor(varName, fallback) {
+    const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    return val || fallback;
+}
+
+// Issue #40 — reads the two persisted display-only settings and adds/
+// removes the road/route layers accordingly. Called from onShow() so a
+// fresh visit to the map view picks up whatever was toggled in the Road
+// Management modal, and also called directly by that modal's toggle
+// handlers so a redraw happens immediately without waiting for the next
+// onShow().
+async function applyRoadSettings() {
+    let settings;
+    try { settings = await Api.getSettings(); } catch (e) { console.error(e); return; }
+
+    MapView.roadsOverlayEnabled = settings.showRoadsOverlay === 'true';
+    MapView.routeOverlayEnabled = settings.showRouteOverlay === 'true';
+
+    if (MapView.roadsOverlayEnabled) {
+        MapView.roadsLayer.addTo(MapView.map);
+        await loadRoadsOverlay();
+    } else {
+        MapView.roadsLayer.clearLayers();
+        MapView.map.removeLayer(MapView.roadsLayer);
+    }
+
+    if (MapView.routeOverlayEnabled) {
+        MapView.routeLayer.addTo(MapView.map);
+        // Redraw whatever route is already generated, if any — a toggle
+        // flipped on after generateVisitList() already ran shouldn't
+        // require regenerating the list to see the overlay.
+        if (MapView.lastVisitEntries) await drawRouteOverlay(MapView.lastVisitEntries);
+    } else {
+        MapView.routeLayer.clearLayers();
+        MapView.map.removeLayer(MapView.routeLayer);
+    }
+}
+
+// Viewport-bounded road overlay (issue #40). Queries only the current
+// map bounds — the road graph can be far larger than is reasonable to
+// load/render all at once — and redraws on every pan/zoom (wired in
+// init() above). MAX_ROAD_EDGES_PER_QUERY on the backend is a cap this
+// call can hit; when it does, truncated comes back true and edges is
+// empty rather than a silently-partial layer.
+async function loadRoadsOverlay() {
+    if (!MapView.roadsOverlayEnabled || !MapView.map) return;
+    const bounds = MapView.map.getBounds();
+    let result;
+    try {
+        result = await Api.getRoadsInBounds(
+            bounds.getSouth(), bounds.getNorth(), bounds.getWest(), bounds.getEast()
+        );
+    } catch (e) { console.error('getRoadsInBounds failed', e); return; }
+
+    MapView.roadsLayer.clearLayers();
+    if (result.truncated) {
+        showMessage('Too many roads to show at this zoom level — zoom in to see roads.', CONSTANTS.MESSAGE_TYPES.INFO, 3000);
+        return;
+    }
+    const color = themeColor('--chart1', '#0d6efd');
+    result.edges.forEach(seg => {
+        L.polyline([[seg.lat1, seg.lon1], [seg.lat2, seg.lon2]], { color, weight: 2, opacity: 0.6 })
+            .addTo(MapView.roadsLayer);
+    });
+}
+
+// Route overlay (issue #40, updated for #38's road-path geometry). Each
+// entry now carries its own leg's route_path — [household] → [snap
+// node] → [A* nodes...] → [snap node] → [household] when the backend
+// found real road distance, or just [household, household] on a
+// straight-line fallback (no graph / snap miss / no path found). Drawing
+// each leg's own path (rather than one polyline through every household
+// point) is what makes the line actually follow roads instead of
+// cutting straight between stops — and it already includes the
+// household-to-road offset, so the separate per-household snap-line
+// lookup (Api.getNearestRoadNode) this used to make is redundant now and
+// has been dropped.
+//
+// Route line mimics a real road's look — a solid gray "asphalt" base
+// with a dashed gold centerline on top, rather than an app-themed color.
+// Deliberately NOT theme-dependent: the goal is a route that reads as
+// "a road" and stays visible against real OSM tile imagery regardless of
+// the app's theme. (A tick-mark/crosshatch texture like a paper map's
+// casing style would need a Leaflet plugin this project doesn't vendor —
+// skipped per Stan; this dashed-centerline version uses only stock
+// Leaflet polylines.)
+function drawRoadStyledPolyline(latlngs, layerGroup) {
+    L.polyline(latlngs, { color: '#808080', weight: 7, opacity: 1 }).addTo(layerGroup);
+    L.polyline(latlngs, { color: '#FFD700', weight: 3, opacity: 1, dashArray: '10, 10' }).addTo(layerGroup);
+}
+
+async function drawRouteOverlay(entries) {
+    MapView.routeLayer.clearLayers();
+    if (!MapView.routeOverlayEnabled || !entries || entries.length === 0) return;
+
+    const anyPaths = entries.some(e => e.route_path && e.route_path.length > 1);
+
+    if (anyPaths) {
+        entries.forEach(e => {
+            if (!e.route_path || e.route_path.length < 2) return;
+            const latlngs = e.route_path.map(p => [p.lat, p.lon]);
+            drawRoadStyledPolyline(latlngs, MapView.routeLayer);
+        });
+    } else {
+        // No per-leg path data at all (e.g. a seed-only list with no
+        // route_start configured) — fall back to the old straight-line-
+        // between-households polyline so the toggle still shows something.
+        const latlngs = entries.map(e => [e.latitude, e.longitude]);
+        drawRoadStyledPolyline(latlngs, MapView.routeLayer);
+    }
 }
 
 // Dashboard's per-tag breakdown — replaces the old separate Dashboard
@@ -102,13 +238,14 @@ async function loadMapData() {
         const marker = L.marker([g.latitude, g.longitude]).addTo(MapView.markersLayer);
         MapView.markersByAddressKey[g.address_key] = marker;
         marker.bindPopup(`<strong>${escapeHtml(g.address_line1 || '(no address on file)')}</strong><br>${g.names.map(escapeHtml).join('<br>')}
-            <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Use as seed</button>`);
+            <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>`);
         marker.on('popupopen', () => {
             document.querySelector(`[data-select-seed="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
                 MapView.seedGroupKey = g.address_key;
                 MapView.seedHouseholdId = g.household_ids[0];
                 document.getElementById('mapGenerateBtn').disabled = false;
                 showMessage(`Seed set: ${g.address_line1 || '(no address on file)'}`, CONSTANTS.MESSAGE_TYPES.INFO, 2500);
+                marker.closePopup();
             });
         });
         bounds.push([g.latitude, g.longitude]);
@@ -229,6 +366,10 @@ async function generateVisitList() {
     MapView.lastVisitTagLabel = tagLabel;
     MapView.lastVisitStartInfo = startsAtRoute ? startInfo : null;
 
+    // Issue #40 — redraw the route/snap overlay for this new list. A
+    // no-op internally when the toggle is off.
+    await drawRouteOverlay(entries);
+
     const overlay = modalShell(`
         <h2>Visit List (${entries.length} addresses)</h2>
         <button class="btn" id="mapCopyVisitListBtn">⎘ Copy</button>
@@ -334,6 +475,9 @@ function resetSeed() {
     MapView.seedHouseholdId = null;
     document.getElementById('mapGenerateBtn').disabled = true;
     Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
+    // Icons going back to normal here means whatever route was on
+    // display no longer corresponds to anything selected — erase it too.
+    MapView.routeLayer.clearLayers();
     showMessage('Seed cleared.', CONSTANTS.MESSAGE_TYPES.INFO, 2000);
 }
 

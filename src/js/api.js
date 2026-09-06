@@ -44,6 +44,9 @@ const Api = {
 
     // roads
     ingestRoadDatabase: (filePath) => invoke('ingest_road_database', { filePath }),
+    getRoadsInBounds: (minLat, maxLat, minLon, maxLon) =>
+        invoke('get_roads_in_bounds', { minLat, maxLat, minLon, maxLon }),
+    getNearestRoadNode: (lat, lon) => invoke('get_nearest_road_node', { lat, lon }),
 
     // settings / logs
     getSettings: () => invoke('get_settings'),

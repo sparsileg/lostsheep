@@ -21,3 +21,7 @@ CREATE TABLE IF NOT EXISTS road_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_road_edges_from ON road_edges(from_node_id);
 CREATE INDEX IF NOT EXISTS idx_road_edges_to   ON road_edges(to_node_id);
+-- Issue #40: bounds overlay query and nearest-node snap lookup both
+-- filter road_nodes by a lat/lon box before ranking exactly by
+-- haversine distance.
+CREATE INDEX IF NOT EXISTS idx_road_nodes_lat_lon ON road_nodes(lat, lon);

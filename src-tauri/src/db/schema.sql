@@ -208,7 +208,11 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('logLevel', 'info'),
     ('defaultVisitGroupSize', '10'),
     ('pageSize', '25'),
-    ('backupFolder', '');
+    ('backupFolder', ''),
+    -- Issue #40: display-only map preferences, not backed up (see
+    -- commands::backup's strip_display_only_settings).
+    ('showRoadsOverlay', 'false'),
+    ('showRouteOverlay', 'false');
 
 -- Offline map-tile caching was dropped (issue #3) — this runs on every
 -- startup, not just a fresh DB, so it also cleans up an existing
