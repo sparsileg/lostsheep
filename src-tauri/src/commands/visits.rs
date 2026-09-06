@@ -139,26 +139,22 @@ pub struct VisitListEntry {
     pub distance_context: String,
 }
 
-/// Nearest-N generation, grouped by address so multi-head households are
-/// never split across the boundary. "Count" caps distinct addresses, not
-/// raw rows — matches the "all records sharing an address are included
-/// together" rule.
-#[tauri::command]
-pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListParams) -> Result<Vec<VisitListEntry>, String> {
-    let conn = state.pool.get().map_err(|e| e.to_string())?;
-
-    // seed_household_id = 0 is used by map_data::get_map_data for
-    // plain "show everything" mode, where distance is unused — falls
-    // back to (0,0) instead of erroring on a not-found id.
-    let seed: (f64, f64) = conn
-        .query_row(
-            "SELECT latitude, longitude FROM households WHERE id = ?1",
-            rusqlite::params![params.seed_household_id],
-            |r| Ok((r.get::<_, Option<f64>>(0)?.unwrap_or(0.0), r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))),
-        )
-        .unwrap_or((0.0, 0.0));
-
-    let sql = match params.tag_id {
+/// Fetches every eligible household row (respecting the optional tag
+/// filter and always excluding "do not contact"), then groups by address
+/// so multi-head households at the same address are never split. This is
+/// the shared, distance-free half of the old generate_visit_list — no
+/// seed lookup, no haversine, no sort/truncate, no route walk. Two
+/// callers want genuinely different things done with this same grouped
+/// data: generate_visit_list orders/limits it by distance for an actual
+/// visit list, and get_map_data (map_data.rs) just wants every group
+/// plotted with no distance math at all (#31 — that walk was previously
+/// borrowed wholesale via a count:100000/seed:0 call, making the map load
+/// quadratic in household count once a route start point was configured).
+pub fn fetch_grouped_households(
+    conn: &rusqlite::Connection,
+    tag_id: Option<i64>,
+) -> Result<Vec<VisitListEntry>, String> {
+    let sql = match tag_id {
         Some(_) => {
             "SELECT h.id, h.address_key, h.address_line1, h.city, h.state, h.zip, h.latitude, h.longitude, \
              h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.phone_1, h.phone_2 \
@@ -180,14 +176,6 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         city: Option<String>, state: Option<String>, zip: Option<String>,
         lat: f64, lon: f64, name: String, phones: Vec<String>,
     }
-    let rows: Vec<Row> = if let Some(tag_id) = params.tag_id {
-        stmt.query_map(rusqlite::params![tag_id], map_row).map_err(|e| e.to_string())?
-    } else {
-        stmt.query_map([], map_row).map_err(|e| e.to_string())?
-    }
-    .filter_map(Result::ok)
-    .collect();
-
     fn map_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
         let name = match r.get::<_, Option<String>>(10)? {
             Some(first2) => format!("{} {} & {} {}", r.get::<_, String>(8)?, r.get::<_, String>(9)?, first2, r.get::<_, Option<String>>(11)?.unwrap_or_default()),
@@ -201,20 +189,24 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             lat: r.get(6)?, lon: r.get(7)?, name, phones,
         })
     }
+    let rows: Vec<Row> = if let Some(tag_id) = tag_id {
+        stmt.query_map(rusqlite::params![tag_id], map_row).map_err(|e| e.to_string())?
+    } else {
+        stmt.query_map([], map_row).map_err(|e| e.to_string())?
+    }
+    .filter_map(Result::ok)
+    .collect();
 
-    // Group rows by address, take the min distance per group, sort groups
-    // by that distance, then take the first `count` groups.
     use std::collections::HashMap;
     let mut groups: HashMap<String, Vec<&Row>> = HashMap::new();
     for r in &rows {
         groups.entry(r.address_key.clone()).or_default().push(r);
     }
 
-    let mut entries: Vec<VisitListEntry> = groups
+    let entries: Vec<VisitListEntry> = groups
         .into_iter()
         .map(|(key, members)| {
             let first = members[0];
-            let dist = crate::geo::haversine_meters(seed.0, seed.1, first.lat, first.lon);
             VisitListEntry {
                 address_key: key,
                 address_line1: first.address_line1.clone(),
@@ -223,14 +215,42 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
                 zip: first.zip.clone(),
                 latitude: first.lat,
                 longitude: first.lon,
-                distance_meters: dist,
+                distance_meters: 0.0,
                 household_ids: members.iter().map(|m| m.id).collect(),
                 names: members.iter().map(|m| m.name.clone()).collect(),
                 phones: members.iter().flat_map(|m| m.phones.clone()).collect(),
-                distance_context: "seed".to_string(),
+                distance_context: "none".to_string(),
             }
         })
         .collect();
+
+    Ok(entries)
+}
+
+/// Nearest-N generation, grouped by address so multi-head households are
+/// never split across the boundary. "Count" caps distinct addresses, not
+/// raw rows — matches the "all records sharing an address are included
+/// together" rule.
+#[tauri::command]
+pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListParams) -> Result<Vec<VisitListEntry>, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+
+    // seed_household_id = 0 is used by map_data::get_map_data for
+    // plain "show everything" mode, where distance is unused — falls
+    // back to (0,0) instead of erroring on a not-found id.
+    let seed: (f64, f64) = conn
+        .query_row(
+            "SELECT latitude, longitude FROM households WHERE id = ?1",
+            rusqlite::params![params.seed_household_id],
+            |r| Ok((r.get::<_, Option<f64>>(0)?.unwrap_or(0.0), r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))),
+        )
+        .unwrap_or((0.0, 0.0));
+
+    let mut entries = fetch_grouped_households(&conn, params.tag_id)?;
+    for e in &mut entries {
+        e.distance_meters = crate::geo::haversine_meters(seed.0, seed.1, e.latitude, e.longitude);
+        e.distance_context = "seed".to_string();
+    }
 
     // Selection stays seed-distance-based regardless of route mode (#13):
     // this sort+truncate picks which N addresses are included, unchanged.
