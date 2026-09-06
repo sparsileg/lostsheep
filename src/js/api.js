@@ -40,7 +40,7 @@ const Api = {
     // backup / restore
     backupDatabase: (destPath, passphrase) => invoke('backup_database', { destPath, passphrase }),
     restorePreview: (srcPath, passphrase) => invoke('restore_preview', { srcPath, passphrase }),
-    restoreCommit: (srcPath, passphrase) => invoke('restore_commit', { srcPath, passphrase }),
+    restoreCommit: (srcPath, passphrase, token) => invoke('restore_commit', { srcPath, passphrase, token }),
 
     // roads
     ingestRoadDatabase: (filePath) => invoke('ingest_road_database', { filePath }),

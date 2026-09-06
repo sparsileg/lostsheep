@@ -28,6 +28,7 @@ pub fn open_pool(db_path: &PathBuf, key_hex: &str) -> anyhow::Result<Pool> {
     // yet — SQLite checks the statement's column list before OR IGNORE
     // ever gets a chance to apply (#23).
     migrate_tags_system_key(&conn)?;
+    migrate_source_key_seq(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     Ok(pool)
 }
@@ -72,8 +73,63 @@ fn migrate_tags_system_key(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {
-    conn.pragma_update(None, "key", &format!("x'{}'", key_hex))?;
+/// One-time migration for databases created before source_key_seq existed
+/// (dup-key restore preview issue): source_key alone was never unique —
+/// two distinct households with identical name+address (father/son,
+/// same role) can compute the same key with no field left to
+/// disambiguate them. Adds the column, then assigns 0/1/2/... within
+/// each duplicate group ordered by id (the oldest record keeps 0, so
+/// existing tags/visits/comments stay associated with the household a
+/// user would expect), before schema.sql's UNIQUE(source_key,
+/// source_key_seq) index is created. No-op on a fresh DB (schema.sql's
+/// CREATE TABLE already includes the column) and a no-op once migrated.
+fn migrate_source_key_seq(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='households'",
+        [],
+        |r| r.get(0),
+    )?;
+    if table_exists == 0 {
+        return Ok(()); // fresh DB — schema.sql's CREATE TABLE handles it
+    }
+
+    let mut stmt = conn.prepare("PRAGMA table_info(households)")?;
+    let has_column = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == "source_key_seq");
+    if has_column {
+        return Ok(()); // already migrated
+    }
+
+    conn.execute_batch("ALTER TABLE households ADD COLUMN source_key_seq INTEGER NOT NULL DEFAULT 0;")?;
+
+    // Assign sequential seq per duplicate source_key group. Done in Rust
+    // rather than a single SQL window-function statement — simpler to
+    // reason about correctness here, and this runs at most once per
+    // install, never on a hot path.
+    let mut rows_stmt = conn.prepare("SELECT id, source_key FROM households ORDER BY source_key, id")?;
+    let all_rows: Vec<(i64, String)> = rows_stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    drop(rows_stmt);
+
+    let mut next_seq: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for (id, key) in all_rows {
+        let seq = next_seq.entry(key).or_insert(-1);
+        *seq += 1;
+        if *seq != 0 {
+            // Only rows past the first in a group actually need writing —
+            // the column's own DEFAULT 0 already covers the first.
+            conn.execute("UPDATE households SET source_key_seq = ?1 WHERE id = ?2", rusqlite::params![*seq, id])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {    conn.pragma_update(None, "key", &format!("x'{}'", key_hex))?;
     // Cheap sanity read — throws SQLITE_NOTADB if the key is wrong, which
     // callers surface to the user as "could not unlock database".
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;

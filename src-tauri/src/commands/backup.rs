@@ -1,5 +1,7 @@
 use crate::{crypto, db, AppState};
 use serde::Serialize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use tauri::State;
 
@@ -19,6 +21,24 @@ impl Drop for TmpFile {
 
 fn tmp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}.tmp", uuid::Uuid::new_v4()))
+}
+
+// Issue #26: not a security hash — just enough to bind a preview to "this
+// exact file, unchanged since preview ran". Path alone would let a
+// different file dropped at the same path slip through; size+mtime
+// catches that without re-reading (and re-capping) the whole archive.
+fn preview_token(src_path: &str, meta: &std::fs::Metadata) -> String {
+    let mtime_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    src_path.hash(&mut hasher);
+    meta.len().hash(&mut hasher);
+    mtime_secs.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }
 
 /// Writes a self-contained, single-file backup at `dest_path`: a zip
@@ -175,6 +195,9 @@ pub struct RestorePreview {
     pub backup_household_count: i64,
     pub current_household_count: i64,
     pub tag_counts: Vec<TagCountRow>,
+    // Issue #26: must be echoed back to restore_commit unchanged, or the
+    // commit is refused. Proves a preview ran against this exact file.
+    pub token: String,
 }
 
 fn tag_counts(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, i64>, String> {
@@ -199,6 +222,8 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
     // Issue #32: confirm src_path is under the user's home directory
     // before ever opening it.
     let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
+    let meta = std::fs::metadata(&src_path).map_err(|e| format!("could not read {src_path}: {e}"))?;
+    let token = preview_token(&src_path, &meta);
     let (tmp_db, salt) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
     let backup_conn = db::open_with_key(&tmp_db.0, &key).map_err(|e| e.to_string())?;
@@ -214,32 +239,76 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
         .filter_map(Result::ok)
         .collect();
 
-    let mut live_keys_stmt = live_conn.prepare("SELECT source_key FROM households").map_err(|e| e.to_string())?;
-    let live_keys: std::collections::HashSet<String> = live_keys_stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .collect();
-
-    let mut backup_keyset = std::collections::HashSet::new();
-    let mut rows = Vec::new();
-    for (key, first, last, addr) in &backup_rows {
-        backup_keyset.insert(key.clone());
-        if !live_keys.contains(key) {
-            rows.push(RestoreDiffRow { kind: "added".into(), description: format!("{first} {last} — {addr}") });
-        }
-    }
-
     let mut live_all_stmt = live_conn.prepare("SELECT source_key, first_name, last_name, address_line1 FROM households").map_err(|e| e.to_string())?;
-    let live_rows: Vec<(String, String, String, String)> = live_all_stmt
+    let live_rows_all: Vec<(String, String, String, String)> = live_all_stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .collect();
-    for (key, first, last, addr) in &live_rows {
-        if !backup_keyset.contains(key) {
-            rows.push(RestoreDiffRow { kind: "removed".into(), description: format!("{first} {last} — {addr}") });
+
+    // Issue #37: source_key has no UNIQUE constraint (schema.sql) and
+    // pdf_parser::source_key() can collide for two distinct households
+    // (same names + same address_line1, e.g. an adult child at a parent's
+    // address). The previous HashSet-membership check treated "key
+    // present on both sides" as "no change" even when the counts on each
+    // side differed — a real added household and a real removed
+    // household could cancel out invisibly whenever they shared a key.
+    // Grouping by key and comparing counts per key instead makes the
+    // added/removed tally algebraically equal to the raw count delta,
+    // and surfaces the collision itself as its own row instead of hiding
+    // it.
+    let mut backup_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, String)>> = std::collections::HashMap::new();
+    for row in &backup_rows {
+        backup_by_key.entry(row.0.as_str()).or_default().push(row);
+    }
+    let mut live_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, String)>> = std::collections::HashMap::new();
+    for row in &live_rows_all {
+        live_by_key.entry(row.0.as_str()).or_default().push(row);
+    }
+
+    let mut all_keys: Vec<&str> = backup_by_key.keys().chain(live_by_key.keys()).copied().collect();
+    all_keys.sort();
+    all_keys.dedup();
+
+    let mut rows = Vec::new();
+    let mut added_count = 0i64;
+    let mut removed_count = 0i64;
+    for key in all_keys {
+        let b = backup_by_key.get(key).map(|v| v.as_slice()).unwrap_or(&[]);
+        let l = live_by_key.get(key).map(|v| v.as_slice()).unwrap_or(&[]);
+
+        if b.len() > 1 || l.len() > 1 {
+            rows.push(RestoreDiffRow {
+                kind: "duplicate_key".into(),
+                description: format!(
+                    "source_key \"{key}\" appears {} time(s) in backup, {} time(s) in current — names/address collide, diff below may be approximate for this key",
+                    b.len(),
+                    l.len()
+                ),
+            });
         }
+
+        if b.len() > l.len() {
+            for (_, first, last, addr) in b.iter().take(b.len() - l.len()) {
+                rows.push(RestoreDiffRow { kind: "added".into(), description: format!("{first} {last} — {addr}") });
+                added_count += 1;
+            }
+        } else if l.len() > b.len() {
+            for (_, first, last, addr) in l.iter().take(l.len() - b.len()) {
+                rows.push(RestoreDiffRow { kind: "removed".into(), description: format!("{first} {last} — {addr}") });
+                removed_count += 1;
+            }
+        }
+    }
+
+    // Issue #37: added/removed counted this way is constructed to always
+    // satisfy this equation, but check it explicitly rather than trust
+    // the arithmetic silently — a preview the user can't trust is worse
+    // than a blocked restore.
+    if live_count + added_count - removed_count != backup_count {
+        return Err(format!(
+            "restore preview is internally inconsistent (current {live_count} + added {added_count} - removed {removed_count} != backup {backup_count}) — refusing to show an untrustworthy diff"
+        ));
     }
 
     let current_tag_counts = tag_counts(&live_conn)?;
@@ -256,23 +325,52 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
         })
         .collect();
 
-    Ok(RestorePreview { rows, backup_household_count: backup_count, current_household_count: live_count, tag_counts: tag_counts_out })
+    *state.last_preview.lock().map_err(|_| "internal error: preview lock poisoned".to_string())? =
+        Some((src_path.clone(), token.clone()));
+
+    Ok(RestorePreview { rows, backup_household_count: backup_count, current_household_count: live_count, tag_counts: tag_counts_out, token })
 }
 
 /// Commits the restore: re-keys the backup into the live DB's own
 /// SQLCipher key (the one in the OS keychain) and swaps it in atomically.
+/// Requires a token minted by a prior `restore_preview` call against this
+/// same file (issue #26) — the before/after screen is enforced, not just
+/// a UI convention. Restarts the app on success (issue #26 Option B) so
+/// no stale pool connection can read the pre-restore file afterward.
 #[tauri::command]
-pub fn restore_commit(state: State<AppState>, src_path: String, passphrase: String) -> Result<(), String> {
+pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: String, passphrase: String, token: String) -> Result<(), String> {
     // Issue #32: same check as restore_preview — this is the destructive
     // half, so it gets no less scrutiny just because preview already ran.
     let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
+
+    // Single-use: consumed on every commit attempt, matched or not, so a
+    // token can't be replayed and a failed attempt always forces a fresh
+    // preview before the next try.
+    let previewed = state
+        .last_preview
+        .lock()
+        .map_err(|_| "internal error: preview lock poisoned".to_string())?
+        .take();
+    match previewed {
+        Some((p, t)) if p == src_path && t == token => {}
+        _ => return Err("restore was not previewed for this exact file — run Preview changes again before committing".to_string()),
+    }
+
     let (tmp_db, salt) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
-    let rekeyed = TmpFile(state.db_path.with_extension("restoring"));
+    // Scratch file for the re-keyed database.
+    // Must live on the SAME filesystem as state.db_path — std::fs::rename
+    // fails with EXDEV ("Invalid cross-device link") if the source and
+    // destination are on different mounts, which system temp dir often
+    // is relative to the app data directory. Same-directory placement
+    // guarantees the rename below is a same-filesystem atomic rename,
+    // not a cross-device one. Trades away the tidiness of keeping scratch
+    // files out of the app data dir (a stray file here on a hard crash
+    // is possible again) for a restore that actually works.
+    let rekeyed = TmpFile(state.db_path.with_extension(format!("restoring-{}.tmp", uuid::Uuid::new_v4())));
     db::rekey_copy(&tmp_db.0, &key, &rekeyed.0, &state.live_key_hex).map_err(|e| e.to_string())?;
 
-    // Swap on disk; caller (frontend) should prompt the user to restart
-    // the app afterward so a fresh pool opens against the new file.
+    // Swap on disk.
     std::fs::rename(&rekeyed.0, &state.db_path).map_err(|e| e.to_string())?;
 
     // The live pool runs in WAL mode (db::open_pool), so the PRE-restore
@@ -289,5 +387,38 @@ pub fn restore_commit(state: State<AppState>, src_path: String, passphrase: Stri
             let _ = std::fs::remove_file(state.db_path.with_file_name(format!("{name}{suffix}")));
         }
     }
+
+    // Issue #26: the connection pool in AppState still holds the
+    // pre-restore file open — renaming over it doesn't close those
+    // handles, so stale reads/writes are possible until the process
+    // reopens the database fresh. AppHandle::restart() exits this
+    // process and relaunches the same binary, closing that window.
+    //
+    // Gated to release builds: `cargo tauri dev` runs a separate
+    // frontend dev server on 127.0.0.1 and tears it down when it sees
+    // this process exit, even to relaunch — the restarted webview then
+    // has nothing to reload and shows a permanent white screen /
+    // connection-refused. A packaged build has no dev server (frontend
+    // is bundled into the binary), so this only affects dev workflows.
+    #[cfg(debug_assertions)]
+    {
+        let _ = app; // unused in debug builds — silence the warning
+        return Err(
+            "Restore complete, but the app could not restart itself automatically \
+             in `cargo tauri dev` (it would tear down the frontend dev server). \
+             Please stop and re-run `cargo tauri dev` now."
+                .to_string(),
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        app.restart();
+    }
+
+    // Reached only in a release build, and only if restart() somehow
+    // returns instead of exiting the process — kept rather than relied
+    // on divergence, since that exact signature isn't verified here.
+    #[cfg(not(debug_assertions))]
     Ok(())
 }

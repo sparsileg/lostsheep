@@ -150,20 +150,25 @@ fn run_diff(
         let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
         seen_source_keys.push(source_key.clone());
 
-        let existing: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM households WHERE source_key = ?1",
-                params![source_key],
-                |r| r.get(0),
-            )
-            .ok();
+        let matching_ids: Vec<i64> = {
+            let mut stmt = tx.prepare("SELECT id FROM households WHERE source_key = ?1").map_err(|e| e.to_string())?;
+            let ids: Vec<i64> = stmt
+                .query_map(params![source_key], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            ids
+        };
 
-        match existing {
-            Some(_id) => {
-                // Exact source_key match = unchanged, discarded per spec.
-                unchanged_count += 1;
-            }
-            None => {
+        // A source_key matching more than one existing household is a
+        // known collision (father/son, same name+address, no field left
+        // to tell them apart) — no way to auto-decide which one this row
+        // corresponds to, so don't guess. Falls through to the same
+        // name-match/new path used when there's no match at all.
+        if matching_ids.len() == 1 {
+            // Exact source_key match = unchanged, discarded per spec.
+            unchanged_count += 1;
+        } else {
                 // Could still be the SAME household with a changed address
                 // — best-effort match on either head's name, else new.
                 let name_match: Option<i64> = tx
@@ -190,7 +195,6 @@ fn run_diff(
                     ],
                 )
                 .map_err(|e| e.to_string())?;
-            }
         }
         emit_progress(&app, i + 1, total);
     }
@@ -266,14 +270,25 @@ fn auto_accept_all(
     for (i, rec) in incoming.iter().enumerate() {
         let address_key = pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
         let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
+        // A single PDF can itself contain two distinct households that
+        // collide on source_key (father/son at the same address) — even
+        // starting from an empty DB. Pick the next free seq for this key
+        // rather than assuming 0.
+        let source_key_seq: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(source_key_seq), -1) + 1 FROM households WHERE source_key = ?1",
+                params![source_key],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             params![
                 rec.first_name, rec.last_name, rec.role, rec.phone_1, rec.email_1, rec.first_name_2, rec.last_name_2, rec.role_2,
                 rec.phone_2, rec.email_2, rec.address_line1, rec.address_line2, rec.city, rec.state, rec.zip, rec.latitude, rec.longitude,
-                address_key, source_key, rec.has_minors, rec.comments
+                address_key, source_key, source_key_seq, rec.has_minors, rec.comments
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -400,6 +415,19 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
                         .optional()
                         .map_err(|e| e.to_string())?
                         .flatten();
+                    // The new row is inserted before the old one is
+                    // deleted (visits must be re-pointed to the new id
+                    // first), so if the incoming record's source_key is
+                    // unchanged, the old row is still occupying the exact
+                    // (source_key, source_key_seq) slot the new row would
+                    // naturally reclaim. Bump the outgoing row onto a
+                    // guaranteed-free sentinel first — -id is always
+                    // negative and therefore never collides with a real
+                    // slot — so the insert below never trips the
+                    // UNIQUE(source_key, source_key_seq) constraint. The
+                    // row is deleted a few lines down regardless.
+                    tx.execute("UPDATE households SET source_key_seq = -id WHERE id = ?1", params![old_id])
+                        .map_err(|e| e.to_string())?;
                 }
             }
 
@@ -411,14 +439,22 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
                 (Some(incoming), Some(existing)) => Some(format!("{incoming}\n\n{existing}")),
             };
 
+            let source_key_seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(source_key_seq), -1) + 1 FROM households WHERE source_key = ?1",
+                    params![source_key],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+
             tx.execute(
                 "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-                 address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                 address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                 params![
                     rec.first_name, rec.last_name, rec.role, rec.phone_1, rec.email_1, rec.first_name_2, rec.last_name_2, rec.role_2,
                     rec.phone_2, rec.email_2, rec.address_line1, rec.address_line2, rec.city, rec.state, rec.zip, rec.latitude, rec.longitude,
-                    address_key, source_key, rec.has_minors, final_comments
+                    address_key, source_key, source_key_seq, rec.has_minors, final_comments
                 ],
             )
             .map_err(|e| e.to_string())?;
