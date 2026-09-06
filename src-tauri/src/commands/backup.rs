@@ -71,6 +71,7 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     // in the first place. Stripped from this copy only, after the export,
     // so the live DB itself is untouched.
     strip_road_graph(&tmp_db.0, &dest_key)?;
+    strip_display_only_settings(&tmp_db.0, &dest_key)?;
 
     write_backup_zip(&dest_path, &tmp_db.0, &salt)?;
 
@@ -109,6 +110,21 @@ fn strip_road_graph(path: &std::path::Path, key_hex: &str) -> Result<(), String>
     let conn = db::open_with_key(&path.to_path_buf(), key_hex).map_err(|e| e.to_string())?;
     conn.execute_batch("DELETE FROM road_edges; DELETE FROM road_nodes; VACUUM;")
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Issue #40: showRoadsOverlay/showRouteOverlay are this-machine display
+// preferences, not congregation data — stripped from the backup copy
+// only, same pattern as strip_road_graph above and how backupFolder is
+// already excluded (paths.rs).
+const DISPLAY_ONLY_SETTINGS_KEYS: [&str; 2] = ["showRoadsOverlay", "showRouteOverlay"];
+
+fn strip_display_only_settings(path: &std::path::Path, key_hex: &str) -> Result<(), String> {
+    let conn = db::open_with_key(&path.to_path_buf(), key_hex).map_err(|e| e.to_string())?;
+    for key in DISPLAY_ONLY_SETTINGS_KEYS {
+        conn.execute("DELETE FROM settings WHERE key = ?1", rusqlite::params![key])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

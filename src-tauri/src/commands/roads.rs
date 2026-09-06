@@ -20,6 +20,50 @@ struct IngestProgress {
     stage: String,
 }
 
+// Issue #40 — road-overlay/route-snap support. Started at 1,000,000
+// ("effectively no cap") to confirm the mechanism worked; in practice
+// that many edges rendered unusably on the map, so cut down to 5,000 —
+// still just a constant, adjust again if this is too low/high in
+// practice.
+const MAX_ROAD_EDGES_PER_QUERY: usize = 5_000;
+
+// Placeholder pre-#38: real routing will decide its own snap tolerance
+// when it lands (Dijkstra/A* snapping). This is only for the Road
+// Management "show route" overlay's snap-line display, and reuses the
+// same 250m figure discussed for #38 so the two don't disagree visually
+// once #38 ships.
+//
+// #38 landed: this is now also the real routing snap tolerance
+// (commands::visits::generate_visit_list reuses this same constant via
+// super::roads::SNAP_TOLERANCE_M) — kept as one number so the overlay's
+// snap lines and the actual route distance never disagree about what
+// counts as "close enough to a road."
+pub(crate) const SNAP_TOLERANCE_M: f64 = 250.0;
+
+#[derive(serde::Serialize)]
+pub struct RoadEdgeSegment {
+    pub lat1: f64,
+    pub lon1: f64,
+    pub lat2: f64,
+    pub lon2: f64,
+}
+
+#[derive(serde::Serialize)]
+pub struct RoadsInBounds {
+    pub edges: Vec<RoadEdgeSegment>,
+    // true means the query hit MAX_ROAD_EDGES_PER_QUERY and edges was
+    // deliberately left empty — caller should show a "zoom in" message
+    // rather than render a silently-partial road layer.
+    pub truncated: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct NearestRoadNode {
+    pub lat: f64,
+    pub lon: f64,
+    pub distance_m: f64,
+}
+
 fn emit_progress(app: &AppHandle, stage: &str) {
     // Progress is best-effort UI feedback, not load-bearing — a failed
     // emit (e.g. no listener attached yet) must never abort the ingest.
@@ -208,4 +252,104 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
         }
     }
     result
+}
+
+/// Viewport-bounded road overlay query for the Road Management modal's
+/// "show roads on map" toggle (issue #40). Returns every edge with at
+/// least one endpoint inside the given lat/lon box, capped at
+/// MAX_ROAD_EDGES_PER_QUERY — past the cap, `edges` is left empty and
+/// `truncated: true` is returned so the caller can show a "zoom in"
+/// message instead of rendering a silently-partial layer.
+#[tauri::command]
+pub fn get_roads_in_bounds(
+    state: State<AppState>,
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+) -> Result<RoadsInBounds, String> {
+    let conn = state.roads_pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT n1.lat, n1.lon, n2.lat, n2.lon
+             FROM road_edges e
+             JOIN road_nodes n1 ON e.from_node_id = n1.id
+             JOIN road_nodes n2 ON e.to_node_id = n2.id
+             WHERE (n1.lat BETWEEN ?1 AND ?2 AND n1.lon BETWEEN ?3 AND ?4)
+                OR (n2.lat BETWEEN ?1 AND ?2 AND n2.lon BETWEEN ?3 AND ?4)
+             LIMIT ?5",
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Ask for one more than the cap so a truncated result is
+    // distinguishable from a result that just happens to land exactly
+    // on the cap.
+    let query_limit = (MAX_ROAD_EDGES_PER_QUERY + 1) as i64;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![min_lat, max_lat, min_lon, max_lon, query_limit],
+            |r| {
+                Ok(RoadEdgeSegment {
+                    lat1: r.get(0)?,
+                    lon1: r.get(1)?,
+                    lat2: r.get(2)?,
+                    lon2: r.get(3)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut edges = Vec::new();
+    for row in rows {
+        edges.push(row.map_err(|e| e.to_string())?);
+        if edges.len() > MAX_ROAD_EDGES_PER_QUERY {
+            return Ok(RoadsInBounds { edges: Vec::new(), truncated: true });
+        }
+    }
+    Ok(RoadsInBounds { edges, truncated: false })
+}
+
+/// Nearest-road-node lookup for the Road Management modal's "show route"
+/// overlay (issue #40) — draws a snap line from a household to whichever
+/// road node it's closest to. One call per household, per Stan's
+/// decision (simpler code over fewer round trips at this scale).
+/// Placeholder ahead of #38's real routing snap logic — same
+/// SNAP_TOLERANCE_M so the two don't visually disagree once #38 lands.
+/// Returns None when nothing is within tolerance (no ingested road
+/// nearby, or no road graph ingested at all).
+#[tauri::command]
+pub fn get_nearest_road_node(state: State<AppState>, lat: f64, lon: f64) -> Result<Option<NearestRoadNode>, String> {
+    let conn = state.roads_pool.get().map_err(|e| e.to_string())?;
+
+    // Rough meters->degrees conversion, padded by 1.5x, to keep this a
+    // cheap indexed box lookup rather than scanning every node — exact
+    // ranking below is real haversine, this box is only a candidate
+    // prefilter.
+    let deg_margin = (SNAP_TOLERANCE_M / 111_000.0) * 1.5;
+    let mut stmt = conn
+        .prepare("SELECT lat, lon FROM road_nodes WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![lat - deg_margin, lat + deg_margin, lon - deg_margin, lon + deg_margin],
+            |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut best: Option<(f64, f64, f64)> = None; // (lat, lon, distance_m)
+    for row in rows {
+        let (nlat, nlon) = row.map_err(|e| e.to_string())?;
+        let d = haversine_m(lat, lon, nlat, nlon);
+        if best.as_ref().map_or(true, |b| d < b.2) {
+            best = Some((nlat, nlon, d));
+        }
+    }
+
+    Ok(best.and_then(|(nlat, nlon, d)| {
+        if d <= SNAP_TOLERANCE_M {
+            Some(NearestRoadNode { lat: nlat, lon: nlon, distance_m: d })
+        } else {
+            None
+        }
+    }))
 }

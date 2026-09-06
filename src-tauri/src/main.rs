@@ -111,6 +111,8 @@ fn main() {
             commands::backup::restore_commit,
             // roads
             commands::roads::ingest_road_database,
+            commands::roads::get_roads_in_bounds,
+            commands::roads::get_nearest_road_node,
             // settings / logs
             commands::settings::get_settings,
             commands::settings::save_settings,
