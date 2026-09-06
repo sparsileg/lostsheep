@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
+const ROADS_SCHEMA_SQL: &str = include_str!("roads_schema.sql");
 
 /// Opens (creating if absent) the encrypted app DB and returns a pooled
 /// connection manager. `key_hex` is the SQLCipher key as a 64-char hex
@@ -30,6 +31,26 @@ pub fn open_pool(db_path: &PathBuf, key_hex: &str) -> anyhow::Result<Pool> {
     migrate_tags_system_key(&conn)?;
     migrate_source_key_seq(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
+    Ok(pool)
+}
+
+/// Opens (creating if absent) the plain, unencrypted road-graph database
+/// (issue #39) and returns a pooled connection manager. No SQLCipher key
+/// applied — the road graph is public OSM data with no congregant PII,
+/// so it doesn't need the keychain/encryption overhead the main DB pays.
+/// Kept as a real `r2d2` pool rather than a single `Mutex<Connection>`:
+/// routing (#38) will issue many concurrent reads per visit-list
+/// generation, and WAL mode (set below) allows those reads to run
+/// concurrently against a pool the same way the main DB already does.
+pub fn open_roads_pool(db_path: &PathBuf) -> anyhow::Result<Pool> {
+    let manager = SqliteConnectionManager::file(db_path).with_init(|conn| {
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        Ok(())
+    });
+    let pool = r2d2::Pool::builder().max_size(8).build(manager)?;
+
+    let conn = pool.get()?;
+    conn.execute_batch(ROADS_SCHEMA_SQL)?;
     Ok(pool)
 }
 

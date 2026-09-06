@@ -143,8 +143,11 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     emit_progress(&app, "storing graph");
 
-    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // Issue #39: road graph lives in its own plain SQLite file now, not
+    // the main SQLCipher DB — write the graph there. `logs` still lives
+    // in the main DB, so that write below goes through state.pool as before.
+    let mut roads_conn = state.roads_pool.get().map_err(|e| e.to_string())?;
+    let tx = roads_conn.transaction().map_err(|e| e.to_string())?;
 
     tx.execute("DELETE FROM road_edges", []).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM road_nodes", []).map_err(|e| e.to_string())?;
@@ -186,8 +189,9 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     tx.commit().map_err(|e| e.to_string())?;
 
+    let log_conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(
-        &conn,
+        &log_conn,
         "info",
         &format!("road graph ingested: {} nodes, {} edges from {file_path}", node_rows.len(), edge_rows.len()),
         None,

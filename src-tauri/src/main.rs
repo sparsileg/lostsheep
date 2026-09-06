@@ -12,6 +12,7 @@ use tauri::Manager;
 
 pub struct AppState {
     pub pool: db::Pool,
+    pub roads_pool: db::Pool,
     pub db_path: PathBuf,
     pub live_key_hex: String,
     // Issue #26: restore_commit requires a token minted by restore_preview
@@ -41,6 +42,12 @@ fn main() {
 
             let pool = db::open_pool(&db_path, &key_hex).expect("failed to open encrypted database");
 
+            // Issue #39: road graph lives in its own plain (unencrypted)
+            // SQLite file, alongside the main DB. Never touched by
+            // restore (#25/#26) — that's the whole point of the split.
+            let roads_db_path = data_dir.join("roads.db");
+            let roads_pool = db::open_roads_pool(&roads_db_path).expect("failed to open roads database");
+
             // #28: retention pruning runs unattended at startup now, not
             // as a side effect of Settings Save. run_prune() takes a
             // plain connection rather than State<AppState> specifically
@@ -65,7 +72,7 @@ fn main() {
                 }
             }
 
-            app.manage(AppState { pool, db_path, live_key_hex: key_hex, last_preview: std::sync::Mutex::new(None) });
+            app.manage(AppState { pool, roads_pool, db_path, live_key_hex: key_hex, last_preview: std::sync::Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
