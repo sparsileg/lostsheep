@@ -115,7 +115,7 @@ fn run_diff(
     source_type: &str,
     file_path: &str,
     incoming: Vec<ParsedRecord>,
-    warnings: Vec<String>,
+    mut warnings: Vec<String>,
 ) -> Result<ImportSummary, String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
 
@@ -143,12 +143,12 @@ fn run_diff(
     let mut new_count = 0;
     let mut changed_count = 0;
     let mut unchanged_count = 0;
-    let mut seen_source_keys: Vec<String> = Vec::new();
+    let mut seen_source_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     let total = incoming.len();
 
     for (i, rec) in incoming.iter().enumerate() {
         let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
-        seen_source_keys.push(source_key.clone());
+        seen_source_keys.insert(source_key.clone());
 
         let matching_ids: Vec<i64> = {
             let mut stmt = tx.prepare("SELECT id FROM households WHERE source_key = ?1").map_err(|e| e.to_string())?;
@@ -170,17 +170,48 @@ fn run_diff(
             unchanged_count += 1;
         } else {
                 // Could still be the SAME household with a changed address
-                // — best-effort match on either head's name, else new.
-                let name_match: Option<i64> = tx
-                    .query_row(
-                        "SELECT id FROM households WHERE \
-                         (first_name = ?1 AND last_name = ?2) OR (first_name_2 = ?1 AND last_name_2 = ?2) \
-                         OR (?3 IS NOT NULL AND first_name = ?3 AND last_name = ?4) \
-                         OR (?3 IS NOT NULL AND first_name_2 = ?3 AND last_name_2 = ?4)",
-                        params![rec.first_name, rec.last_name, rec.first_name_2, rec.last_name_2],
-                        |r| r.get(0),
-                    )
-                    .ok();
+                // — best-effort match on either head's name. Issue #30:
+                // this used to be query_row, which silently returns
+                // whichever row SQLite happens to return first when more
+                // than one household shares a name — no ORDER BY, no
+                // stable order, and no way to tell "one match" from
+                // "many" apart. Extended families with a shared surname
+                // are exactly the case Functional_Requirements.md
+                // anticipates, so this collects every candidate instead.
+                let name_matches: Vec<i64> = {
+                    let mut stmt = tx
+                        .prepare(
+                            "SELECT id FROM households WHERE \
+                             (first_name = ?1 AND last_name = ?2) OR (first_name_2 = ?1 AND last_name_2 = ?2) \
+                             OR (?3 IS NOT NULL AND first_name = ?3 AND last_name = ?4) \
+                             OR (?3 IS NOT NULL AND first_name_2 = ?3 AND last_name_2 = ?4)",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let ids: Vec<i64> = stmt
+                        .query_map(params![rec.first_name, rec.last_name, rec.first_name_2, rec.last_name_2], |r| r.get(0))
+                        .map_err(|e| e.to_string())?
+                        .filter_map(Result::ok)
+                        .collect();
+                    ids
+                };
+
+                // Two-plus name matches can't be auto-paired — city alone
+                // isn't a safe tiebreaker (people do move between
+                // cities), so rather than guess and risk a Replace
+                // silently overwriting the wrong family, this is added as
+                // a new record and flagged for the user to reconcile
+                // manually. Never destroys anything; a genuine duplicate
+                // is just as visible afterward as it would be either way.
+                let name_match = if name_matches.len() == 1 { Some(name_matches[0]) } else { None };
+                if name_matches.len() > 1 {
+                    warnings.push(format!(
+                        "row {}: \"{} {}\" matches {} existing households by name alone — added as new rather than guessing which one changed; check for duplicates manually",
+                        i + 1,
+                        rec.first_name,
+                        rec.last_name,
+                        name_matches.len()
+                    ));
+                }
                 let match_type = if name_match.is_some() { "changed" } else { "new" };
                 if match_type == "changed" { changed_count += 1 } else { new_count += 1 };
 
@@ -201,7 +232,10 @@ fn run_diff(
 
     // Anything currently in the DB whose source_key wasn't seen in this
     // batch at all is a candidate removal — flagged for review, never
-    // auto-deleted.
+    // auto-deleted. Issue #30: seen_source_keys is a HashSet, not a Vec —
+    // a linear .contains() scan here was O(n·m) against every existing
+    // household on every re-import; at the documented 10,000-record
+    // ceiling that's ~10^8 comparisons on a full re-import.
     {
         let mut stmt = tx.prepare("SELECT id, source_key FROM households").map_err(|e| e.to_string())?;
         let existing_keys: Vec<(i64, String)> = stmt
@@ -333,7 +367,9 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
             "SELECT rq.id, rq.match_type, rq.incoming_data, rq.existing_household_id, \
              (SELECT first_name || ' ' || last_name || \
                     coalesce(' & ' || first_name_2 || ' ' || last_name_2, '') || \
-                    ' — ' || coalesce(address_line1,'(no address)') \
+                    ' — ' || coalesce(address_line1,'(no address)') || \
+                    coalesce(', ' || address_line2, '') || \
+                    coalesce(', ' || city, '') || coalesce(' ' || state, '') || coalesce(' ' || zip, '') \
               FROM households WHERE id = rq.existing_household_id) \
              FROM review_queue rq WHERE rq.import_batch_id = ?1 AND rq.resolution = 'pending'",
         )
