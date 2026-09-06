@@ -1,28 +1,58 @@
 // log-viewer.js — native rewrite of the reference LogViewer.svelte.
 // Backed by the `logs` DB table (commands::logs) rather than log files.
+
+// Issue #27: severity order used to translate the logLevel setting into
+// which checkboxes start checked. Read-time filtering — the setting
+// only affects the DEFAULT view; every level is always fully written,
+// and the checkboxes remain freely togglable regardless of this default.
+const LV_SEVERITY = { debug: 0, info: 1, warning: 2, error: 3 };
+
 registerView('logs', {
-    init() {
+    async init() {
+        const settings = await Api.getSettings().catch(() => ({}));
+        const threshold = LV_SEVERITY[settings.logLevel] ?? LV_SEVERITY.info;
+
         document.getElementById('logsRoot').innerHTML = `
             <h1>Log Viewer</h1>
             <div class="lv-toggles">
-                <label class="lv-check lv-check-error"><input type="checkbox" data-lvl="error" checked> ERROR</label>
-                <label class="lv-check lv-check-warn"><input type="checkbox" data-lvl="warning" checked> WARNING</label>
-                <label class="lv-check lv-check-info"><input type="checkbox" data-lvl="info" checked> INFO</label>
-                <label class="lv-check lv-check-debug"><input type="checkbox" data-lvl="debug"> DEBUG</label>
+                <label class="lv-check lv-check-error"><input type="checkbox" data-lvl="error" ${LV_SEVERITY.error >= threshold ? 'checked' : ''}> ERROR</label>
+                <label class="lv-check lv-check-warn"><input type="checkbox" data-lvl="warning" ${LV_SEVERITY.warning >= threshold ? 'checked' : ''}> WARNING</label>
+                <label class="lv-check lv-check-info"><input type="checkbox" data-lvl="info" ${LV_SEVERITY.info >= threshold ? 'checked' : ''}> INFO</label>
+                <label class="lv-check lv-check-debug"><input type="checkbox" data-lvl="debug" ${LV_SEVERITY.debug >= threshold ? 'checked' : ''}> DEBUG</label>
+                <div id="lvPager" class="lv-pager-inline"></div>
                 <span id="lvLineCount" class="lv-line-count"></span>
-                <button class="btn" id="lvCopyBtn">⎘ Copy</button>
+                <button class="btn" id="lvCopyBtn" style="margin-left:24px;">⎘ Copy</button>
             </div>
-            <div class="modal-body lv-output" id="lvOutput"></div>
-            <div id="lvPager"></div>
+            <div id="lvOutput"></div>
         `;
         lvState.page = 1;
         document.querySelectorAll('#logsRoot [data-lvl]').forEach(cb => cb.addEventListener('change', () => { lvState.page = 1; loadLogs(); }));
-        document.getElementById('lvCopyBtn').addEventListener('click', copyVisibleLogs);
+        document.getElementById('lvCopyBtn').addEventListener('click', copyAllLogs);
+        startLogTail();
     },
     async onShow() { await loadLogs(); },
 });
 
-const lvState = { page: 1, pageSize: 200, rows: [], moreAvailable: false };
+// Polls for newly-written log rows while this view is on screen — a
+// backup/import/etc. writes its log entry well after the operation's
+// own success message already appeared, so without this the Log Viewer
+// looked stale until manually reopened. Only refetches when the view is
+// actually the active one (same `.active` class check core.js/sidebar.js
+// use elsewhere) and only when page 1 is showing — polling wouldn't make
+// sense mid-review of older pages, since a new row at the top would
+// shift everything and silently move the user's place.
+let lvTailInterval = null;
+function startLogTail() {
+    if (lvTailInterval !== null) return; // idempotent — init() can run more than once
+    lvTailInterval = setInterval(() => {
+        const root = document.getElementById('logsRoot');
+        if (!root || !root.classList.contains('active')) return;
+        if (lvState.page !== 1) return;
+        loadLogs();
+    }, 3000);
+}
+
+const lvState = { page: 1, pageSize: 10, rows: [], moreAvailable: false };
 
 function activeLevels() {
     return Array.from(document.querySelectorAll('#logsRoot [data-lvl]:checked')).map(cb => cb.dataset.lvl);
@@ -30,20 +60,16 @@ function activeLevels() {
 
 async function loadLogs() {
     const levels = activeLevels();
-    // Backend filters by a single level; fetch each active level and
-    // merge client-side (log volume here is small — settings caps retention).
-    let rows = [];
-    let more = false;
+    // Issue #27 (#5): one query across every checked level, globally
+    // ordered and paginated by the backend — "page 2" now means the
+    // actual second page of this exact filtered set, not the second
+    // page of each level merged independently.
+    let rows;
     try {
-        for (const lvl of levels) {
-            const chunk = await Api.getLogs(lvl, lvState.page, lvState.pageSize);
-            if (chunk.length === lvState.pageSize) more = true;
-            rows.push(...chunk);
-        }
+        rows = await Api.getLogs(levels, lvState.page, lvState.pageSize);
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
-    rows.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     lvState.rows = rows;
-    lvState.moreAvailable = more;
+    lvState.moreAvailable = rows.length === lvState.pageSize;
     renderLogRows();
     renderPager();
 }
@@ -58,8 +84,7 @@ function renderLogRows() {
     </tbody></table>`;
 }
 
-// Was built by init() but never actually populated or wired to anything —
-// page never advanced past 1 no matter how many log rows existed.
+// Global pager — one query per page now (issue #27), not per-level.
 function renderPager() {
     const pager = document.getElementById('lvPager');
     if (!pager) return;
@@ -77,9 +102,28 @@ function renderPager() {
     });
 }
 
-async function copyVisibleLogs() {
-    const text = lvState.rows.map(r => `${r.created_at}  ${r.level.toUpperCase().padEnd(7)}  ${r.message}`).join('\n');
+// Copies the FULL filtered log (every page), not just the page currently
+// on screen — loops Api.getLogs at a large page size until a short batch
+// signals the end, same active-levels filter the view is showing.
+async function copyAllLogs() {
+    const levels = activeLevels();
     const btn = document.getElementById('lvCopyBtn');
+    const BATCH_SIZE = 500;
+    let rows = [];
+    let page = 1;
+    while (true) {
+        let batch;
+        try {
+            batch = await Api.getLogs(levels, page, BATCH_SIZE);
+        } catch (e) {
+            showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
+            return;
+        }
+        rows = rows.concat(batch);
+        if (batch.length < BATCH_SIZE) break;
+        page += 1;
+    }
+    const text = rows.map(r => `${r.created_at}  ${r.level.toUpperCase().padEnd(7)}  ${r.message}`).join('\n');
     try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied!'; }
     catch (e) { btn.textContent = 'Copy failed'; }
     setTimeout(() => { btn.textContent = '⎘ Copy'; }, 1500);

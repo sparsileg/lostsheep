@@ -68,13 +68,13 @@ async function openSettingsModal() {
         });
         mountDropdown(document.getElementById('sPageSizeDropdown'), {
             items: ['10', '25', '100', '500'].map(n => ({ value: n, label: n })),
-            value: settings.pageSize || '25',
+            value: settings.pageSize || '10',
             onSelect: (val) => { pending.pageSize = val; },
         });
-        const retentionItems = ['30', '90', '180', '365'].map(n => ({ value: n, label: `${n} days` }));
+        const retentionItems = ['1', '7', '14', '30'].map(n => ({ value: n, label: `${n} days` }));
         mountDropdown(document.getElementById('sDeletedDaysDropdown'), {
             items: retentionItems,
-            value: settings.deletedRetentionDays || '365',
+            value: settings.deletedRetentionDays || '30',
             onSelect: (val) => { pending.deletedRetentionDays = val; },
         });
         mountDropdown(document.getElementById('sLogDaysDropdown'), {

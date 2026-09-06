@@ -123,6 +123,7 @@ pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64
 /// clears whatever was there before, on every household in the list.
 #[tauri::command]
 pub fn tag_households(state: State<AppState>, household_ids: Vec<i64>, tag_name: String) -> Result<(), String> {
+    let count = household_ids.len();
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let tag_id = get_or_create_tag_id(&tx, &tag_name).map_err(|e| e.to_string())?;
@@ -135,6 +136,7 @@ pub fn tag_households(state: State<AppState>, household_ids: Vec<i64>, tag_name:
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    super::logs::log(&conn, "info", &format!("tagged {count} household(s) with \"{tag_name}\""), None);
     Ok(())
 }
 

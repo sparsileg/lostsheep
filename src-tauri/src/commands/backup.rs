@@ -50,6 +50,7 @@ fn preview_token(src_path: &str, meta: &std::fs::Metadata) -> String {
 /// two to get separated or for only one to actually land on disk.
 #[tauri::command]
 pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: String) -> Result<String, String> {
+    let result = (|| -> Result<String, String> {
     // Issue #32: dest_path is a plain frontend-supplied String — never
     // trusted as-is. Must resolve to a not-yet-existing file directly
     // inside the configured backupFolder setting, read straight from the
@@ -86,6 +87,18 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(&conn, "info", &format!("backup written to {dest_path} ({} bytes)", meta.len()), None);
     Ok(dest_path)
+    })();
+
+    // Issue #27: failed backups previously left no trace at all — the
+    // error string went to the frontend's 4-second message bar and
+    // nowhere else. Every early-return `?` above is now covered without
+    // needing to touch each one individually.
+    if let Err(e) = &result {
+        if let Ok(conn) = state.pool.get() {
+            super::logs::log(&conn, "error", &format!("backup failed: {e}"), None);
+        }
+    }
+    result
 }
 
 /// Deletes the road graph from a backup-bound *copy* of the DB and
@@ -219,6 +232,7 @@ fn tag_counts(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<S
 /// not just the raw add/remove list.
 #[tauri::command]
 pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: String) -> Result<RestorePreview, String> {
+    let result = (|| -> Result<RestorePreview, String> {
     // Issue #32: confirm src_path is under the user's home directory
     // before ever opening it.
     let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
@@ -329,6 +343,14 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
         Some((src_path.clone(), token.clone()));
 
     Ok(RestorePreview { rows, backup_household_count: backup_count, current_household_count: live_count, tag_counts: tag_counts_out, token })
+    })();
+
+    if let Err(e) = &result {
+        if let Ok(conn) = state.pool.get() {
+            super::logs::log(&conn, "error", &format!("restore preview failed: {e}"), None);
+        }
+    }
+    result
 }
 
 /// Commits the restore: re-keys the backup into the live DB's own
@@ -339,6 +361,7 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
 /// no stale pool connection can read the pre-restore file afterward.
 #[tauri::command]
 pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: String, passphrase: String, token: String) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
     // Issue #32: same check as restore_preview — this is the destructive
     // half, so it gets no less scrutiny just because preview already ran.
     let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
@@ -421,4 +444,17 @@ pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: S
     // on divergence, since that exact signature isn't verified here.
     #[cfg(not(debug_assertions))]
     Ok(())
+    })();
+
+    if let Err(e) = &result {
+        if let Ok(conn) = state.pool.get() {
+            // The debug-build manual-restart message is Err-shaped so the
+            // frontend surfaces it prominently, but the restore itself
+            // already succeeded by the time it's returned — log it as
+            // info, not error, so it doesn't read as a failed restore.
+            let level = if e.starts_with("Restore complete") { "info" } else { "error" };
+            super::logs::log(&conn, level, &format!("restore commit: {e}"), None);
+        }
+    }
+    result
 }

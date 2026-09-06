@@ -10,7 +10,7 @@ use tauri::State;
 /// just constrained in the frontend. Closes the "0 means delete
 /// everything" and "negative value silently no-ops" cases (#28) by
 /// construction: neither is a member of this set.
-pub const ALLOWED_RETENTION_DAYS: [i64; 4] = [30, 90, 180, 365];
+pub const ALLOWED_RETENTION_DAYS: [i64; 4] = [1, 7, 14, 30];
 
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, String> {
@@ -29,7 +29,7 @@ fn validate_retention(values: &HashMap<String, String>) -> Result<(), String> {
         if let Some(raw) = values.get(key) {
             let n: i64 = raw.trim().parse().map_err(|_| format!("{key} must be a number"))?;
             if !ALLOWED_RETENTION_DAYS.contains(&n) {
-                return Err(format!("{key} must be one of 30, 90, 180, or 365 days"));
+                return Err(format!("{key} must be one of 1, 7, 14, or 30 days"));
             }
         }
     }
@@ -75,6 +75,8 @@ pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) ->
     validate_route_start(&values)?;
     validate_retention(&values)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let mut keys: Vec<String> = values.keys().cloned().collect();
+    keys.sort();
     for (k, v) in values {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -82,6 +84,7 @@ pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) ->
         )
         .map_err(|e| e.to_string())?;
     }
+    super::logs::log(&conn, "info", &format!("settings saved: {}", keys.join(", ")), None);
     Ok(())
 }
 
@@ -99,7 +102,7 @@ pub struct PruneImpact {
 #[tauri::command]
 pub fn preview_prune_impact(state: State<AppState>, deleted_days: i64, log_days: i64) -> Result<PruneImpact, String> {
     if !ALLOWED_RETENTION_DAYS.contains(&deleted_days) || !ALLOWED_RETENTION_DAYS.contains(&log_days) {
-        return Err("retention values must be one of 30, 90, 180, or 365 days".to_string());
+        return Err("retention values must be one of 1, 7, 14, or 30 days".to_string());
     }
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let deleted_modifier = format!("-{deleted_days} days");
@@ -157,7 +160,7 @@ pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
         .get("deletedRetentionDays")
         .and_then(|v| v.parse().ok())
         .filter(|n| ALLOWED_RETENTION_DAYS.contains(n))
-        .unwrap_or(365);
+        .unwrap_or(30);
     let log_days: i64 = settings
         .get("logRetentionDays")
         .and_then(|v| v.parse().ok())
