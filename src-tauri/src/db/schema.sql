@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS households (
     longitude     REAL,
     address_key   TEXT NOT NULL,     -- normalized address, used to group same-address records
     source_key    TEXT NOT NULL,     -- normalized name(s)+address, used for import dedupe matching
+    -- Disambiguator for two genuinely distinct households that reduce to
+    -- the identical source_key (e.g. father and adult son, same name,
+    -- same address, both role='head' — no field left to tell them apart).
+    -- source_key alone is NOT unique; (source_key, source_key_seq) is.
+    -- Assigned once per household (0 for the first one seen, 1/2/... for
+    -- later collisions) and persisted, so re-imports keep matching the
+    -- same physical household instead of re-guessing every time.
+    source_key_seq INTEGER NOT NULL DEFAULT 0,
     has_minors    INTEGER NOT NULL DEFAULT 0,  -- true if the source flagged unparsed minor-children
                                                  -- lines for this entry; names are NEVER stored, only this flag
     comments      TEXT,              -- household-level comments (distinct from visit comments) — free-text
@@ -45,6 +53,11 @@ CREATE TABLE IF NOT EXISTS households (
 );
 CREATE INDEX IF NOT EXISTS idx_households_address_key ON households(address_key);
 CREATE INDEX IF NOT EXISTS idx_households_source_key  ON households(source_key);
+-- The real uniqueness guarantee — source_key alone can collide (see
+-- column comment above). Created here so it applies to fresh databases;
+-- an existing database needs its duplicates resolved first, which
+-- db/mod.rs's migrate_source_key_seq() does before this file's batch runs.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_households_source_key_seq ON households(source_key, source_key_seq);
 CREATE INDEX IF NOT EXISTS idx_households_lat_lng      ON households(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_households_last_name    ON households(last_name);
 

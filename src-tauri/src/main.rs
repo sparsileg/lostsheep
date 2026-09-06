@@ -14,6 +14,11 @@ pub struct AppState {
     pub pool: db::Pool,
     pub db_path: PathBuf,
     pub live_key_hex: String,
+    // Issue #26: restore_commit requires a token minted by restore_preview
+    // for the exact same file, so the required before/after screen is an
+    // enforced step, not just a UI convention. (src_path, token) — cleared
+    // (single-use) on every commit attempt, matched or not.
+    pub last_preview: std::sync::Mutex<Option<(String, String)>>,
 }
 
 fn main() {
@@ -60,7 +65,7 @@ fn main() {
                 }
             }
 
-            app.manage(AppState { pool, db_path, live_key_hex: key_hex });
+            app.manage(AppState { pool, db_path, live_key_hex: key_hex, last_preview: std::sync::Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

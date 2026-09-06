@@ -92,12 +92,12 @@ const BackupRestore = {
             let preview;
             try { preview = await Api.restorePreview(srcPath, pass); }
             catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
-            renderDiff(overlay, preview, srcPath, pass);
+            renderDiff(overlay, preview, srcPath, pass, preview.token);
         });
     },
 };
 
-function renderDiff(overlay, preview, srcPath, pass) {
+function renderDiff(overlay, preview, srcPath, pass, token) {
     const area = overlay.querySelector('#rsDiffArea');
     area.innerHTML = `
         <h3>Before / After</h3>
@@ -115,10 +115,14 @@ function renderDiff(overlay, preview, srcPath, pass) {
         <button class="btn btn-danger" id="rsCommit">Restore Now</button>
     `;
     area.querySelector('#rsCommit').addEventListener('click', async () => {
-        if (!confirm('This replaces the current database with the backup. Continue?')) return;
+        if (!confirm('This replaces the current database with the backup. The app will restart automatically. Continue?')) return;
         try {
-            await Api.restoreCommit(srcPath, pass);
-            showMessage('Restore complete. Please restart the app.', CONSTANTS.MESSAGE_TYPES.INFO, 8000);
+            // Issue #26: the app restarts itself on success (backend
+            // calls AppHandle::restart()), so this call may never return
+            // normally — the process exits mid-request. No further
+            // action needed here if that happens; only a genuine failure
+            // (rejected before the swap) reaches the catch below.
+            await Api.restoreCommit(srcPath, pass, token);
             overlay.remove();
         } catch (e) { showMessage(`Restore failed: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
     });
