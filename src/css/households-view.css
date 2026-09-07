@@ -1,5 +1,15 @@
 .households-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-.households-toolbar input[type="text"] { flex: 1; min-width: 240px; }
+.hh-search-wrap { position: relative; display: flex; align-items: center; flex: 1; min-width: 240px; }
+.hh-search-wrap input[type="text"] { flex: 1; min-width: 0; width: 100%; padding-right: 26px; }
+.hh-search-clear {
+    display: none;
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: none; padding: 0 4px;
+    font-size: 1.15em; line-height: 1; cursor: pointer;
+    color: var(--text-secondary);
+}
+.hh-search-clear:hover { color: var(--text-color); }
+.hh-search-clear-visible { display: block; }
 #hhTagFilterDropdown { min-width: 200px; }
 #hhResultsMeta { margin-bottom: 8px; opacity: 0.75; font-size: 0.9em; }
 #hhPager { margin-top: 12px; display: flex; gap: 10px; align-items: center; }

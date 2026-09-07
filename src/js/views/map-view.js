@@ -5,9 +5,13 @@ registerView('map', {
             <div class="dash-stats" id="dashTagStats"></div>
             <div class="map-toolbar">
                 <div id="mapTagDropdown" style="min-width:260px;"></div>
+                <label for="mapVisitCount">Stops: </label>
                 <input type="number" id="mapVisitCount" min="1" value="10" style="width:70px;" title="Number of households to visit">
-                <button class="btn btn-primary" id="mapGenerateBtn" disabled>Generate visit list</button>
                 <button class="btn" id="mapResetSeedBtn">Reset</button>
+                <div class="map-search-wrap">
+                    <input type="text" id="mapIconSearchInput" placeholder="Highlight households…" />
+                    <button type="button" class="map-search-clear" id="mapIconSearchClearBtn" aria-label="Clear search" title="Clear search">&times;</button>
+                </div>
             </div>
             <div id="mapEl"></div>
         `;
@@ -17,6 +21,14 @@ registerView('map', {
         }).addTo(this.map);
         this.markersLayer = L.layerGroup().addTo(this.map);
         this.markersByAddressKey = {};
+        // Issue #41 — each marker's "real" icon (default pin, or a
+        // route-order badge from generateVisitList()) tracked separately
+        // from whatever the icon-search overlay is showing right now, so
+        // clearing a search restores whichever of those actually applied
+        // — not unconditionally the default pin. Keyed by address_key,
+        // same as markersByAddressKey. See applyMarkerBaseIcon() /
+        // applyIconSearch() below.
+        this.markerBaseState = {};
         this.seedGroupKey = null;
         this.selectedTagId = '';
 
@@ -37,8 +49,29 @@ registerView('map', {
             value: '',
             onSelect: (val) => { this.selectedTagId = val; loadMapData(); },
         });
-        document.getElementById('mapGenerateBtn').addEventListener('click', generateVisitList);
         document.getElementById('mapResetSeedBtn').addEventListener('click', resetSeed);
+        // Debounced live search — same fields as the households view
+        // search (name/address/phone/email/comments), reusing
+        // Api.searchHouseholds rather than a second matching
+        // implementation. Shorter delay than households-view.js's 300ms
+        // since this is just highlighting existing markers, not
+        // re-querying a whole table — adjust if it still feels laggy.
+        const mapIconSearchInput = document.getElementById('mapIconSearchInput');
+        const mapIconSearchClearBtn = document.getElementById('mapIconSearchClearBtn');
+        const syncMapSearchClearBtnVisibility = () => {
+            mapIconSearchClearBtn.classList.toggle('map-search-clear-visible', mapIconSearchInput.value.length > 0);
+        };
+        syncMapSearchClearBtnVisibility();
+        mapIconSearchInput.addEventListener('input', debounce((e) => {
+            applyIconSearch(e.target.value);
+        }, 200));
+        mapIconSearchInput.addEventListener('input', syncMapSearchClearBtnVisibility);
+        mapIconSearchClearBtn.addEventListener('click', () => {
+            mapIconSearchInput.value = '';
+            syncMapSearchClearBtnVisibility();
+            mapIconSearchInput.focus();
+            applyIconSearch('');
+        });
         wireMapResize();
     },
     async onShow() {
@@ -232,25 +265,27 @@ async function loadMapData() {
 
     MapView.markersLayer.clearLayers();
     MapView.markersByAddressKey = {};
+    MapView.markerBaseState = {};
     MapView.currentGroups = groups;
     const bounds = [];
     groups.forEach(g => {
         const marker = L.marker([g.latitude, g.longitude]).addTo(MapView.markersLayer);
         MapView.markersByAddressKey[g.address_key] = marker;
+        MapView.markerBaseState[g.address_key] = { type: 'default' };
         marker.bindPopup(`<strong>${escapeHtml(g.address_line1 || '(no address on file)')}</strong><br>${g.names.map(escapeHtml).join('<br>')}
             <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>`);
         marker.on('popupopen', () => {
             document.querySelector(`[data-select-seed="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
                 MapView.seedGroupKey = g.address_key;
                 MapView.seedHouseholdId = g.household_ids[0];
-                document.getElementById('mapGenerateBtn').disabled = false;
-                showMessage(`Seed set: ${g.address_line1 || '(no address on file)'}`, CONSTANTS.MESSAGE_TYPES.INFO, 2500);
                 marker.closePopup();
+                generateVisitList();
             });
         });
         bounds.push([g.latitude, g.longitude]);
     });
     if (bounds.length) MapView.map.fitBounds(bounds, { padding: [30, 30] });
+    reapplySearchOverlay();
 }
 
 // A numbered badge overlaid on a household's existing marker — shows
@@ -262,6 +297,108 @@ function routeMarkerIcon(n) {
         html: `<div class="map-route-marker">${n}</div>`,
         className: '', iconSize: [28, 28], iconAnchor: [14, 14],
     });
+}
+
+// Issue #41 — icon-search match marker. Literal gold, not a theme
+// variable — same reasoning drawRoadStyledPolyline() uses for the route
+// line: this needs to read the same "found it" signal regardless of
+// which theme is active, rather than blending into whatever the theme's
+// primary color happens to be.
+function searchMatchMarkerIcon() {
+    return L.divIcon({
+        html: `<div class="map-search-star-marker">★</div>`,
+        className: '', iconSize: [56, 56], iconAnchor: [28, 28],
+    });
+}
+
+// Applies whichever icon actually applies to this marker right now —
+// the default pin, or a route-order badge if generateVisitList() set
+// one — independent of any icon-search overlay currently on top of it.
+// Called both to lay down the real state (loadMapData/generateVisitList/
+// resetSeed) and to restore it once a search is cleared.
+function applyMarkerBaseIcon(addressKey) {
+    const marker = MapView.markersByAddressKey[addressKey];
+    if (!marker) return;
+    const st = MapView.markerBaseState[addressKey];
+    marker.setIcon(st && st.type === 'route' ? routeMarkerIcon(st.order) : new L.Icon.Default());
+    marker.setZIndexOffset(0);
+}
+
+// Fetches every household id matching the current icon-search text,
+// scoped to whatever tag the dashboard's own filter has selected (the
+// same pool plotted on the map) — same paging pattern
+// fetchAllFilteredHouseholds() in households-view.js uses to walk past
+// the server's 500-per-page cap. Reuses Api.searchHouseholds itself
+// (same fields: name/address/phone/email/comments) rather than a
+// second, divergent matching implementation.
+async function fetchMatchingHouseholdIds(query) {
+    const tag_names = MapView.selectedTagId ? [MapView.tagsById[MapView.selectedTagId]] : [];
+    const page_size = 500;
+    let page = 1;
+    const ids = new Set();
+    for (;;) {
+        let result;
+        try { result = await Api.searchHouseholds({ query, tag_names, page, page_size }); }
+        catch (e) { console.error('map icon search failed', e); break; }
+        result.households.forEach(h => ids.add(h.id));
+        if (ids.size >= result.total || result.households.length === 0) break;
+        page += 1;
+    }
+    return ids;
+}
+
+// Issue #41 — live icon-search on the dashboard. An empty query restores
+// every marker to its real base icon/state (see applyMarkerBaseIcon).
+// A non-empty query turns matches into gold stars at full opacity and
+// fades everything else — the faded markers keep their real underlying
+// icon (default pin or route badge), just dimmed, so clearing the search
+// doesn't need to guess what was there before.
+async function applyIconSearch(query) {
+    const trimmed = (query || '').trim();
+    if (!trimmed) {
+        Object.keys(MapView.markersByAddressKey).forEach(key => {
+            MapView.markersByAddressKey[key].setOpacity(1);
+            applyMarkerBaseIcon(key);
+        });
+        return;
+    }
+    const matchedIds = await fetchMatchingHouseholdIds(trimmed);
+    (MapView.currentGroups || []).forEach(g => {
+        const marker = MapView.markersByAddressKey[g.address_key];
+        if (!marker) return;
+        if (g.household_ids.some(id => matchedIds.has(id))) {
+            marker.setIcon(searchMatchMarkerIcon());
+            marker.setOpacity(1);
+            // Leaflet otherwise stacks markers by latitude (further
+            // south wins ties), which can bury a star match under a
+            // nearby non-matching pin — force matches to the front
+            // regardless of position.
+            marker.setZIndexOffset(1000);
+        } else {
+            applyMarkerBaseIcon(g.address_key);
+            marker.setOpacity(0.35);
+        }
+    });
+}
+
+// Re-runs whatever icon-search is currently typed, if any — called after
+// anything that rebuilds base icon state (a fresh generateVisitList()
+// run, resetSeed(), a reloaded loadMapData()) so a search the user is
+// mid-typing doesn't silently go stale against the new marker state.
+function reapplySearchOverlay() {
+    const el = document.getElementById('mapIconSearchInput');
+    if (el && el.value.trim()) applyIconSearch(el.value);
+}
+
+// Clears the map icon-search field itself (not just the highlighting) —
+// used when something invalidates what the search was highlighting
+// against, e.g. a freshly generated visit route.
+function clearIconSearch() {
+    const input = document.getElementById('mapIconSearchInput');
+    const clearBtn = document.getElementById('mapIconSearchClearBtn');
+    if (input) input.value = '';
+    if (clearBtn) clearBtn.classList.remove('map-search-clear-visible');
+    applyIconSearch('');
 }
 
 // Plain haversine, meters — mirrors commands/geo.rs's haversine_meters()
@@ -349,11 +486,17 @@ async function generateVisitList() {
     // run's results get their own — otherwise a badge from a household
     // that isn't part of the new list sticks around looking like it still
     // is.
+    Object.keys(MapView.markerBaseState).forEach(key => { MapView.markerBaseState[key] = { type: 'default' }; });
     Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
     entries.forEach((e, idx) => {
+        MapView.markerBaseState[e.address_key] = { type: 'route', order: idx + 1 };
         const marker = MapView.markersByAddressKey[e.address_key];
         if (marker) marker.setIcon(routeMarkerIcon(idx + 1));
     });
+    // A newly generated route replaces whatever badges/state a search
+    // might have been highlighting against — clear the search rather
+    // than reapply it over icons that no longer mean what they did.
+    clearIconSearch();
 
     const startInfo = await getRouteStartInfo();
     const startsAtRoute = entries.length > 0 && entries[0].distance_context === 'route' && !!startInfo;
@@ -473,11 +616,14 @@ async function copyVisitList(overlay) {
 function resetSeed() {
     MapView.seedGroupKey = null;
     MapView.seedHouseholdId = null;
-    document.getElementById('mapGenerateBtn').disabled = true;
+    Object.keys(MapView.markerBaseState).forEach(key => { MapView.markerBaseState[key] = { type: 'default' }; });
     Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
     // Icons going back to normal here means whatever route was on
     // display no longer corresponds to anything selected — erase it too.
     MapView.routeLayer.clearLayers();
+    // Clears the search field itself, not just the highlighting it was
+    // producing — same as a freshly generated route (generateVisitList).
+    clearIconSearch();
     showMessage('Seed cleared.', CONSTANTS.MESSAGE_TYPES.INFO, 2000);
 }
 

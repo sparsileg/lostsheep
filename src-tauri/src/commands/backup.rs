@@ -450,16 +450,13 @@ pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: S
         );
     }
 
+    // AppHandle::restart() has return type `!` — it never returns, it
+    // exits the process to relaunch. That `!` coerces directly into this
+    // closure's `Result<(), String>`, so this is the closure's tail
+    // expression (no semicolon, no trailing Ok(())) rather than a
+    // separate statement — anything after it really would be dead code.
     #[cfg(not(debug_assertions))]
-    {
-        app.restart();
-    }
-
-    // Reached only in a release build, and only if restart() somehow
-    // returns instead of exiting the process — kept rather than relied
-    // on divergence, since that exact signature isn't verified here.
-    #[cfg(not(debug_assertions))]
-    Ok(())
+    app.restart()
     })();
 
     if let Err(e) = &result {
