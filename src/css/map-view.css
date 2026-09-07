@@ -37,6 +37,29 @@
     box-shadow: 0 0 0 2px var(--bg-color), 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
+/* Issue #41 — icon-search match marker. Literal gold, not a theme
+   variable, matching drawRoadStyledPolyline()'s reasoning in
+   map-view.js: this needs to read as "found it" the same way regardless
+   of which theme is active. */
+.map-search-star-marker {
+    width: 56px; height: 56px; line-height: 56px; text-align: center;
+    font-size: 40px; color: #FFD700;
+    -webkit-text-stroke: 2px #000000;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.7), 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.map-search-wrap { position: relative; display: flex; align-items: center; }
+#mapIconSearchInput { min-width: 200px; padding-right: 26px; }
+.map-search-clear {
+    display: none;
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: none; padding: 0 4px;
+    font-size: 1.15em; line-height: 1; cursor: pointer;
+    color: var(--text-secondary);
+}
+.map-search-clear:hover { color: var(--text-color); }
+.map-search-clear-visible { display: block; }
+
 /* Map height is set at runtime (map-view.js resizeMapEl()) from the
    element's own actual position, not guessed here. A static
    calc(100vh - 40px) only accounted for #mainContent's own padding —

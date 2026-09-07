@@ -3,7 +3,10 @@ registerView('households', {
         document.getElementById('householdsRoot').innerHTML = `
             <h1>Households</h1>
             <div class="households-toolbar">
-                <input type="text" id="hhSearchInput" placeholder="Search name, address, phone, email, comments…" />
+                <div class="hh-search-wrap">
+                    <input type="text" id="hhSearchInput" placeholder="Search name, address, phone, email, comments…" />
+                    <button type="button" class="hh-search-clear" id="hhSearchClearBtn" aria-label="Clear search" title="Clear search">&times;</button>
+                </div>
                 <div id="hhTagFilterDropdown"></div>
                 <button class="btn" id="hhGenerateDirectoryBtn">Generate Directory PDF</button>
             </div>
@@ -15,7 +18,21 @@ registerView('households', {
             <div id="hhPager"></div>
         `;
         state.page = 1;
-        document.getElementById('hhSearchInput').addEventListener('input', debounce(() => { state.page = 1; loadHouseholds(); }, 300));
+        const hhSearchInput = document.getElementById('hhSearchInput');
+        const hhSearchClearBtn = document.getElementById('hhSearchClearBtn');
+        const syncClearBtnVisibility = () => {
+            hhSearchClearBtn.classList.toggle('hh-search-clear-visible', hhSearchInput.value.length > 0);
+        };
+        syncClearBtnVisibility();
+        hhSearchInput.addEventListener('input', debounce(() => { state.page = 1; loadHouseholds(); }, 300));
+        hhSearchInput.addEventListener('input', syncClearBtnVisibility);
+        hhSearchClearBtn.addEventListener('click', () => {
+            hhSearchInput.value = '';
+            syncClearBtnVisibility();
+            hhSearchInput.focus();
+            state.page = 1;
+            loadHouseholds();
+        });
         // Tags are capped at one per household now, so filtering by more
         // than one at once would always return nothing — single-select,
         // not the old multi-chip filter.
