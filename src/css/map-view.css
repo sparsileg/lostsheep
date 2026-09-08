@@ -6,6 +6,54 @@
 .map-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; position: relative; z-index: 900; }
 .visit-list-items { max-height: 400px; overflow-y: auto; }
 .visit-list-start { margin: 16px 0 8px; }
+/* Issue #43 — previously inline style="opacity:.6"/"opacity:.75" on the
+   modal's list items (no-inline-CSS rule, Functional_Requirements.md);
+   moved here when the modal was replaced by the floating preview panel. */
+.visit-list-dist { opacity: .6; }
+.visit-list-return { list-style: none; margin-top: 8px; opacity: .75; }
+
+/* Issue #43 — #mapEl's positioning context for the floating post-route
+   controls/preview panel below. flex:1 preserves #mapEl's existing
+   fill-remaining-height behavior now that it's nested one level deeper
+   (was a direct child of the flex-column #mapViewRoot before). */
+.map-container { position: relative; flex: 1; display: flex; }
+.map-container #mapEl { flex: 1; }
+
+/* Button group replacing the old full-screen visit-list modal. Sits
+   above Leaflet's own panes (same z-index reasoning as .map-toolbar
+   above) but below the hamburger menu/modals. Deliberately semi-
+   transparent per Stan — a light visual hint that it's floating over
+   the map, not part of the map itself. The preview panel below is
+   intentionally NOT given this same opacity — text meant to be read
+   stays fully legible. */
+.map-postroute-controls {
+    position: absolute; top: 12px; right: 12px; z-index: 900;
+    display: flex; gap: 6px;
+    background: var(--card-bg); opacity: 0.88;
+    padding: 6px 8px; border-radius: 6px; box-shadow: var(--shadow-card);
+}
+/* display:flex above has the same specificity as the browser's own
+   [hidden] { display: none }, and author rules win ties over the UA
+   stylesheet regardless of source order — so without this override the
+   controls stayed visible no matter what map-view.js set the hidden
+   attribute to. .map-preview-panel below doesn't hit this since it never
+   sets display explicitly, leaving the UA rule free to apply. */
+.map-postroute-controls[hidden] { display: none; }
+
+/* On-demand text list (Preview text toggle) — floats over the map
+   rather than resizing #mapEl's container, avoiding Leaflet
+   invalidateSize()/layout-reflow entirely. Opaque background (unlike
+   the controls box above) since this holds text meant to be read.
+   Dismissed on outside click, wired in map-view.js the same way
+   sidebar.js dismisses its hamburger menu / theme dropdown. */
+.map-preview-panel {
+    position: absolute; top: 56px; right: 12px; z-index: 900;
+    width: min(360px, calc(100% - 24px));
+    max-height: 60%; overflow-y: auto;
+    background: var(--card-bg); box-shadow: var(--shadow-modal);
+    padding: 10px 14px; border-radius: 6px;
+}
+.map-preview-panel h3 { margin: 0 0 8px; }
 
 /* Per-tag stat cards — moved here from the old standalone Dashboard view,
    which no longer exists (this map view IS the Dashboard now). Kept

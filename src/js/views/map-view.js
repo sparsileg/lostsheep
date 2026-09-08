@@ -13,9 +13,26 @@ registerView('map', {
                     <button type="button" class="map-search-clear" id="mapIconSearchClearBtn" aria-label="Clear search" title="Clear search">&times;</button>
                 </div>
             </div>
-            <div id="mapEl"></div>
+            <div class="map-container">
+                <div id="mapEl"></div>
+                <div id="mapPostRouteControls" class="map-postroute-controls" hidden>
+                    <button type="button" class="btn btn-small" id="mapCopyVisitListBtn">⎘ Copy Text</button>
+                    <button type="button" class="btn btn-small" id="mapPdfVisitListBtn">⎙ PDF</button>
+                    <button type="button" class="btn btn-small" id="mapPreviewToggleBtn">Preview text</button>
+                </div>
+                <div id="mapPreviewPanel" class="map-preview-panel" hidden></div>
+            </div>
         `;
-        this.map = L.map('mapEl').setView([39.5, -98.35], 4);
+        // Issue #43 follow-up — zoomSnap 0.25 lets fitBounds() land on
+        // quarter-levels instead of only whole ones, so
+        // frameRouteBounds() doesn't have to back off a full level to
+        // fit a route. zoomDelta is a separate Leaflet setting governing
+        // the +/- control buttons specifically — without it those
+        // buttons still step by a whole level regardless of zoomSnap.
+        // Scroll-wheel zoom isn't affected by either; it already snaps
+        // to the nearest zoomSnap value on its own. Revisit 0.25 for
+        // either if it feels off.
+        this.map = L.map('mapEl', { zoomSnap: 0.25, zoomDelta: 0.25 }).setView([39.5, -98.35], 4);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
         }).addTo(this.map);
@@ -47,9 +64,33 @@ registerView('map', {
         this.tagDropdown = mountDropdown(document.getElementById('mapTagDropdown'), {
             items: [{ value: '', label: 'All households with coordinates' }],
             value: '',
-            onSelect: (val) => { this.selectedTagId = val; loadMapData(); },
+            onSelect: (val) => { this.selectedTagId = val; clearActiveRoute(); loadMapData(); },
         });
         document.getElementById('mapResetSeedBtn').addEventListener('click', resetSeed);
+
+        // Issue #43 — post-route controls. Copy/PDF read from
+        // MapView.lastVisit* state regardless of what's on screen (set by
+        // generateVisitList()); the toggle just shows/hides the preview
+        // panel using that same state. Wired once here, at init — the
+        // buttons/panel elements are never rebuilt afterward, only shown
+        // or hidden via the hidden attribute, so a single binding covers
+        // every generated route for the life of this view.
+        document.getElementById('mapCopyVisitListBtn').addEventListener('click', copyVisitList);
+        document.getElementById('mapPdfVisitListBtn').addEventListener('click', downloadVisitListPdf);
+        document.getElementById('mapPreviewToggleBtn').addEventListener('click', togglePreviewPanel);
+
+        // Dismissed by any outside click — same pattern as sidebar.js's
+        // hamburger menu / theme dropdown. Clicks on the toggle button
+        // itself are excluded so toggling closed doesn't immediately
+        // reopen via this same handler.
+        document.addEventListener('click', (event) => {
+            const panel = document.getElementById('mapPreviewPanel');
+            const toggleBtn = document.getElementById('mapPreviewToggleBtn');
+            if (!panel || panel.hidden) return;
+            if (panel.contains(event.target) || event.target === toggleBtn) return;
+            panel.hidden = true;
+        });
+
         // Debounced live search — same fields as the households view
         // search (name/address/phone/email/comments), reusing
         // Api.searchHouseholds rather than a second matching
@@ -84,8 +125,7 @@ registerView('map', {
         // would otherwise still get redrawn by applyRoadSettings() below
         // from stale lastVisitEntries, leaving default-icon markers next
         // to a route that no longer corresponds to anything selected.
-        MapView.lastVisitEntries = null;
-        MapView.routeLayer.clearLayers();
+        clearActiveRoute();
         await applyRoadSettings();
     },
 });
@@ -99,6 +139,24 @@ MapView.applyRoadSettings = applyRoadSettings;
 // regardless of window size). 20 matches #mainContent's own bottom
 // padding (base.css). Re-run on every onShow (dash-stats/toolbar content
 // can change row count between visits) and on window resize.
+// Issue #43 follow-up — clears whatever route is currently "on display"
+// (the drawn overlay polyline, the floating post-route controls, and the
+// preview panel), and forgets it (lastVisitEntries = null) so nothing
+// downstream (applyRoadSettings' redraw, a stale Copy/PDF/preview) can
+// act on it after the underlying data it referred to has changed.
+// Shared by three places a currently-shown route stops being valid:
+// leaving/re-entering this view (onShow), an explicit Reset
+// (resetSeed), and switching the tag filter (which rebuilds every
+// marker via loadMapData() but wasn't clearing this UI, leaving stale
+// controls up referencing a route that no longer matches what's on
+// screen).
+function clearActiveRoute() {
+    MapView.lastVisitEntries = null;
+    MapView.routeLayer.clearLayers();
+    document.getElementById('mapPostRouteControls').hidden = true;
+    document.getElementById('mapPreviewPanel').hidden = true;
+}
+
 function resizeMapEl() {
     const el = document.getElementById('mapEl');
     if (!el) return;
@@ -451,6 +509,44 @@ function computeReturnLeg(entries, startInfo) {
     };
 }
 
+// Issue #43 — auto-frame the map to just the n households in a generated
+// route. Deliberately excludes the leg leading into the #1 household —
+// the configured start-point leg when one's set, or the seed→household-1
+// leg otherwise — and the return-to-start leg: "the route" for framing
+// purposes is the stops themselves and the road paths between them, not
+// whatever brought the walk to its first stop.
+//
+// Bounds include each remaining leg's actual route_path geometry, not
+// just the household endpoints — a road can bow well outside the
+// straight line between two points, and framing on endpoints alone let
+// that bulge hang off the edge of the viewport. Entry 0's own household
+// point is still included via the fallback below; only the incoming leg
+// geometry is dropped, unconditionally, regardless of whether a
+// configured start or a seed produced it.
+//
+// map.getSize() gives real on-screen pixels so the ~10% padding scales
+// with whatever window size Stan is actually running at, rather than a
+// fixed pixel guess. maxZoom stops a tiny 2-3 household cluster from
+// zooming in absurdly far — value picked by feel, revisit if it looks
+// wrong in practice.
+const ROUTE_FRAME_MAX_ZOOM = 16;
+
+function frameRouteBounds(entries) {
+    if (!entries || entries.length === 0 || !MapView.map) return;
+    const points = [];
+    entries.forEach((e, idx) => {
+        if (idx > 0 && e.route_path && e.route_path.length > 1) {
+            e.route_path.forEach(p => points.push([p.lat, p.lon]));
+        } else {
+            points.push([e.latitude, e.longitude]);
+        }
+    });
+    const size = MapView.map.getSize();
+    const padX = Math.round(size.x * 0.1);
+    const padY = Math.round(size.y * 0.1);
+    MapView.map.fitBounds(points, { padding: [padX, padY], maxZoom: ROUTE_FRAME_MAX_ZOOM });
+}
+
 // The generated visit list now pulls from whatever tag the dashboard's
 // own filter dropdown has selected — the same pool that's plotted on
 // the map — rather than always hardcoding "Not known" (#15 follow-up).
@@ -513,29 +609,46 @@ async function generateVisitList() {
     // no-op internally when the toggle is off.
     await drawRouteOverlay(entries);
 
-    const overlay = modalShell(`
-        <h2>Visit List (${entries.length} addresses)</h2>
-        <button class="btn" id="mapCopyVisitListBtn">⎘ Copy</button>
-        <button class="btn" id="mapPdfVisitListBtn">⎙ PDF</button>
-        ${startsAtRoute ? `<div class="visit-list-start">Starting at ${escapeHtml(startInfo.label)}</div>` : ''}
-        <ol class="visit-list-items">${entries.map((e, idx) => {
-            const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
-            const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
-            const distLabel = e.distance_context === 'route'
-                ? (idx === 0 ? 'from start point' : 'from previous stop')
-                : 'from seed';
-            return `<li>${escapeHtml(e.address_line1 || '(no address on file)')}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
-                — ${e.names.map(escapeHtml).join(', ')}${phones}
-                <span style="opacity:.6;"> (${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})</span></li>`;
-        }).join('')}${returnLeg ? `<li style="list-style:none; margin-top:8px; opacity:.75;">↩ Back to ${escapeHtml(returnLeg.label)}
-                <span style="opacity:.6;"> (${metersToMiles(returnLeg.meters).toFixed(2)} mi)</span></li>` : ''}</ol>
-        <div class="modal-buttons">
-            <button class="btn" id="mapCloseVisitListBtn">Close</button>
-        </div>
-    `);
-    overlay.querySelector('#mapCopyVisitListBtn').addEventListener('click', () => copyVisitList(overlay));
-    overlay.querySelector('#mapPdfVisitListBtn').addEventListener('click', () => downloadVisitListPdf());
-    overlay.querySelector('#mapCloseVisitListBtn').addEventListener('click', () => overlay.remove());
+    // Issue #43 — frame the map to just this route's households, start/
+    // return legs excluded. Runs regardless of the route-overlay toggle
+    // above (it's about seeing the households, not the road lines).
+    frameRouteBounds(entries);
+
+    // Issue #43 — full-screen modal is gone for this flow. Non-blocking
+    // controls float over the map instead; the preview panel's content
+    // is built now but stays hidden until the person opts in via the
+    // toggle button (on-demand, not shown automatically — most routes
+    // are checked visually on the map, not by reading the list).
+    document.getElementById('mapPreviewPanel').innerHTML = buildVisitListHtml(entries, returnLeg, startsAtRoute ? startInfo : null);
+    document.getElementById('mapPreviewPanel').hidden = true;
+    document.getElementById('mapPostRouteControls').hidden = false;
+}
+
+function buildVisitListHtml(entries, returnLeg, startInfo) {
+    const items = entries.map((e, idx) => {
+        const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
+        const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
+        const distLabel = e.distance_context === 'route'
+            ? (idx === 0 ? 'from start point' : 'from previous stop')
+            : 'from seed';
+        return `<li>${escapeHtml(e.address_line1 || '(no address on file)')}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
+            — ${e.names.map(escapeHtml).join(', ')}${phones}
+            <span class="visit-list-dist"> (${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})</span></li>`;
+    }).join('');
+    const returnItem = returnLeg
+        ? `<li class="visit-list-return">↩ Back to ${escapeHtml(returnLeg.label)}
+            <span class="visit-list-dist"> (${metersToMiles(returnLeg.meters).toFixed(2)} mi)</span></li>`
+        : '';
+    return `
+        <h3>Visit List (${entries.length} addresses)</h3>
+        ${startInfo ? `<div class="visit-list-start">Starting at ${escapeHtml(startInfo.label)}</div>` : ''}
+        <ol class="visit-list-items">${items}${returnItem}</ol>
+    `;
+}
+
+function togglePreviewPanel() {
+    const panel = document.getElementById('mapPreviewPanel');
+    if (panel) panel.hidden = !panel.hidden;
 }
 
 function buildVisitListText(entries, returnLeg, startInfo) {
@@ -606,11 +719,13 @@ function downloadVisitListPdf() {
     pdfMake.createPdf(docDefinition).download(filename);
 }
 
-async function copyVisitList(overlay) {
-    const btn = overlay.querySelector('#mapCopyVisitListBtn');
+async function copyVisitList() {
+    const btn = document.getElementById('mapCopyVisitListBtn');
+    if (!btn) return;
+    const defaultLabel = '⎘ Copy Text';
     try { await navigator.clipboard.writeText(MapView.lastVisitListText || ''); btn.textContent = 'Copied!'; }
     catch (e) { btn.textContent = 'Copy failed'; }
-    setTimeout(() => { if (btn) btn.textContent = '⎘ Copy'; }, 1500);
+    setTimeout(() => { if (btn) btn.textContent = defaultLabel; }, 1500);
 }
 
 function resetSeed() {
@@ -619,8 +734,9 @@ function resetSeed() {
     Object.keys(MapView.markerBaseState).forEach(key => { MapView.markerBaseState[key] = { type: 'default' }; });
     Object.values(MapView.markersByAddressKey).forEach(marker => marker.setIcon(new L.Icon.Default()));
     // Icons going back to normal here means whatever route was on
-    // display no longer corresponds to anything selected — erase it too.
-    MapView.routeLayer.clearLayers();
+    // display no longer corresponds to anything selected — erase it too,
+    // along with the floating controls/preview panel that referred to it.
+    clearActiveRoute();
     // Clears the search field itself, not just the highlighting it was
     // producing — same as a freshly generated route (generateVisitList).
     clearIconSearch();
