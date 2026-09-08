@@ -98,7 +98,6 @@ plan to stop this data from being wiped on every database restore.
   applies — export one polygon spanning both if you need the roads
   between them to link up.
 
-
 ## Appendix
 
 **Winchester Stake Bounding Box**

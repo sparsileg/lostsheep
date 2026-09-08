@@ -22,18 +22,18 @@ everything else, so it is addressed first.
 
 ### 1.1 Gap analysis
 
-| # | Gap | Where it lives | Consequence |
-|---|---|---|---|
-| G1 | No outcome on a visit | `visits` table has only date + free-text comments | Cannot distinguish contact from attempt. Every effectiveness question needs a human to read prose. |
-| G2 | No never-visited view | `get_visits_report` inner-joins from `visits` | Households with zero visits are invisible to reporting. The named use case. |
-| G3 | No recency measure | No `MAX(visit_date)` query anywhere in the backend | "Not visited since" cannot be asked. |
-| G4 | Report is visit-anchored, not household-anchored | One row per visit | "Last Visited" sort sorts visit rows, not households. The label misleads; the source comment admits it. |
-| G5 | Routing ignores history | `generate_visit_list` never reads `visits` | The tool that picks where to go next does not know where anyone has been. |
-| G6 | Tag and visit state drift | "Not known" is a manual proxy for "not visited" | Two sources of truth, updated independently. |
-| G7 | No coverage rollup | Dashboard cards count categorisation, not contact | Cannot answer "what fraction have we reached this quarter?" |
-| G8 | No export | No PDF or CSV from any visit report | Nothing can leave the app for a planning meeting. |
-| G9 | History is destructible | Visits cascade on household delete | Historical reports silently shrink over time. |
-| G10 | Dates unvalidated | `visits.visit_date` is free-form `TEXT` | A malformed date makes a visited household look never-visited. |
+| #   | Gap                                              | Where it lives                                     | Consequence                                                                                             |
+| --- | ------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| G1  | No outcome on a visit                            | `visits` table has only date + free-text comments  | Cannot distinguish contact from attempt. Every effectiveness question needs a human to read prose.      |
+| G2  | No never-visited view                            | `get_visits_report` inner-joins from `visits`      | Households with zero visits are invisible to reporting. The named use case.                             |
+| G3  | No recency measure                               | No `MAX(visit_date)` query anywhere in the backend | "Not visited since" cannot be asked.                                                                    |
+| G4  | Report is visit-anchored, not household-anchored | One row per visit                                  | "Last Visited" sort sorts visit rows, not households. The label misleads; the source comment admits it. |
+| G5  | Routing ignores history                          | `generate_visit_list` never reads `visits`         | The tool that picks where to go next does not know where anyone has been.                               |
+| G6  | Tag and visit state drift                        | "Not known" is a manual proxy for "not visited"    | Two sources of truth, updated independently.                                                            |
+| G7  | No coverage rollup                               | Dashboard cards count categorisation, not contact  | Cannot answer "what fraction have we reached this quarter?"                                             |
+| G8  | No export                                        | No PDF or CSV from any visit report                | Nothing can leave the app for a planning meeting.                                                       |
+| G9  | History is destructible                          | Visits cascade on household delete                 | Historical reports silently shrink over time.                                                           |
+| G10 | Dates unvalidated                                | `visits.visit_date` is free-form `TEXT`            | A malformed date makes a visited household look never-visited.                                          |
 
 G9 and G10 are tracked as their own issues. They are listed because no report
 built on top of them is trustworthy until they are fixed — a recency report is
@@ -124,16 +124,16 @@ visit log in that role. The visit log answers "what did we do"; this answers
 
 Columns:
 
-| Column | Content | Notes |
-|---|---|---|
-| Household | `Lastname, First & First` | Same format as the Households view and the directory PDF |
-| Address | Street, city | Enough to recognise |
-| Tag | Current category | Chip, same rendering as elsewhere |
-| Last visit | Date, or **Never** | "Never" set in the accent colour — it is the answer the report exists to surface |
-| Days since | Integer, or blank | Sortable; the working column |
-| Last outcome | Chip: contacted / no answer / … | Reveals the household visited three times with no answer |
-| Attempts | Count since last contact | Distinguishes neglected from unreachable |
-| — | "Use as seed" button | The link into routing; see §4 |
+| Column       | Content                         | Notes                                                                            |
+| ------------ | ------------------------------- | -------------------------------------------------------------------------------- |
+| Household    | `Lastname, First & First`       | Same format as the Households view and the directory PDF                         |
+| Address      | Street, city                    | Enough to recognise                                                              |
+| Tag          | Current category                | Chip, same rendering as elsewhere                                                |
+| Last visit   | Date, or **Never**              | "Never" set in the accent colour — it is the answer the report exists to surface |
+| Days since   | Integer, or blank               | Sortable; the working column                                                     |
+| Last outcome | Chip: contacted / no answer / … | Reveals the household visited three times with no answer                         |
+| Attempts     | Count since last contact        | Distinguishes neglected from unreachable                                         |
+| —            | "Use as seed" button            | The link into routing; see §4                                                    |
 
 Default sort: never-visited first (alphabetically within that group), then by
 descending days-since. That ordering is itself the answer to the question.
@@ -190,11 +190,11 @@ The default 90-day window is a good default and should stay.
 
 One compact table, no row-level detail. Per tag, plus a total row:
 
-| Tag | Households | Never visited | Visited in period | Coverage |
-|---|---|---|---|---|
-| Not known | 180 | 96 | 44 | 24% |
-| Known | 78 | 2 | 61 | 78% |
-| **Total** | **258** | **98** | **105** | **41%** |
+| Tag       | Households | Never visited | Visited in period | Coverage |
+| --------- | ---------- | ------------- | ----------------- | -------- |
+| Not known | 180        | 96            | 44                | 24%      |
+| Known     | 78         | 2             | 61                | 78%      |
+| **Total** | **258**    | **98**        | **105**           | **41%**  |
 
 Period selector: this quarter / this year / last 12 months / custom.
 
