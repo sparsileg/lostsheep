@@ -1,0 +1,191 @@
+/* sidebar.css — sidebar chrome (nav, theme/font controls, hamburger menu,
+   mobile topbar/drawer). Pulled out of base.css so sidebar layout can be
+   edited without scrolling past unrelated structural rules. Colors/tokens
+   still come from css/themes/*.css, same as everywhere else. */
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+#sidebar {
+    width: 242px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 16px 16px 8px;
+}
+
+.sidebar-top .logo {
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: var(--primary-text);
+    padding: 0;
+}
+
+.sidebar-logo-img {
+    height: 96px;
+    width: auto;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
+.sidebar-controls {
+    padding: 0 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 8px;
+}
+
+#sidebarNavList {
+    list-style: none;
+    margin: 0;
+    padding: 8px 12px;
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.nav-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    color: var(--color-nav-text);
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.nav-item:hover {
+    background: var(--color-nav-hover-bg);
+    color: var(--color-nav-hover-text);
+    border-color: var(--primary-color);
+}
+
+.nav-item.active {
+    border-left: 3px solid var(--primary-color);
+    font-weight: 600;
+    background: var(--card-hover);
+}
+
+.sidebar-footer {
+    padding: 10px 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+#theme-dropdown {
+    position: relative;
+}
+
+#theme-dropdown-trigger {
+    width: 100%;
+    text-align: left;
+}
+
+#theme-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-dropdown);
+    z-index: 20;
+}
+
+#theme-dropdown-menu.open {
+    display: block;
+}
+
+.theme-dropdown-item {
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.theme-dropdown-item:hover {
+    background: var(--card-hover);
+}
+
+.font-size-control {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+#font-size-label {
+    min-width: 64px;
+    text-align: center;
+    font-size: 0.85em;
+    opacity: 0.85;
+}
+
+#hamburger-btn {
+    background: none;
+    border: none;
+    color: var(--text-color);
+    font-size: 3rem;
+    cursor: pointer;
+    padding: 0px 8px;
+}
+
+.hamburger-menu {
+    display: none;
+    position: fixed;
+    width: 220px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-dropdown);
+    z-index: 2000;
+}
+
+.hamburger-menu.open {
+    display: block;
+}
+
+.hamburger-menu-item {
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.hamburger-menu-item:hover {
+    background: var(--card-hover);
+}
+
+/* ── Mobile drawer / topbar (moves with sidebar chrome — same feature,
+   #89) ──────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    #sidebar {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        transform: translateX(-100%);
+        transition: transform .2s;
+        width: 100%;
+    }
+
+    #appShell.mobile-sidebar-open #sidebar {
+        transform: translateX(0);
+    }
+
+    .mobile-topbar {
+        display: flex;
+    }
+}
+
+.mobile-topbar {
+    display: none;
+    align-items: center;
+    padding: 8px;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border-color);
+}

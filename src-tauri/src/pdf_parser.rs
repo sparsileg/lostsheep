@@ -181,17 +181,55 @@ fn split_first_middle(h: &str) -> (String, String) {
 /// not swap this back to `pdf-extract` without re-confirming that bug
 /// is actually fixed upstream first.
 ///
-/// `pdftotext` ships as a bundled Tauri sidecar (see tauri.conf.json's
-/// bundle.externalBin and src-tauri/binaries/), not a system dependency
-/// — end users never need poppler installed separately. Resolving the
-/// sidecar binary requires an `AppHandle`, so this is async now.
+/// `pdftotext` ships bundled, not as a system dependency — end users
+/// never need poppler installed separately. On Windows/macOS it's a
+/// Tauri `externalBin` sidecar (tauri.conf.json's bundle.externalBin,
+/// src-tauri/binaries/). On Linux it's shipped as a plain bundle
+/// resource instead (src-tauri/tauri.linux.conf.json), because the
+/// .deb/.rpm bundler installs sidecars straight into /usr/bin/<name>,
+/// which collides with the system poppler-utils package there — see
+/// the cfg(target_os = "linux") branch below for the split. Resolving
+/// either path requires an `AppHandle`, so this is async.
 pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<ParseResult> {
+    #[cfg(not(target_os = "linux"))]
     use tauri_plugin_shell::ShellExt;
 
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("PDF path is not valid UTF-8: {}", path.display()))?;
 
+    // Linux: run the bundled poppler-utils binary as a plain resource file,
+    // not a Tauri `externalBin` sidecar. Sidecars get installed straight
+    // into /usr/bin/<name> by the .deb/.rpm bundler — colliding with the
+    // system poppler-utils package, which also owns /usr/bin/pdftotext.
+    // Resources land in the app's own private resource dir instead, so
+    // there's nothing to collide with. The binary is a busybox-style
+    // multicall executable that picks which poppler tool to act as by
+    // reading its own argv[0] — it must still be invoked under the exact
+    // name "pdftotext" (never renamed) or it won't recognize itself.
+    // Running it by its resolved path (rather than through the sidecar
+    // API) sets argv[0] to that path, whose final component is
+    // "pdftotext" — the resource file is deliberately never renamed, so
+    // dispatch keeps working. Blocking Command is used deliberately here:
+    // this only runs once per user-initiated PDF import, not a hot path,
+    // and pulling in the async tokio::process API just for this one call
+    // isn't worth a new direct Cargo dependency.
+    #[cfg(target_os = "linux")]
+    let output = {
+        use tauri::Manager;
+        let resource_path = app
+            .path()
+            .resolve("pdftotext", tauri::path::BaseDirectory::Resource)
+            .map_err(|e| anyhow::anyhow!("could not resolve bundled pdftotext resource: {e}"))?;
+        std::process::Command::new(&resource_path)
+            .args(["-raw", path_str, "-"])
+            .output()
+            .map_err(|e| anyhow::anyhow!("pdftotext resource failed to run: {e}"))?
+    };
+
+    // Windows/macOS: no shared /usr/bin, so the collision above never
+    // applies there — unchanged from before.
+    #[cfg(not(target_os = "linux"))]
     let output = app
         .shell()
         .sidecar("pdftotext")
