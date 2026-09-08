@@ -72,6 +72,11 @@ fn emit_progress(app: &AppHandle, stage: &str) {
 
 struct ParsedWay {
     node_refs: Vec<i64>,
+    // Issue #45: OSM's `name` tag, when present, ends up on every edge
+    // this way produces (via edge_rows below), normalized into
+    // road_names at DB-write time. None means the way has no `name`
+    // tag — legitimate, not an error.
+    name: Option<String>,
 }
 
 fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -115,7 +120,11 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
                         for r in &refs {
                             needed_nodes.insert(*r);
                         }
-                        ways.push(ParsedWay { node_refs: refs });
+                        let name = way
+                            .tags()
+                            .find(|(k, _)| *k == "name")
+                            .map(|(_, v)| v.to_string());
+                        ways.push(ParsedWay { node_refs: refs, name });
                     }
                 }
             }
@@ -155,7 +164,10 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     let mut node_local_id: HashMap<i64, i64> = HashMap::new();
     let mut node_rows: Vec<(i64, f64, f64)> = Vec::new(); // (osm_id, lat, lon)
-    let mut edge_rows: Vec<(i64, i64, f64)> = Vec::new(); // (from_osm_id, to_osm_id, distance_m)
+    // (from_osm_id, to_osm_id, distance_m, way_name) — way_name cloned
+    // per edge here (many edges share one way's name); deduped back down
+    // to one road_names row per distinct string at DB-write time below.
+    let mut edge_rows: Vec<(i64, i64, f64, Option<String>)> = Vec::new();
 
     for way in &ways {
         let mut prev: Option<i64> = None;
@@ -174,10 +186,23 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
             if let Some(prev_id) = prev {
                 if prev_id != node_id {
                     let (plat, plon) = coords[&prev_id];
-                    edge_rows.push((prev_id, node_id, haversine_m(plat, plon, lat, lon)));
+                    edge_rows.push((prev_id, node_id, haversine_m(plat, plon, lat, lon), way.name.clone()));
                 }
             }
             prev = Some(node_id);
+        }
+    }
+
+    // Issue #45: distinct road names across this ingest, in first-seen
+    // order — inserted into road_names below, then mapped back to real
+    // row ids the same way node osm_ids are mapped back after insert.
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut name_rows: Vec<String> = Vec::new();
+    for (_, _, _, name) in &edge_rows {
+        if let Some(n) = name {
+            if seen_names.insert(n.clone()) {
+                name_rows.push(n.clone());
+            }
         }
     }
 
@@ -195,6 +220,7 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     tx.execute("DELETE FROM road_edges", []).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM road_nodes", []).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM road_names", []).map_err(|e| e.to_string())?;
 
     {
         let mut insert_node = tx
@@ -220,14 +246,40 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
     }
 
     {
-        let mut insert_edge = tx
-            .prepare("INSERT INTO road_edges (from_node_id, to_node_id, distance_m) VALUES (?1, ?2, ?3)")
+        let mut insert_name = tx
+            .prepare("INSERT INTO road_names (name) VALUES (?1)")
             .map_err(|e| e.to_string())?;
-        for (from_osm, to_osm, dist) in &edge_rows {
+        for name in &name_rows {
+            insert_name.execute(rusqlite::params![name]).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // road_names was just wiped too — read back the same way osm_to_row
+    // is built above, rather than assuming rowid order.
+    let mut name_to_id: HashMap<String, i64> = HashMap::with_capacity(name_rows.len());
+    {
+        let mut stmt = tx.prepare("SELECT id, name FROM road_names").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, name) = row.map_err(|e| e.to_string())?;
+            name_to_id.insert(name, id);
+        }
+    }
+
+    {
+        let mut insert_edge = tx
+            .prepare("INSERT INTO road_edges (from_node_id, to_node_id, distance_m, name_id) VALUES (?1, ?2, ?3, ?4)")
+            .map_err(|e| e.to_string())?;
+        for (from_osm, to_osm, dist, name) in &edge_rows {
             let (Some(&from_id), Some(&to_id)) = (osm_to_row.get(from_osm), osm_to_row.get(to_osm)) else {
                 continue;
             };
-            insert_edge.execute(rusqlite::params![from_id, to_id, dist]).map_err(|e| e.to_string())?;
+            let name_id: Option<i64> = name.as_ref().and_then(|n| name_to_id.get(n)).copied();
+            insert_edge
+                .execute(rusqlite::params![from_id, to_id, dist, name_id])
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -237,12 +289,22 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
     super::logs::log(
         &log_conn,
         "info",
-        &format!("road graph ingested: {} nodes, {} edges from {file_path}", node_rows.len(), edge_rows.len()),
+        &format!(
+            "road graph ingested: {} nodes, {} edges, {} road names from {file_path}",
+            node_rows.len(),
+            edge_rows.len(),
+            name_rows.len()
+        ),
         None,
     );
 
     emit_progress(&app, "done");
-    Ok(format!("{} nodes, {} edges", node_rows.len(), edge_rows.len()))
+    Ok(format!(
+        "{} nodes, {} edges, {} road names",
+        node_rows.len(),
+        edge_rows.len(),
+        name_rows.len()
+    ))
     })();
 
     // Issue #27: a failed road ingest previously vanished with no trace.
