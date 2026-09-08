@@ -563,14 +563,92 @@ const TWO_OPT_MAX_STOPS: usize = 100;
 // because it's expected to be hit.
 const TWO_OPT_MAX_PASSES: usize = 50;
 
-/// 2-opt improvement pass over the nearest-neighbor tour built above.
-/// Nearest-neighbor is a greedy, one-step-at-a-time heuristic — it can
-/// leave an expensive stop stranded for last just because something else
-/// was marginally closer at every earlier step. 2-opt fixes the worst of
-/// that cheaply: repeatedly test whether reversing a segment of the tour
-/// shortens the total distance, keep the swap if so, stop when no swap
-/// helps. Doesn't guarantee the globally optimal tour, but reliably
-/// improves on plain nearest-neighbor.
+// Same role as TWO_OPT_MAX_PASSES, for or_opt_pass()'s outer loop below.
+const OR_OPT_MAX_PASSES: usize = 50;
+
+/// Or-opt pass (#44): relocates a single stop to a different position in
+/// the tour, which 2-opt (segment *reversal* only) can never do. Fixes
+/// the case 2-opt structurally can't: a stop that needs to move, not
+/// flip. Operates on the same `perm`/`dist_start`/`dist_matrix` 2-opt
+/// already built — no new distance calls. For every stop, tries removing
+/// it and reinserting at every other position (including back at the
+/// route start), keeps the best strictly-improving relocation found, and
+/// repeats until a full pass finds no improvement or OR_OPT_MAX_PASSES is
+/// hit. Chain relocation (moving a run of 2+ consecutive stops together)
+/// is out of scope here — single-stop relocation is what the reported
+/// stranded-stop symptom needs.
+fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64>]) {
+    let n = perm.len();
+    if n < 3 {
+        return; // nothing to relocate relative to
+    }
+
+    // (None, None) never occurs in practice (n >= 3 here); (Some, None)
+    // is "last leg of the route", which has no return trip and so costs
+    // nothing.
+    let edge_cost = |from: Option<usize>, to: Option<usize>| -> f64 {
+        match (from, to) {
+            (None, Some(t)) => dist_start[t],
+            (Some(f), Some(t)) => dist_matrix[f][t],
+            _ => 0.0,
+        }
+    };
+
+    let mut improved = true;
+    let mut passes = 0;
+    while improved && passes < OR_OPT_MAX_PASSES {
+        improved = false;
+        passes += 1;
+        for i in 0..perm.len() {
+            let node = perm[i];
+            let prev = if i == 0 { None } else { Some(perm[i - 1]) };
+            let next = if i == perm.len() - 1 { None } else { Some(perm[i + 1]) };
+
+            // Cost of closing the gap left by removing `node` from position i.
+            let removed_cost = edge_cost(prev, Some(node)) + edge_cost(Some(node), next);
+            let gap_cost = edge_cost(prev, next);
+            let remove_delta = gap_cost - removed_cost;
+
+            let mut without: Vec<usize> = perm.clone();
+            without.remove(i);
+
+            // Best strictly-improving reinsertion point, if any. Threshold
+            // matches 2-opt's epsilon so float noise can't cause a
+            // no-op swap to look like an improvement.
+            let mut best_delta = -1e-9;
+            let mut best_pos: Option<usize> = None;
+            for k in 0..=without.len() {
+                let ins_prev = if k == 0 { None } else { Some(without[k - 1]) };
+                let ins_next = if k == without.len() { None } else { Some(without[k]) };
+                let insert_cost = edge_cost(ins_prev, Some(node)) + edge_cost(Some(node), ins_next)
+                    - edge_cost(ins_prev, ins_next);
+                let total_delta = remove_delta + insert_cost;
+                if total_delta < best_delta {
+                    best_delta = total_delta;
+                    best_pos = Some(k);
+                }
+            }
+
+            if let Some(k) = best_pos {
+                without.insert(k, node);
+                *perm = without;
+                improved = true;
+            }
+        }
+    }
+}
+
+/// 2-opt improvement pass over the nearest-neighbor tour built above,
+/// followed by an or-opt pass (#44). Nearest-neighbor is a greedy,
+/// one-step-at-a-time heuristic — it can leave an expensive stop stranded
+/// for last just because something else was marginally closer at every
+/// earlier step. 2-opt fixes the worst of that cheaply: repeatedly test
+/// whether reversing a segment of the tour shortens the total distance,
+/// keep the swap if so, stop when no swap helps. But 2-opt can only
+/// reverse contiguous segments — it can never relocate a single stop to a
+/// different position — so or_opt_pass() runs afterward to catch exactly
+/// that case. Neither guarantees the globally optimal tour, but together
+/// they reliably improve on plain nearest-neighbor.
 ///
 /// Distances between every pair of stops (and from the configured start
 /// point to every stop) are computed once into a matrix up front and
@@ -630,10 +708,16 @@ fn two_opt_improve(
         }
     }
 
+    // Or-opt pass (#44) — 2-opt above only reverses contiguous segments,
+    // so a stop that needs to move to a different spot (not flip) stays
+    // stranded no matter how many 2-opt passes run. Reuses this same
+    // perm/dist_start/dist_matrix, no new distance calls.
+    or_opt_pass(&mut perm, &dist_start, &dist_matrix);
+
     // Materialize the final order, then recompute each leg's
-    // distance/source/path fresh — 2-opt only tracked bare distances
-    // during the search above, not which RouteDistanceSource or path
-    // geometry go with each pair.
+    // distance/source/path fresh — 2-opt/or-opt only tracked bare
+    // distances during the search above, not which RouteDistanceSource or
+    // path geometry go with each pair.
     let mut result: Vec<VisitListEntry> = perm.into_iter().map(|i| stops[i].clone()).collect();
     let mut cur = (start_lat, start_lon);
     for entry in result.iter_mut() {
@@ -647,6 +731,12 @@ fn two_opt_improve(
     }
     result
 }
+
+// How much bigger the haversine-sorted shortlist is than the final N,
+// before road-distance re-ranks it down (experiment, gated behind the
+// "useRoadDistanceSelection" setting — see generate_visit_list). 3x is a
+// starting guess, not tuned against real data yet.
+const ROAD_SELECTION_SHORTLIST_MULTIPLIER: usize = 3;
 
 /// Nearest-N generation, grouped by address so multi-head households are
 /// never split across the boundary. "Count" caps distinct addresses, not
@@ -673,8 +763,6 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         e.distance_context = "seed".to_string();
     }
 
-    // Selection stays seed-distance-based regardless of route mode (#13):
-    // this sort+truncate picks which N addresses are included, unchanged.
     // total_cmp is total by construction (NaN sorts consistently instead
     // of panicking) — replaces the partial_cmp().unwrap() that crashed on
     // a NaN distance_meters (#24). address_key tiebreak makes ordering
@@ -685,38 +773,77 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             .total_cmp(&b.distance_meters)
             .then_with(|| a.address_key.cmp(&b.address_key))
     });
-    entries.truncate(params.count as usize);
 
-    // Ordering, though, uses the configured route start point when one
-    // exists — nearest-neighbor walk over the already-selected N
-    // addresses, recomputing distance_meters as per-leg distance rather
-    // than distance-from-seed. Falls back to today's seed-sorted order
-    // (already produced above) when the setting is unconfigured.
-    let route_start: Option<(f64, f64)> = {
-        let get = |key: &str| -> Option<String> {
-            conn.query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                rusqlite::params![key],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-        };
-        match (
-            get("routeStartLat").and_then(|s| s.parse::<f64>().ok()),
-            get("routeStartLon").and_then(|s| s.parse::<f64>().ok()),
-        ) {
-            (Some(lat), Some(lon)) => Some((lat, lon)),
-            _ => None,
-        }
+    // Settings lookups shared by selection and ordering below — read once
+    // upfront rather than the single-purpose closure previously scoped
+    // inside the route_start block only.
+    let get_setting = |key: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
     };
 
-    if let Some((start_lat, start_lon)) = route_start {
-        // Issue #38: real road distance per leg, when a graph is
-        // ingested and both ends of a leg snap within tolerance. Loaded
-        // once here, reused for every candidate at every step of the
-        // walk below — see load_road_graph's doc comment for why.
-        let graph = load_road_graph(&state);
+    // Ordering uses the configured route start point when one exists —
+    // nearest-neighbor walk over the selected N addresses, recomputing
+    // distance_meters as per-leg distance rather than distance-from-seed.
+    // Falls back to today's seed-sorted order when the setting is
+    // unconfigured. Read here (before selection) so the road graph below
+    // can be loaded once and shared by both selection and ordering.
+    let route_start: Option<(f64, f64)> = match (
+        get_setting("routeStartLat").and_then(|s| s.parse::<f64>().ok()),
+        get_setting("routeStartLon").and_then(|s| s.parse::<f64>().ok()),
+    ) {
+        (Some(lat), Some(lon)) => Some((lat, lon)),
+        _ => None,
+    };
 
+    // Re-ranks a haversine-sorted shortlist by real road distance from the
+    // seed before truncating to the final N, instead of truncating on
+    // straight-line distance alone (#13's original behavior). Default is
+    // ON as of tonight's testing — set settings key
+    // "useRoadDistanceSelection" to "false" to fall back to plain
+    // haversine selection. That fallback path (and the haversine sort
+    // above) is kept intact and untouched, so flipping the setting is a
+    // full, instant revert with no code removed.
+    let use_road_selection = get_setting("useRoadDistanceSelection").as_deref() != Some("false");
+    // Issue #38: real road distance per leg, when a graph is ingested and
+    // both ends of a leg snap within tolerance. Loaded once here — shared
+    // by the road-distance selection re-rank below (if enabled) and the
+    // route-ordering walk further down (if a start point is configured) —
+    // rather than querying roads.db twice for the same call.
+    let graph = if use_road_selection || route_start.is_some() {
+        load_road_graph(&state)
+    } else {
+        None
+    };
+
+    let want = params.count as usize;
+    if use_road_selection {
+        let shortlist_len = want.saturating_mul(ROAD_SELECTION_SHORTLIST_MULTIPLIER).min(entries.len());
+        // Road distance from the seed decides *which* N addresses make
+        // the list — distance_meters/distance_context on the kept entries
+        // stay the haversine "seed" values already set above, matching
+        // VisitListEntry's documented contract for non-route lists.
+        // Ordering-for-display still comes from the route-start walk
+        // below when one is configured, same as before.
+        let mut ranked: Vec<(usize, f64)> = entries[..shortlist_len]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, route_leg_distance(&graph, seed.0, seed.1, e.latitude, e.longitude).0))
+            .collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        ranked.truncate(want);
+        let mut keep_indexes: Vec<usize> = ranked.into_iter().map(|(i, _)| i).collect();
+        keep_indexes.sort_unstable();
+        entries = keep_indexes.into_iter().map(|i| entries[i].clone()).collect();
+    } else {
+        entries.truncate(want);
+    }
+
+    if let Some((start_lat, start_lon)) = route_start {
         let mut remaining = entries;
         let mut ordered: Vec<VisitListEntry> = Vec::with_capacity(remaining.len());
         let mut cur = (start_lat, start_lon);
