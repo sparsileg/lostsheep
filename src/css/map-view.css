@@ -29,7 +29,7 @@
 .map-postroute-controls {
     position: absolute; top: 12px; right: 12px; z-index: 900;
     display: flex; gap: 6px;
-    background: var(--card-bg); opacity: 0.88;
+    background: var(--card-bg); opacity: 0.6;
     padding: 6px 8px; border-radius: 6px; box-shadow: var(--shadow-card);
 }
 /* display:flex above has the same specificity as the browser's own
@@ -40,7 +40,7 @@
    sets display explicitly, leaving the UA rule free to apply. */
 .map-postroute-controls[hidden] { display: none; }
 
-/* On-demand text list (Preview text toggle) — floats over the map
+/* On-demand text list (Preview route toggle) — floats over the map
    rather than resizing #mapEl's container, avoiding Leaflet
    invalidateSize()/layout-reflow entirely. Opaque background (unlike
    the controls box above) since this holds text meant to be read.

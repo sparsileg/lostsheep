@@ -18,7 +18,7 @@ registerView('map', {
                 <div id="mapPostRouteControls" class="map-postroute-controls" hidden>
                     <button type="button" class="btn btn-small" id="mapCopyVisitListBtn">⎘ Copy Text</button>
                     <button type="button" class="btn btn-small" id="mapPdfVisitListBtn">⎙ PDF</button>
-                    <button type="button" class="btn btn-small" id="mapPreviewToggleBtn">Preview text</button>
+                    <button type="button" class="btn btn-small" id="mapPreviewToggleBtn">Preview route</button>
                 </div>
                 <div id="mapPreviewPanel" class="map-preview-panel" hidden></div>
             </div>
