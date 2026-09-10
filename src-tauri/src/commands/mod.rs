@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod diagnostics;
 pub mod households;
 pub mod import;
 pub mod logs;

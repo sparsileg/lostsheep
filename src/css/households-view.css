@@ -25,17 +25,14 @@
 
 /* Household detail modal — mirrors the source directory's own layout,
    stacked top-to-bottom: name, heads with contact info, minors marker,
-   then address/coords. Read-only throughout except the comments/tags/
-   visits sections.
-
-   The "record a new visit" form and the Close button stay pinned at the
-   bottom always — only the content above (name/tags/comments/visit
-   history) scrolls. Overrides base.css's generic `.modal { overflow-y:
-   auto }`, which would otherwise scroll the whole thing as one block and
-   let the visit form/close button scroll out of view. */
-.hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
-.hh-detail-scroll { overflow-y: auto; flex: 1; min-height: 0; }
-.hh-detail-fixed { flex-shrink: 0; padding-top: 8px; }
+   address/coords, tags, comments, visit history, then the "record a new
+   visit" form and Close button. Everything scrolls together as one block
+   via base.css's generic `.modal { overflow-y: auto }` — no inner split.
+   (Previously the record-visit form/Close button were pinned outside a
+   separately-scrolling content area; on a shorter viewport that hid Save
+   Comments inside the inner scroll region while the pinned footer ate
+   space below it — two scrollbars in one modal, confusing. #91.) */
+.hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; }
 .hh-detail-modal h3 { margin: 6px 0; }
 .hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
 .hh-detail-address { margin-top: 10px; font-size: 0.9em; opacity: 0.85; }

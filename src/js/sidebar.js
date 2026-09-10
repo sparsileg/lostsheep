@@ -95,6 +95,7 @@ function handleHamburgerMenuClick(e) {
         case 'backup': BackupRestore.showBackupModal(); break;
         case 'restore': BackupRestore.showRestoreModal(); break;
         case 'roads': RoadsIngest.showModal(); break;
+        case 'diagnostics': showPotentialProblemsModal(); break;
         case 'logs': showView('logs'); break;
         case 'about': showAboutModal(); break;
         case 'help': showHelpModal(); break;
@@ -136,6 +137,74 @@ function showHelpModal() {
     document.body.appendChild(overlay);
     overlay.querySelector('#closeHelp').addEventListener('click', () => overlay.remove());
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+// Issue #48 — read-only diagnostic scan. Runs on demand, not cached; a
+// fresh scan is cheap enough at this app's target scale (<10,000
+// households) to just re-run every time the menu item is clicked.
+async function showPotentialProblemsModal() {
+    let unlisten = null;
+    const cleanup = () => {
+        if (unlisten) { unlisten(); unlisten = null; }
+        ProgressRing.hide();
+    };
+
+    let problems;
+    try {
+        // sidebar.js is a classic script (no static import support), same
+        // constraint roads-ingest.js's module doesn't have — dynamic
+        // import() reaches the same vendored event API from here.
+        const { listen } = await import('../include/tauri-api/event.js');
+        ProgressRing.show('Scanning households…');
+        unlisten = await listen('diagnostics-progress', (event) => {
+            const { processed, total } = event.payload;
+            ProgressRing.update(total > 0 ? (processed / total) * 100 : 100);
+        });
+        problems = await Api.findPotentialProblems();
+    } catch (e) {
+        console.error('findPotentialProblems failed', e);
+        cleanup();
+        showMessage('Could not run diagnostics — see console for details.', CONSTANTS.MESSAGE_TYPES.ERROR);
+        return;
+    }
+    cleanup();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal" style="max-width:700px;max-height:80vh;overflow-y:auto;">
+        <h2>Potential Problems</h2>
+        <div id="potentialProblemsBody"></div>
+        <div style="margin-top:12px;">
+            <button class="btn" id="downloadPotentialProblemsBtn" style="display:none;">Download PDF</button>
+            <button class="btn" id="closePotentialProblems">Close</button>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#closePotentialProblems').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    const body = overlay.querySelector('#potentialProblemsBody');
+    const downloadBtn = overlay.querySelector('#downloadPotentialProblemsBtn');
+
+    if (!problems.length) {
+        body.innerHTML = '<p>No potential problems found.</p>';
+        return;
+    }
+    downloadBtn.style.display = '';
+    downloadBtn.addEventListener('click', () => PotentialProblemsPdf.download(problems));
+    // Temporary (#48 "no name on file" investigation) — debug_trace is
+    // only present on the first 10 flagged households; see
+    // diagnostics.rs's DEBUG_TRACE_LIMIT doc comment. Safe to delete
+    // this block (and the field) once the underlying pattern is found.
+    body.innerHTML = `<p>${problems.length} household(s) flagged.</p>` + problems.map(p => `
+        <div class="review-item">
+            <div class="review-body">
+                <div><strong>${escapeHtml(p.household_name)}</strong> — ${escapeHtml(p.address_line1 || '(no address)')} (household #${p.household_id})</div>
+                <ul>${p.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+                ${p.debug_trace ? `<pre style="white-space:pre-wrap;font-size:0.82em;background:rgba(0,0,0,0.05);padding:8px;border-radius:4px;margin-top:6px;">${escapeHtml(p.debug_trace.join('\n'))}</pre>` : ''}
+            </div>
+        </div>
+    `).join('');
 }
 
 function updateHamburgerContextualSection() { /* no per-view hamburger sections in v1 */ }

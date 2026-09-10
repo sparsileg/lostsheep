@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="css/settings-modal.css" />
 <link rel="stylesheet" href="css/log-viewer.css" />
 <link rel="stylesheet" href="css/backup-restore.css" />
+<link rel="stylesheet" href="css/progress-ring.css" />
 <link rel="stylesheet" href="include/leaflet/leaflet.css" />
 </head>
 <body>
@@ -56,6 +57,7 @@
     <div class="hamburger-menu-item" data-action="settings">Settings</div>
     <div class="hamburger-menu-item" data-action="backup">Backup</div>
     <div class="hamburger-menu-item" data-action="restore">Restore</div>
+    <div class="hamburger-menu-item" data-action="diagnostics">Data Validation</div>
     <div class="hamburger-menu-item" data-action="roads">Road Management</div>
     <div class="hamburger-menu-item" data-action="logs">Log Viewer</div>
     <div class="hamburger-menu-item" data-action="about">About</div>
@@ -79,6 +81,7 @@
 <script type="module" src="js/api.js"></script>
 <script src="js/dropdown.js"></script>
 <script src="js/core.js"></script>
+<script src="js/progress-ring.js"></script>
 <script src="js/sidebar.js"></script>
 <script src="js/tag-chip-input.js"></script>
 <script type="module" src="js/views/import-view.js"></script>
@@ -92,6 +95,7 @@
 <script src="include/pdfmake.min.js"></script>
 <script src="include/vfs_fonts.js"></script>
 <script src="js/views/directory-pdf.js"></script>
+<script src="js/views/potential-problems-pdf.js"></script>
 <script src="js/views/visits-report-view.js"></script>
 <script src="js/views/deleted-records-view.js"></script>
 <script>window.onload = () => Core.init();</script>

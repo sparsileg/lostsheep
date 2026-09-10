@@ -28,6 +28,7 @@ const Api = {
     commitImportBatch: (batchId) => invoke('commit_import_batch', { batchId }),
     resolveAllNewRecords: (batchId) => invoke('resolve_all_new_records', { batchId }),
     getPendingImportBatch: () => invoke('get_pending_import_batch'),
+    discardImportBatch: (batchId) => invoke('discard_import_batch', { batchId }),
 
     // visits / map
     recordVisit: (householdId, visitDate, comments) =>
@@ -47,6 +48,9 @@ const Api = {
     getRoadsInBounds: (minLat, maxLat, minLon, maxLon) =>
         invoke('get_roads_in_bounds', { minLat, maxLat, minLon, maxLon }),
     getNearestRoadNode: (lat, lon) => invoke('get_nearest_road_node', { lat, lon }),
+
+    // diagnostics
+    findPotentialProblems: () => invoke('find_potential_problems'),
 
     // settings / logs
     getSettings: () => invoke('get_settings'),

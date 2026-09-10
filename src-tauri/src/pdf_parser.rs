@@ -83,6 +83,18 @@ fn street_start_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^\d").unwrap())
 }
 
+/// "PO Box <number>" doesn't follow the standard <number> <words> street
+/// pattern at all — street_start_re (^\d) will never match "PO", so a
+/// glued line like "Jacqueline Harlow PO Box 42" would otherwise be
+/// parsed as all-names. Checks whether tokens[i..] starts with "PO"
+/// "Box" (case-insensitive, optional trailing period on "PO" — "P.O."),
+/// e.g. tokens ["PO","Box","42"] or ["P.O.","Box","42"].
+fn is_po_box_start(tokens: &[&str], i: usize) -> bool {
+    let po = tokens.get(i).map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("po")).unwrap_or(false);
+    let bx = tokens.get(i + 1).map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("box")).unwrap_or(false);
+    po && bx
+}
+
 fn lone_letter_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Z]$").unwrap())
@@ -146,7 +158,7 @@ fn name_matches_head(line: &str, head_first_token: &str) -> bool {
 fn split_name_and_glued_address(rest: &str) -> (String, Option<String>) {
     let tokens: Vec<&str> = rest.split(' ').collect();
     for (i, tok) in tokens.iter().enumerate() {
-        if street_start_re().is_match(tok) {
+        if street_start_re().is_match(tok) || is_po_box_start(&tokens, i) {
             let names = tokens[..i].join(" ").trim().to_string();
             let addr = tokens[i..].join(" ").trim().to_string();
             if !names.is_empty() && !addr.is_empty() {

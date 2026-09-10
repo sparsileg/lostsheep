@@ -38,7 +38,7 @@ const MAX_ROAD_EDGES_PER_QUERY: usize = 5_000;
 // super::roads::SNAP_TOLERANCE_M) — kept as one number so the overlay's
 // snap lines and the actual route distance never disagree about what
 // counts as "close enough to a road."
-pub(crate) const SNAP_TOLERANCE_M: f64 = 250.0;
+pub(crate) const SNAP_TOLERANCE_M: f64 = 300.0;
 
 #[derive(serde::Serialize)]
 pub struct RoadEdgeSegment {

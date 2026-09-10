@@ -58,6 +58,22 @@ pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: S
     result
 }
 
+/// #49: an exact source_key match (identical name+address text) used to be
+/// discarded as unchanged unconditionally, even when the incoming PDF's
+/// geocoded coordinates for that address had moved — the new coordinates
+/// were silently thrown away. Coordinates come straight from parsed
+/// decimal text (pdf_parser's coord_re + valid_coord) each import — an
+/// unchanged address re-geocodes to the same float, so plain inequality
+/// is the drift check; no distance/tolerance needed.
+fn coords_drifted(
+    existing_lat: Option<f64>,
+    existing_lon: Option<f64>,
+    incoming_lat: Option<f64>,
+    incoming_lon: Option<f64>,
+) -> bool {
+    (existing_lat, existing_lon) != (incoming_lat, incoming_lon)
+}
+
 /// One of the six values `households.role`/`role_2` CHECK constraints permit
 /// (schema.sql). Anything else is rejected here rather than carried forward —
 /// an out-of-vocabulary role previously survived the whole review pipeline
@@ -192,8 +208,33 @@ fn run_diff(
         // corresponds to, so don't guess. Falls through to the same
         // name-match/new path used when there's no match at all.
         if matching_ids.len() == 1 {
-            // Exact source_key match = unchanged, discarded per spec.
-            unchanged_count += 1;
+            // #49: identical name+address text no longer means automatically
+            // unchanged — the incoming record's coordinates might have
+            // drifted from what's stored (source PDF re-geocoded). Only a
+            // real no-op (coords within tolerance too) is discarded here;
+            // real drift is routed into review_queue like any other change.
+            let existing_id = matching_ids[0];
+            let (existing_lat, existing_lon): (Option<f64>, Option<f64>) = tx
+                .query_row(
+                    "SELECT latitude, longitude FROM households WHERE id = ?1",
+                    params![existing_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+
+            if coords_drifted(existing_lat, existing_lon, rec.latitude, rec.longitude) {
+                changed_count += 1;
+                tx.execute(
+                    "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) \
+                     VALUES (?1, 'changed', ?2, ?3)",
+                    params![batch_id, serde_json::to_string(rec).map_err(|e| e.to_string())?, existing_id],
+                )
+                .map_err(|e| e.to_string())?;
+            } else {
+                // Exact source_key match, coordinates within tolerance =
+                // unchanged, discarded per spec.
+                unchanged_count += 1;
+            }
         } else {
                 // Could still be the SAME household with a changed address
                 // — best-effort match on either head's name. Issue #30:
@@ -682,4 +723,70 @@ pub fn get_pending_import_batch(state: State<AppState>) -> Result<Option<i64>, S
     )
     .optional()
     .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct DiscardBatchResult {
+    pub discarded: i64,
+    pub already_resolved: i64,
+}
+
+/// Wipes a batch outright rather than requiring every item to be resolved
+/// one at a time. Safe for still-"pending" rows: resolve_review_item is
+/// the only place household writes happen, so a pending row can just be
+/// deleted with nothing to undo. Items already resolved (add/replace/
+/// merge/delete/ignore) already had their real household-side effects —
+/// this never touches or reverses those rows, it only closes the batch
+/// out (status = 'committed') so it stops sitting around as unfinished.
+/// If nothing in the batch was ever resolved, the batch row itself is
+/// removed too rather than left behind as an empty committed shell.
+#[tauri::command]
+pub fn discard_import_batch(state: State<AppState>, batch_id: i64) -> Result<DiscardBatchResult, String> {
+    let result: Result<DiscardBatchResult, String> = (|| {
+        let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        let discarded = tx
+            .execute(
+                "DELETE FROM review_queue WHERE import_batch_id = ?1 AND resolution = 'pending'",
+                params![batch_id],
+            )
+            .map_err(|e| e.to_string())? as i64;
+
+        let already_resolved: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM review_queue WHERE import_batch_id = ?1",
+                params![batch_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        if already_resolved == 0 {
+            tx.execute("DELETE FROM import_batches WHERE id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
+        } else {
+            tx.execute("UPDATE import_batches SET status = 'committed' WHERE id = ?1", params![batch_id])
+                .map_err(|e| e.to_string())?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(DiscardBatchResult { discarded, already_resolved })
+    })();
+
+    // Issue #27 precedent (same as resolve_review_item below/above): this
+    // deletes review data outright, worth an audit trail entry either way.
+    if let Ok(conn) = state.pool.get() {
+        match &result {
+            Ok(r) => super::logs::log(
+                &conn,
+                "info",
+                &format!(
+                    "import batch {batch_id} discarded: {} pending item(s) removed, {} already-resolved item(s) left in place",
+                    r.discarded, r.already_resolved
+                ),
+                None,
+            ),
+            Err(e) => super::logs::log(&conn, "error", &format!("discard of import batch {batch_id} failed: {e}"), None),
+        }
+    }
+    result
 }
