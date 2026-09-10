@@ -187,15 +187,28 @@ fn names_match(candidates: &[String], household_road_name: &str) -> bool {
     })
 }
 
+/// True if `word` is "Apt" (any case), with or without a trailing period
+/// ("Apt", "APT.", "apt").
+fn is_apt_word(word: &str) -> bool {
+    word.strip_suffix('.').unwrap_or(word).eq_ignore_ascii_case("Apt")
+}
+
 /// Drops the assumed road-type word (the last one) and every leading word
 /// that starts with a digit — a house number ("328"), a fraction/dash
 /// token that follows it ("1/2"), or a number-letter unit suffix glued on
-/// with no space ("26A"). Returns whatever's left joined back into one
-/// string. None when there's nothing left to check (empty, only leading
-/// number-like tokens + type word with nothing between, or a single word
-/// with no separate type word to drop).
+/// with no space ("26A"). A trailing "Apt <word>" pair (unit number or
+/// alphanumeric unit, e.g. "Apt 421") is stripped first, before any of
+/// the above — "400 Clocktower Ridge Drive Apt 421" drops "Apt 421", then
+/// "400" and "Drive" per the existing rules, leaving "Clocktower Ridge".
+/// Returns whatever's left joined back into one string. None when there's
+/// nothing left to check (empty, only leading number-like tokens + type
+/// word with nothing between, or a single word with no separate type word
+/// to drop).
 fn road_name_from_address(address_line1: &str) -> Option<String> {
-    let words: Vec<&str> = address_line1.split_whitespace().collect();
+    let mut words: Vec<&str> = address_line1.split_whitespace().collect();
+    if words.len() >= 3 && is_apt_word(words[words.len() - 2]) {
+        words.truncate(words.len() - 2);
+    }
     if words.len() < 2 {
         return None;
     }
@@ -240,7 +253,7 @@ fn edges_at_node(conn: &rusqlite::Connection, node_id: i64) -> Vec<(i64, Option<
 /// three hops from Oak Rd should match Elm, not both). Bounded by
 /// MAX_UNNAMED_HOPS so a long unnamed rural stretch can't walk the whole
 /// graph. Cycle-safe via `visited`.
-const MAX_UNNAMED_HOPS: usize = 8;
+const MAX_UNNAMED_HOPS: usize = 100;
 
 fn walk_to_named_roads(
     conn: &rusqlite::Connection,

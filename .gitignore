@@ -38,6 +38,9 @@ node_modules/
 # per the Tauri sidecar naming convention; see docs/Architecture_Build.md.
 src-tauri/binaries/
 
+# where useful things that we don't want public go
+resources/
+
 # ----------------------------------------------------------------------
 # ----------------------------------------------------------------------
 # ----------------------------------------------------------------------
