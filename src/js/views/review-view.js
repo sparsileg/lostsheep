@@ -4,12 +4,14 @@ registerView('review', {
             <h1>Review Updates</h1>
             <div class="review-toolbar">
                 <button class="btn" id="addAllNewBtn">Add all new records</button>
+                <button class="btn btn-danger" id="discardBatchBtn">Discard Batch</button>
             </div>
             <div id="reviewList"></div>
             <button class="btn btn-primary" id="commitBatchBtn" style="margin-top:16px;">Commit Batch</button>
         `;
         document.getElementById('commitBatchBtn').addEventListener('click', commitBatch);
         document.getElementById('addAllNewBtn').addEventListener('click', addAllNew);
+        document.getElementById('discardBatchBtn').addEventListener('click', discardBatch);
     },
     async onShow() { await loadReviewQueue(); },
 });
@@ -96,6 +98,34 @@ async function commitBatch() {
     try {
         await Api.commitImportBatch(batchId);
         showMessage('Batch committed.', CONSTANTS.MESSAGE_TYPES.INFO);
+        window.__lastImportBatchId = null;
+        await loadReviewQueue();
+    } catch (e) {
+        showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
+    }
+}
+
+// Drops every still-pending item in the batch outright — for a test
+// import, an import you don't want, or an older batch orphaned by
+// starting a second import before finishing this one (only the most
+// recent pending batch is ever reachable through Review Updates).
+// Anything already resolved (add/replace/merge/delete/ignore) already
+// wrote its real household-side effects and is left untouched — this
+// can't undo those, only clear out decisions never made.
+async function discardBatch() {
+    const batchId = await currentBatchId();
+    if (!batchId) return;
+    const ok = confirm(
+        'Discard this import batch? Any item you have not already resolved will be dropped. ' +
+        'This cannot undo anything already added, replaced, merged, or deleted.'
+    );
+    if (!ok) return;
+    try {
+        const result = await Api.discardImportBatch(batchId);
+        const extra = result.already_resolved > 0
+            ? ` ${result.already_resolved} already-resolved item(s) left in place.`
+            : '';
+        showMessage(`Discarded ${result.discarded} pending item(s).${extra}`, CONSTANTS.MESSAGE_TYPES.INFO);
         window.__lastImportBatchId = null;
         await loadReviewQueue();
     } catch (e) {

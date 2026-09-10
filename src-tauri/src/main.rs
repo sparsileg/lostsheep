@@ -99,6 +99,7 @@ fn main() {
             commands::import::commit_import_batch,
             commands::import::resolve_all_new_records,
             commands::import::get_pending_import_batch,
+            commands::import::discard_import_batch,
             // visits / map
             commands::visits::record_visit,
             commands::visits::get_visits_report,
@@ -113,6 +114,8 @@ fn main() {
             commands::roads::ingest_road_database,
             commands::roads::get_roads_in_bounds,
             commands::roads::get_nearest_road_node,
+            // diagnostics
+            commands::diagnostics::find_potential_problems,
             // settings / logs
             commands::settings::get_settings,
             commands::settings::save_settings,

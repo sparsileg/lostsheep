@@ -203,51 +203,47 @@ async function openHouseholdModal(id) {
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
         <div class="modal hh-detail-modal">
-            <div class="hh-detail-scroll">
-                <div class="hh-detail-head">
-                    <strong>${escapeHtml(h.first_name)} ${escapeHtml(h.last_name)}</strong>
-                    ${h.phone_1 ? `<div>${escapeHtml(h.phone_1)}</div>` : ''}
-                    ${h.email_1 ? `<div>${escapeHtml(h.email_1)}</div>` : ''}
-                </div>
-                ${h.first_name_2 ? `
-                <div class="hh-detail-head">
-                    <strong>${escapeHtml(h.first_name_2)} ${escapeHtml(h.last_name_2 || '')}</strong>
-                    ${h.phone_2 ? `<div>${escapeHtml(h.phone_2)}</div>` : ''}
-                    ${h.email_2 ? `<div>${escapeHtml(h.email_2)}</div>` : ''}
-                </div>` : ''}
-                ${h.has_minors ? '<div class="hh-minors-marker">&lt;Minor Children&gt;</div>' : ''}
+            <div class="hh-detail-head">
+                <strong>${escapeHtml(h.first_name)} ${escapeHtml(h.last_name)}</strong>
+                ${h.phone_1 ? `<div>${escapeHtml(h.phone_1)}</div>` : ''}
+                ${h.email_1 ? `<div>${escapeHtml(h.email_1)}</div>` : ''}
+            </div>
+            ${h.first_name_2 ? `
+            <div class="hh-detail-head">
+                <strong>${escapeHtml(h.first_name_2)} ${escapeHtml(h.last_name_2 || '')}</strong>
+                ${h.phone_2 ? `<div>${escapeHtml(h.phone_2)}</div>` : ''}
+                ${h.email_2 ? `<div>${escapeHtml(h.email_2)}</div>` : ''}
+            </div>` : ''}
+            ${h.has_minors ? '<div class="hh-minors-marker">&lt;Minor Children&gt;</div>' : ''}
 
-                <div class="hh-detail-address">
-                    ${addressLines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}
-                    ${cityLine.trim() ? `<div>${escapeHtml(cityLine.trim())}</div>` : ''}
-                    ${latLon ? `<div class="hh-latlon">${escapeHtml(latLon)}</div>` : ''}
-                </div>
-
-                <h3>Tags</h3>
-                <div id="modalTags">${renderTagChips(h.tags, { onRemove: true })}</div>
-                <div id="modalTagDropdown" class="inline-dropdown"></div>
-
-                <h3>Comments</h3>
-                <textarea id="fComments" rows="3">${escapeHtml(h.comments || '')}</textarea>
-                <button class="btn" id="fSaveComments">Save Comments</button>
-
-                <h3>Visit History</h3>
-                <div id="hhVisitHistory" class="hh-visit-history"><em>Loading…</em></div>
+            <div class="hh-detail-address">
+                ${addressLines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}
+                ${cityLine.trim() ? `<div>${escapeHtml(cityLine.trim())}</div>` : ''}
+                ${latLon ? `<div class="hh-latlon">${escapeHtml(latLon)}</div>` : ''}
             </div>
 
-            <div class="hh-detail-fixed">
-                <h3>Record New Visit</h3>
-                <label>Date (YYYY-MM-DD) <input type="text" id="fVisitDate" placeholder="YYYY-MM-DD" value="${new Date().toISOString().slice(0,10)}"></label>
-                <label>Comments <textarea id="fVisitComments" rows="2"></textarea></label>
-                <div class="modal-buttons">
-                    <button class="btn btn-primary" id="fAddVisit">Save Visit</button>
-                    <button class="btn" id="fCancelVisit">Cancel</button>
-                </div>
+            <h3>Tags</h3>
+            <div id="modalTags">${renderTagChips(h.tags, { onRemove: true })}</div>
+            <div id="modalTagDropdown" class="inline-dropdown"></div>
 
-                <hr>
-                <div class="modal-buttons">
-                    <button class="btn" id="fClose">Close</button>
-                </div>
+            <h3>Comments</h3>
+            <textarea id="fComments" rows="3">${escapeHtml(h.comments || '')}</textarea>
+            <button class="btn" id="fSaveComments">Save Comments</button>
+
+            <h3>Visit History</h3>
+            <div id="hhVisitHistory" class="hh-visit-history"><em>Loading…</em></div>
+
+            <h3>Record New Visit</h3>
+            <label>Date (YYYY-MM-DD) <input type="text" id="fVisitDate" placeholder="YYYY-MM-DD" value="${new Date().toISOString().slice(0,10)}"></label>
+            <label>Comments <textarea id="fVisitComments" rows="2"></textarea></label>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" id="fAddVisit">Save Visit</button>
+                <button class="btn" id="fCancelVisit">Cancel</button>
+            </div>
+
+            <hr>
+            <div class="modal-buttons">
+                <button class="btn" id="fClose">Close</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);

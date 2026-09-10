@@ -1,0 +1,100 @@
+Jacqueline Harlow Baugh - 323 Russelcroft Rd
+Rename to 323 Russellcroft Rd (two Ls)
+Sync geocoord with address
+
+Casey Bergen - lives in Buena Vista, geocoords in Winchester
+Move records to Buena Vista
+
+Rickey & Jacqueline Custer
+Change Racoon Drive to Raccoon Drive (two Cs)
+
+John Hardy - 312 Kent St
+Change address to 312 N Kent St ('N' is new)
+
+Miranda Jade Hogaboom - 1967 Cillinsville Rd
+Change street to Collinsville Rd
+
+Gregory Branson Ratlief - 346 Green Springs Dr
+Change street to Green Spring Dr (no 's')
+
+Was Erin Michele Harting born in 1965? If so, I think I might have
+found her address in Stafford.
+
+------------------- sent to Chris Burkhart
+
+Nathan Cummings - Sapphire St
+Added street to OpenStreetMap.org
+
+Aaron Farmer - 241 Mall Barn Lane
+Added street to OpenStreetMap.org
+
+Anthony/Christopher/Karah Ingle - 200 Sentinel Dr
+Fixed road name in Open Street Map
+
+Gregory Branson Ratlief - 346 Green Springs Dr
+Change street to Green Spring Dr in Open Street Map
+
+--------------------
+
+Matthew Bevilacqua - 151 Lee Ave
+Geocoords are wrong - needs to be synced with address
+
+Dallin Butterfield - Apple Pie Ridge Road
+Geocoords are at 103 Clarendon Ct
+Same as John E. Sparks
+Same as Anne McCarthy, who has the address correct
+
+Joe Dahlinger - 113 Killaney Ct
+Geocoords are wrong - needs to be synced with address
+
+Jared & Melissa Davie - 896 Old Bethel Church Rd
+No geocoords - needs to be synced with address
+
+Todd Dubyk - 118 Kingsland Ct
+Geocoords need to be synced with address
+Bryant Ash trying to fix
+
+Paul Ehrenburg - 330 Middle Fork Road
+Geocoords need to be synced with address
+
+Michael Espinoza - 106 Eagle Drive
+Geocoords need to be synced with address
+
+Kaitlin Fishel - 2491 Martinsburg Pike
+Verify exact location - by Cece Way as well
+
+Amanda Flynn
+Sync geocoords with address
+
+Brian/Brian/Zoe Harlow - 303 Cave Hill Lane
+Added to Open Street Map
+
+Jonah Wade Harris - 399 Apple Pie Ridge Rd
+Address is our church in Winchester - obviously wrong
+Geocoords are in Berryville (39.153473, -77.989955)
+149 Hermitage Blvd
+Talk to Berryville clerk to see if family lives there
+
+Erin Michele Harting - 107 Sesame Ct
+No such address in Winchester
+Geocoords are in the Hebron Cemetery
+There is a Sesame Ct in Manassas.
+Call her at 540-628-2319
+Potential: erinharting@home.com
+Potential: 12 Rosedale Drive, Stafford VA 22556
+Potential: 61 years old (1965)
+
+Carson Hoberg - 153 Blackford Dr
+Sync geocoords (currently none) with address
+
+John Paul Homer - 613 Hollingsworth Dr
+Sync geocoord with address
+
+Jacob Martin - 304 Nordic Dr
+Sync geocoord with address
+
+Ruth Miller - 225-22 Indian Hollow Rd
+Verify location and number, then sync geocoord
+
+Robert & Aubrey Parry - 103 Quail Ct
+Sync geocoord with address
