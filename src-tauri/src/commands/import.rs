@@ -424,6 +424,71 @@ pub struct ReviewItem {
     pub incoming_data: Option<String>, // JSON, frontend parses
     pub existing_household_id: Option<i64>,
     pub existing_summary: Option<String>,
+    /// Coarse categories that differ between incoming and existing, for a
+    /// 'changed' item — e.g. ["Coordinates"] or ["Name", "Address"].
+    /// Frontend just lists these, no field-level diff rendering (Stan:
+    /// flag that something changed, don't have to show what). Empty for
+    /// 'new'/'removed' items, where there's nothing on both sides to
+    /// compare.
+    pub changed_fields: Vec<String>,
+}
+
+/// Existing household fields needed to diff against an incoming
+/// ParsedRecord — only the columns `changed_fields()` below actually
+/// compares, not a full household row.
+struct ExistingForDiff {
+    first_name: String,
+    last_name: String,
+    first_name_2: Option<String>,
+    last_name_2: Option<String>,
+    phone_1: Option<String>,
+    email_1: Option<String>,
+    phone_2: Option<String>,
+    email_2: Option<String>,
+    address_line1: Option<String>,
+    address_line2: Option<String>,
+    city: Option<String>,
+    state: Option<String>,
+    zip: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    comments: Option<String>,
+}
+
+/// Coarse, human-facing categories rather than raw column names — the
+/// review UI only needs to flag *that* something changed in a group, not
+/// render a per-field diff.
+fn changed_fields(existing: &ExistingForDiff, incoming: &ParsedRecord) -> Vec<String> {
+    let mut out = Vec::new();
+    if existing.first_name != incoming.first_name
+        || existing.last_name != incoming.last_name
+        || existing.first_name_2 != incoming.first_name_2
+        || existing.last_name_2 != incoming.last_name_2
+    {
+        out.push("Name".to_string());
+    }
+    if existing.address_line1 != incoming.address_line1
+        || existing.address_line2 != incoming.address_line2
+        || existing.city != incoming.city
+        || existing.state != incoming.state
+        || existing.zip != incoming.zip
+    {
+        out.push("Address".to_string());
+    }
+    if existing.latitude != incoming.latitude || existing.longitude != incoming.longitude {
+        out.push("Coordinates".to_string());
+    }
+    if existing.phone_1 != incoming.phone_1
+        || existing.email_1 != incoming.email_1
+        || existing.phone_2 != incoming.phone_2
+        || existing.email_2 != incoming.email_2
+    {
+        out.push("Phone/Email".to_string());
+    }
+    if existing.comments != incoming.comments {
+        out.push("Comments".to_string());
+    }
+    out
 }
 
 #[tauri::command]
@@ -441,17 +506,55 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
              FROM review_queue rq WHERE rq.import_batch_id = ?1 AND rq.resolution = 'pending'",
         )
         .map_err(|e| e.to_string())?;
-    let rows = stmt
+    let rows: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
         .query_map(params![batch_id], |r| {
-            Ok(ReviewItem {
-                id: r.get(0)?, match_type: r.get(1)?, incoming_data: r.get(2)?,
-                existing_household_id: r.get(3)?, existing_summary: r.get(4)?,
-            })
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(rows)
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, match_type, incoming_data, existing_household_id, existing_summary) in rows {
+        // Only a 'changed' item has both an incoming record and an
+        // existing household to compare — 'new' has no existing row,
+        // 'removed' has no incoming_data.
+        let changed = match (&incoming_data, existing_household_id) {
+            (Some(json), Some(eid)) => {
+                let rec: Option<ParsedRecord> = serde_json::from_str(json).ok();
+                let existing: Option<ExistingForDiff> = conn
+                    .query_row(
+                        "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
+                         phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
+                         longitude, comments FROM households WHERE id = ?1",
+                        params![eid],
+                        |r| {
+                            Ok(ExistingForDiff {
+                                first_name: r.get(0)?, last_name: r.get(1)?,
+                                first_name_2: r.get(2)?, last_name_2: r.get(3)?,
+                                phone_1: r.get(4)?, email_1: r.get(5)?,
+                                phone_2: r.get(6)?, email_2: r.get(7)?,
+                                address_line1: r.get(8)?, address_line2: r.get(9)?,
+                                city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
+                                latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
+                            })
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                match (existing, rec) {
+                    (Some(e), Some(r)) => changed_fields(&e, &r),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        out.push(ReviewItem {
+            id, match_type, incoming_data, existing_household_id, existing_summary,
+            changed_fields: changed,
+        });
+    }
+    Ok(out)
 }
 
 /// User-driven resolution of one review item: replace|merge|add|delete|ignore.

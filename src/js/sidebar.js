@@ -175,7 +175,6 @@ async function showPotentialProblemsModal() {
         <h2>Potential Problems</h2>
         <div id="potentialProblemsBody"></div>
         <div style="margin-top:12px;">
-            <button class="btn" id="downloadPotentialProblemsBtn" style="display:none;">Download PDF</button>
             <button class="btn" id="closePotentialProblems">Close</button>
         </div>
     </div>`;
@@ -184,27 +183,20 @@ async function showPotentialProblemsModal() {
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 
     const body = overlay.querySelector('#potentialProblemsBody');
-    const downloadBtn = overlay.querySelector('#downloadPotentialProblemsBtn');
 
     if (!problems.length) {
         body.innerHTML = '<p>No potential problems found.</p>';
         return;
     }
-    downloadBtn.style.display = '';
-    downloadBtn.addEventListener('click', () => PotentialProblemsPdf.download(problems));
-    // Temporary (#48 "no name on file" investigation) — debug_trace is
-    // only present on the first 10 flagged households; see
-    // diagnostics.rs's DEBUG_TRACE_LIMIT doc comment. Safe to delete
-    // this block (and the field) once the underlying pattern is found.
-    body.innerHTML = `<p>${problems.length} household(s) flagged.</p>` + problems.map(p => `
-        <div class="review-item">
-            <div class="review-body">
-                <div><strong>${escapeHtml(p.household_name)}</strong> — ${escapeHtml(p.address_line1 || '(no address)')} (household #${p.household_id})</div>
-                <ul>${p.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
-                ${p.debug_trace ? `<pre style="white-space:pre-wrap;font-size:0.82em;background:rgba(0,0,0,0.05);padding:8px;border-radius:4px;margin-top:6px;">${escapeHtml(p.debug_trace.join('\n'))}</pre>` : ''}
-            </div>
-        </div>
-    `).join('');
+
+    // Report is generated and saved automatically — no on-screen results
+    // list, no separate Download button. pdfmake's own .download() call
+    // (PotentialProblemsPdf.download) is what actually saves it; this app
+    // has no way to know the real destination path (webview download
+    // behavior, OS/user-config dependent), so the modal states the
+    // presumed default rather than a path it can't actually confirm.
+    PotentialProblemsPdf.download(problems);
+    body.innerHTML = `<p>${problems.length} household(s) flagged. Report saved to your Downloads folder.</p>`;
 }
 
 function updateHamburgerContextualSection() { /* no per-view hamburger sections in v1 */ }
