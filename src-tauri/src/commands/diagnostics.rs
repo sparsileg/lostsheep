@@ -239,25 +239,86 @@ fn road_name_from_address(address_line1: &str) -> Option<String> {
     Some(words[start..words.len() - 1].join(" "))
 }
 
-/// Every neighbor node reachable via a single road_edge from `node_id`,
-/// paired with that edge's name (None if the edge is unnamed). Both
-/// directions of `road_edges` are covered by the CASE expression.
-fn edges_at_node(conn: &rusqlite::Connection, node_id: i64) -> Vec<(i64, Option<String>)> {
-    let mut stmt = match conn.prepare(
-        "SELECT CASE WHEN e.from_node_id = ?1 THEN e.to_node_id ELSE e.from_node_id END, rn.name \
-         FROM road_edges e LEFT JOIN road_names rn ON rn.id = e.name_id \
-         WHERE e.from_node_id = ?1 OR e.to_node_id = ?1",
-    ) {
+/// One edge's endpoints, coordinates, and name — enough to reproduce
+/// everything nearby_scored_edges() used to fetch per-household via SQL.
+struct RoadEdge {
+    from_id: i64,
+    to_id: i64,
+    from_lat: f64,
+    from_lon: f64,
+    to_lat: f64,
+    to_lon: f64,
+    name: Option<String>,
+}
+
+/// In-memory copy of road_edges/road_nodes/road_names (issue #51) — built
+/// once per scan instead of re-querying roads.db per household and per
+/// BFS hop. roads.db is ~38MB, trivial to hold in RAM; the old per-row
+/// scalar max()/min() bbox query in nearby_scored_edges() wasn't
+/// sargable, forcing a full table scan + two joins on every single
+/// household (and edges_at_node() re-ran its own query per BFS hop on
+/// top of that) — this made the scan I/O-bound rather than CPU-bound, so
+/// a release build wasn't meaningfully faster than dev. Same
+/// precompute-once pattern already used here for road_full_set/
+/// road_dropped_set.
+struct RoadGraph {
+    /// Every edge, for nearby_scored_edges()'s full-scan-and-score.
+    edges: Vec<RoadEdge>,
+    /// node_id -> every (neighbor_node_id, edge_name) reachable by one
+    /// edge — both directions of each edge are present as two entries,
+    /// same coverage the old CASE-expression SQL gave edges_at_node().
+    adjacency: HashMap<i64, Vec<(i64, Option<String>)>>,
+}
+
+/// Single full read of road_edges (joined to road_nodes x2 and
+/// road_names) — replaces every per-household/per-hop query that used to
+/// hit roads_conn directly. Empty (rather than erroring) if the query
+/// fails to prepare, matching the old edges_at_node()/nearby_scored_edges()
+/// behavior of returning nothing on a prepare error instead of failing
+/// the whole scan.
+fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
+    let mut edges = Vec::new();
+    let mut adjacency: HashMap<i64, Vec<(i64, Option<String>)>> = HashMap::new();
+
+    let query = "SELECT e.from_node_id, e.to_node_id, fn.lat, fn.lon, tn.lat, tn.lon, rn.name \
+                 FROM road_edges e \
+                 JOIN road_nodes fn ON fn.id = e.from_node_id \
+                 JOIN road_nodes tn ON tn.id = e.to_node_id \
+                 LEFT JOIN road_names rn ON rn.id = e.name_id";
+    let mut stmt = match conn.prepare(query) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return RoadGraph { edges, adjacency },
     };
-    let result = match stmt.query_map(rusqlite::params![node_id], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+    let rows = match stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, f64>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, f64>(4)?,
+            r.get::<_, f64>(5)?,
+            r.get::<_, Option<String>>(6)?,
+        ))
     }) {
-        Ok(rows) => rows.flatten().collect(),
-        Err(_) => Vec::new(),
+        Ok(rows) => rows,
+        Err(_) => return RoadGraph { edges, adjacency },
     };
-    result
+
+    for row in rows.flatten() {
+        let (from_id, to_id, from_lat, from_lon, to_lat, to_lon, name) = row;
+        adjacency.entry(from_id).or_default().push((to_id, name.clone()));
+        adjacency.entry(to_id).or_default().push((from_id, name.clone()));
+        edges.push(RoadEdge { from_id, to_id, from_lat, from_lon, to_lat, to_lon, name });
+    }
+
+    RoadGraph { edges, adjacency }
+}
+
+/// Every neighbor node reachable via a single road_edge from `node_id`,
+/// paired with that edge's name (None if the edge is unnamed). In-memory
+/// lookup (issue #51) — was a fresh SQL query per call.
+fn edges_at_node(graph: &RoadGraph, node_id: i64) -> Vec<(i64, Option<String>)> {
+    graph.adjacency.get(&node_id).cloned().unwrap_or_default()
 }
 
 /// Rules 3+4 fallback, generalized (#48 follow-up): many "no name on
@@ -273,7 +334,7 @@ fn edges_at_node(conn: &rusqlite::Connection, node_id: i64) -> Vec<(i64, Option<
 const MAX_UNNAMED_HOPS: usize = 100;
 
 fn walk_to_named_roads(
-    conn: &rusqlite::Connection,
+    graph: &RoadGraph,
     start_nodes: &[i64],
     trace: &mut Option<&mut Vec<String>>,
 ) -> Vec<String> {
@@ -287,7 +348,7 @@ fn walk_to_named_roads(
         let mut next_frontier: Vec<i64> = Vec::new();
 
         for &node in &frontier {
-            for (neighbor, name) in edges_at_node(conn, node) {
+            for (neighbor, name) in edges_at_node(graph, node) {
                 match name {
                     Some(n) => {
                         trace_push(
@@ -327,12 +388,12 @@ fn walk_to_named_roads(
 /// Rules 3+4 entry point from a matched segment's two endpoints — walks
 /// outward from both until a named road is found (see walk_to_named_roads).
 fn connected_road_names_both(
-    conn: &rusqlite::Connection,
+    graph: &RoadGraph,
     node_a: i64,
     node_b: i64,
     trace: &mut Option<&mut Vec<String>>,
 ) -> Vec<String> {
-    walk_to_named_roads(conn, &[node_a, node_b], trace)
+    walk_to_named_roads(graph, &[node_a, node_b], trace)
 }
 
 /// Perpendicular distance (meters, local flat-plane approximation — fine
@@ -361,12 +422,13 @@ fn point_to_segment_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -
 /// the local flat-plane projection origin — fine at SNAP_TOLERANCE_M
 /// scale. Empty if nothing overlaps the box at all.
 ///
-/// Note: full scan of road_edges (joined) per household — SQLite can't
-/// index a per-row max(fn.lat, tn.lat) comparison. Fine at this app's
-/// target scale; worth revisiting (precomputed/indexed edge bounding-box
-/// columns) if a scan against a large roads.db ever feels slow.
+/// In-memory scan of the precomputed RoadGraph (issue #51) — was a fresh
+/// per-household SQL bbox query; SQLite couldn't index the per-row
+/// max(fn.lat, tn.lat) comparison it used, forcing a full table scan +
+/// two joins every time. Same bbox-overlap filter, same scoring, just
+/// against graph.edges instead of a rusqlite statement.
 fn nearby_scored_edges(
-    conn: &rusqlite::Connection,
+    graph: &RoadGraph,
     lat: f64,
     lon: f64,
     trace: &mut Option<&mut Vec<String>>,
@@ -382,48 +444,28 @@ fn nearby_scored_edges(
         format!("search box: lat [{min_lat:.6}, {max_lat:.6}] lon [{min_lon:.6}, {max_lon:.6}]"),
     );
 
-    // max()/min() with two column arguments are SQLite's *scalar* forms
-    // (per-row largest/smallest of the two named values) — not the
-    // single-argument aggregate max()/min(). An edge's bbox overlaps the
-    // search box unless it's entirely above/below/left/right of it.
-    let query = "SELECT e.from_node_id, e.to_node_id, fn.lat, fn.lon, tn.lat, tn.lon, rn.name \
-                 FROM road_edges e \
-                 JOIN road_nodes fn ON fn.id = e.from_node_id \
-                 JOIN road_nodes tn ON tn.id = e.to_node_id \
-                 LEFT JOIN road_names rn ON rn.id = e.name_id \
-                 WHERE max(fn.lat, tn.lat) >= ?1 AND min(fn.lat, tn.lat) <= ?2 \
-                   AND max(fn.lon, tn.lon) >= ?3 AND min(fn.lon, tn.lon) <= ?4";
-    let mut edge_stmt = match conn.prepare(query) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let edge_rows = match edge_stmt.query_map(rusqlite::params![min_lat, max_lat, min_lon, max_lon], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, f64>(2)?,
-            r.get::<_, f64>(3)?,
-            r.get::<_, f64>(4)?,
-            r.get::<_, f64>(5)?,
-            r.get::<_, Option<String>>(6)?,
-        ))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return Vec::new(),
-    };
-
     let meters_per_deg_lat = 111_320.0_f64;
     let meters_per_deg_lon = 111_320.0_f64 * lat.to_radians().cos();
 
     let mut scored: Vec<(f64, i64, i64, Option<String>)> = Vec::new();
-    for row in edge_rows.flatten() {
-        let (from_id, to_id, flat, flon, tlat, tlon, name) = row;
-        let ax = (flon - lon) * meters_per_deg_lon;
-        let ay = (flat - lat) * meters_per_deg_lat;
-        let bx = (tlon - lon) * meters_per_deg_lon;
-        let by = (tlat - lat) * meters_per_deg_lat;
+    for e in &graph.edges {
+        // An edge's bbox overlaps the search box unless it's entirely
+        // above/below/left/right of it — same test the old SQL WHERE
+        // clause ran, just as plain scalar comparisons here.
+        let edge_max_lat = e.from_lat.max(e.to_lat);
+        let edge_min_lat = e.from_lat.min(e.to_lat);
+        let edge_max_lon = e.from_lon.max(e.to_lon);
+        let edge_min_lon = e.from_lon.min(e.to_lon);
+        if edge_max_lat < min_lat || edge_min_lat > max_lat || edge_max_lon < min_lon || edge_min_lon > max_lon {
+            continue;
+        }
+
+        let ax = (e.from_lon - lon) * meters_per_deg_lon;
+        let ay = (e.from_lat - lat) * meters_per_deg_lat;
+        let bx = (e.to_lon - lon) * meters_per_deg_lon;
+        let by = (e.to_lat - lat) * meters_per_deg_lat;
         let d = point_to_segment_dist(0.0, 0.0, ax, ay, bx, by);
-        scored.push((d, from_id, to_id, name));
+        scored.push((d, e.from_id, e.to_id, e.name.clone()));
     }
     scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
@@ -460,13 +502,13 @@ fn nearby_scored_edges(
 /// outward from the nearest edge's endpoints (still needed for the
 /// genuine-driveway case: nothing named within tolerance at all).
 fn road_name_problem(
-    conn: &rusqlite::Connection,
+    graph: &RoadGraph,
     lat: f64,
     lon: f64,
     address_road_name: &str,
     trace: &mut Option<&mut Vec<String>>,
 ) -> Option<String> {
-    let scored = nearby_scored_edges(conn, lat, lon, trace);
+    let scored = nearby_scored_edges(graph, lat, lon, trace);
     if scored.is_empty() {
         return Some("No road found near household within snap tolerance".to_string());
     }
@@ -501,7 +543,7 @@ fn road_name_problem(
     // are named at all) — widen the search by walking outward from the
     // single nearest edge's endpoints (handles the driveway/trail case).
     let (_, node_a, node_b, _) = within_tol[0];
-    let walked = connected_road_names_both(conn, *node_a, *node_b, trace);
+    let walked = connected_road_names_both(graph, *node_a, *node_b, trace);
 
     let mut candidates = named_within;
     for n in walked {
@@ -573,6 +615,11 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
         (full, dropped)
     };
     let roads_available = !road_full_set.is_empty();
+
+    // Issue #51: one full read of road_edges/road_nodes/road_names,
+    // replacing every per-household/per-BFS-hop query nearby_scored_edges()
+    // and edges_at_node() used to issue against roads_conn directly.
+    let road_graph = build_road_graph(&roads_conn);
 
     struct Row {
         id: i64,
@@ -758,7 +805,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                         let mut trace_opt: Option<&mut Vec<String>> =
                             if want_trace { Some(&mut local_trace) } else { None };
 
-                        if let Some(reason) = road_name_problem(&roads_conn, lat, lon, name, &mut trace_opt) {
+                        if let Some(reason) = road_name_problem(&road_graph, lat, lon, name, &mut trace_opt) {
                             if want_trace {
                                 local_trace.push(format!("RESULT: flagged — {reason}"));
                                 debug_trace = Some(local_trace);
