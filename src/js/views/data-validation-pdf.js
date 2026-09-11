@@ -26,13 +26,21 @@ const PotentialProblemsPdf = {
         const colors = this._colors();
         const now = new Date();
 
+        // Shared-address group entries (household_ids.length > 1) carry
+        // multiple people and no single tag — handled as their own
+        // section below, not folded into the tag-based bucketing (a
+        // group can span residents with different tags, so there's no
+        // single tag section it belongs in).
+        const groups = problems.filter(p => p.household_ids && p.household_ids.length > 1);
+        const singles = problems.filter(p => !(p.household_ids && p.household_ids.length > 1));
+
         // Households with no address on file get no address/road/geocoord
         // findings at all — diagnostics.rs only ever pushes the single
         // "No address on file" reason for them (see find_potential_problems)
         // — so they carry nothing worth a full entry. Pulled out to their
         // own name-only list at the end of the report instead.
-        const noAddress = problems.filter(p => p.reasons.length === 1 && p.reasons[0] === 'No address on file');
-        const withFindings = problems.filter(p => !(p.reasons.length === 1 && p.reasons[0] === 'No address on file'));
+        const noAddress = singles.filter(p => p.reasons.length === 1 && p.reasons[0] === 'No address on file');
+        const withFindings = singles.filter(p => !(p.reasons.length === 1 && p.reasons[0] === 'No address on file'));
 
         // Grouped and sorted by tag, in a fixed priority order (Stan's
         // call — not-yet-contacted households surface first). Matched
@@ -63,6 +71,7 @@ const PotentialProblemsPdf = {
             if (items.length > 0) sections.push({ label: tagLabel, items });
         });
         if (other.length > 0) sections.push({ label: 'Untagged', items: other });
+        if (groups.length > 0) sections.push({ label: 'Shared Address — Geocoordinate Mismatch', items: groups, isGroup: true });
         if (noAddress.length > 0) sections.push({ label: 'No address on file', items: noAddress, nameOnly: true });
 
         const content = [];
@@ -78,7 +87,9 @@ const PotentialProblemsPdf = {
             section.items.forEach(p => {
                 content.push(section.nameOnly
                     ? { text: p.household_name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [0, 0, 0, 2] }
-                    : this._entry(p, colors));
+                    : section.isGroup
+                        ? this._groupEntry(p, colors)
+                        : this._entry(p, colors));
             });
         });
 
@@ -121,6 +132,23 @@ const PotentialProblemsPdf = {
         ];
         p.reasons.forEach(r => {
             stack.push({ text: `\u2022 ${r}`, fontSize: 9, color: colors.reasonText, margin: [10, 0, 0, 1] });
+        });
+        return { unbreakable: true, margin: [0, 0, 0, 12], stack };
+    },
+
+    // One shared-address group — address line, every resident's name
+    // listed (this is the whole point: seeing everyone at the address
+    // together is what makes the source problem fixable), then the
+    // reason(s) same as a normal entry.
+    _groupEntry(p, colors) {
+        const stack = [
+            { text: p.address_line1 || '(no address on file)', fontSize: 12, bold: true, color: colors.headingText, margin: [0, 0, 0, 4] },
+        ];
+        (p.household_names || [p.household_name]).forEach(name => {
+            stack.push({ text: name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 1] });
+        });
+        p.reasons.forEach(r => {
+            stack.push({ text: `\u2022 ${r}`, fontSize: 9, color: colors.reasonText, margin: [10, 4, 0, 1] });
         });
         return { unbreakable: true, margin: [0, 0, 0, 12], stack };
     },

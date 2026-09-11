@@ -71,13 +71,30 @@
 
 use crate::AppState;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
+
+/// Two coordinates at the same address within this distance are treated
+/// as "the same place" for the shared-address geocoordinate check below
+/// — small re-geocode jitter (different geocoder run, rounding) shouldn't
+/// flag every multi-resident address. Change this one value to retune.
+const ADDRESS_COORD_TOLERANCE_METERS: f64 = 33.0;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize)]
 pub struct PotentialProblem {
     pub household_id: i64,
     pub household_name: String,
+    /// Present only on a shared-address group entry (see the address-key
+    /// coordinate-mismatch check below) — every household_id sharing that
+    /// address, household_id/household_name above being the first of
+    /// them. Absent (omitted from JSON) for an ordinary single-household
+    /// entry, which frontend code should treat as its signal to render
+    /// household_id/household_name alone instead of a member list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub household_ids: Option<Vec<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub household_names: Option<Vec<String>>,
     pub address_line1: Option<String>,
     /// The household's tag (Known / Not known / Do Not Contact), if any —
     /// households are capped at one tag apiece. None when untagged.
@@ -561,6 +578,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
         id: i64,
         household_name: String,
         address_line1: Option<String>,
+        address_key: String,
         lat: Option<f64>,
         lon: Option<f64>,
         tag_name: Option<String>,
@@ -568,7 +586,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     let mut stmt = conn
         .prepare(
             "SELECT h.id, h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.address_line1, \
-             h.latitude, h.longitude, \
+             h.latitude, h.longitude, h.address_key, \
              (SELECT t.name FROM household_tags ht JOIN tags t ON t.id = ht.tag_id \
               WHERE ht.household_id = h.id LIMIT 1) AS tag_name \
              FROM households h",
@@ -595,12 +613,87 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                 address_line1: r.get(5)?,
                 lat: r.get(6)?,
                 lon: r.get(7)?,
-                tag_name: r.get(8)?,
+                address_key: r.get(8)?,
+                tag_name: r.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
+
+    // #XX follow-up: households sharing an address (same address_key)
+    // should also share geocoordinates — nothing enforces that today, and
+    // a Replace/Merge that only touches one resident's row can leave the
+    // others silently stale (confirmed live: two residents at one
+    // address, one freshly re-geocoded, one not — the map's per-address
+    // marker picked whichever row happened to come back first). Flagged
+    // here rather than fixed by restructuring how coordinates are stored,
+    // per Stan's call: this exists to surface the problem at its source
+    // (the import/replace step that didn't sync everyone), not to paper
+    // over it with a shared-coordinate schema.
+    //
+    // Reported as ONE group entry per mismatched address (Stan's call —
+    // three residents at one address previously produced three separate,
+    // identical-looking rows with no indication they were even related;
+    // a single group entry listing everyone at the address makes the
+    // actual source problem — one import/replace step that missed some
+    // residents — visible at a glance). This does NOT replace a
+    // household's own other reasons (street name not found, no address on
+    // file, etc.) — those still produce that household's normal
+    // individual entry alongside the group entry; a household can
+    // legitimately appear in both.
+    let mut addr_groups: HashMap<&str, Vec<&Row>> = HashMap::new();
+    for row in &rows {
+        if !row.address_key.trim().is_empty() {
+            addr_groups.entry(row.address_key.as_str()).or_default().push(row);
+        }
+    }
+    // A missing coordinate counts as distinct from any real coordinate
+    // pair, not as "no opinion" — one resident geocoded and another not,
+    // at the same address, is exactly the kind of split this exists to
+    // catch, same as an outright numeric disagreement. Two present
+    // coordinates within ADDRESS_COORD_TOLERANCE_METERS of each other are
+    // NOT a mismatch — ordinary re-geocode jitter, not a real problem.
+    fn coords_close_enough(
+        a: (Option<f64>, Option<f64>),
+        b: (Option<f64>, Option<f64>),
+        tolerance_m: f64,
+    ) -> bool {
+        match (a, b) {
+            (a, b) if a == b => true, // covers both-None and exact match
+            ((Some(alat), Some(alon)), (Some(blat), Some(blon))) => {
+                crate::geo::haversine_meters(alat, alon, blat, blon) <= tolerance_m
+            }
+            _ => false, // one side missing, the other present
+        }
+    }
+
+    let mut group_problems: Vec<PotentialProblem> = Vec::new();
+    for members in addr_groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        let first_coords = (members[0].lat, members[0].lon);
+        let mismatched = members
+            .iter()
+            .any(|m| !coords_close_enough((m.lat, m.lon), first_coords, ADDRESS_COORD_TOLERANCE_METERS));
+        if !mismatched {
+            continue;
+        }
+        group_problems.push(PotentialProblem {
+            household_id: members[0].id,
+            household_name: members[0].household_name.clone(),
+            household_ids: Some(members.iter().map(|m| m.id).collect()),
+            household_names: Some(members.iter().map(|m| m.household_name.clone()).collect()),
+            address_line1: members[0].address_line1.clone(),
+            tag: None, // members may hold different tags — not meaningful to pick one
+            reasons: vec![format!(
+                "Shared address — {} households with differing or missing geocoordinates",
+                members.len()
+            )],
+            debug_trace: None,
+        });
+    }
 
     let mut problems = Vec::new();
     let mut debug_captures: usize = 0;
@@ -615,6 +708,8 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                 problems.push(PotentialProblem {
                     household_id: row.id,
                     household_name: row.household_name.clone(),
+                    household_ids: None,
+                    household_names: None,
                     address_line1: row.address_line1.clone(),
                     tag: row.tag_name.clone(),
                     reasons: vec!["No address on file".to_string()],
@@ -683,6 +778,8 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
             problems.push(PotentialProblem {
                 household_id: row.id,
                 household_name: row.household_name.clone(),
+                household_ids: None,
+                household_names: None,
                 address_line1: row.address_line1.clone(),
                 tag: row.tag_name.clone(),
                 reasons,
@@ -690,6 +787,8 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
             });
         }
     }
+
+    problems.extend(group_problems);
 
     Ok(problems)
     })

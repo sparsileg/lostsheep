@@ -263,14 +263,14 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
     let live_count: i64 = live_conn.query_row("SELECT count(*) FROM households", [], |r| r.get(0)).map_err(|e| e.to_string())?;
 
     let mut backup_keys_stmt = backup_conn.prepare("SELECT source_key, first_name, last_name, address_line1 FROM households").map_err(|e| e.to_string())?;
-    let backup_rows: Vec<(String, String, String, String)> = backup_keys_stmt
+    let backup_rows: Vec<(String, String, String, Option<String>)> = backup_keys_stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .collect();
 
     let mut live_all_stmt = live_conn.prepare("SELECT source_key, first_name, last_name, address_line1 FROM households").map_err(|e| e.to_string())?;
-    let live_rows_all: Vec<(String, String, String, String)> = live_all_stmt
+    let live_rows_all: Vec<(String, String, String, Option<String>)> = live_all_stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
@@ -287,11 +287,11 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
     // added/removed tally algebraically equal to the raw count delta,
     // and surfaces the collision itself as its own row instead of hiding
     // it.
-    let mut backup_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, String)>> = std::collections::HashMap::new();
+    let mut backup_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, Option<String>)>> = std::collections::HashMap::new();
     for row in &backup_rows {
         backup_by_key.entry(row.0.as_str()).or_default().push(row);
     }
-    let mut live_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, String)>> = std::collections::HashMap::new();
+    let mut live_by_key: std::collections::HashMap<&str, Vec<&(String, String, String, Option<String>)>> = std::collections::HashMap::new();
     for row in &live_rows_all {
         live_by_key.entry(row.0.as_str()).or_default().push(row);
     }
@@ -320,11 +320,13 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
 
         if b.len() > l.len() {
             for (_, first, last, addr) in b.iter().take(b.len() - l.len()) {
+                let addr = addr.as_deref().unwrap_or("(no address)");
                 rows.push(RestoreDiffRow { kind: "added".into(), description: format!("{first} {last} — {addr}") });
                 added_count += 1;
             }
         } else if l.len() > b.len() {
             for (_, first, last, addr) in l.iter().take(l.len() - b.len()) {
+                let addr = addr.as_deref().unwrap_or("(no address)");
                 rows.push(RestoreDiffRow { kind: "removed".into(), description: format!("{first} {last} — {addr}") });
                 removed_count += 1;
             }

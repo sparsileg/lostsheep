@@ -45,8 +45,14 @@ async function loadReviewQueue() {
 function renderReviewItem(item) {
     const incoming = item.incoming_data ? JSON.parse(item.incoming_data) : null;
     const incomingHtml = incoming
-        ? `${escapeHtml(incoming.first_name)} ${escapeHtml(incoming.last_name)} (${escapeHtml(incoming.role)}) — ${escapeHtml(incoming.address_line1)}`
+        ? `${escapeHtml(incoming.first_name)} ${escapeHtml(incoming.last_name)}` +
+          (incoming.first_name_2 ? ` & ${escapeHtml(incoming.first_name_2)} ${escapeHtml(incoming.last_name_2)}` : '') +
+          ` (${escapeHtml(incoming.role)}) — ${escapeHtml(incoming.address_line1)}`
         : '<em>(record removed from source)</em>';
+
+    const changedHtml = (item.changed_fields && item.changed_fields.length > 0)
+        ? `<div class="review-changed-fields"><strong>Changed:</strong> ${item.changed_fields.map(escapeHtml).join(', ')}</div>`
+        : '';
 
     let actions = '';
     if (item.match_type === 'new') actions = actionBtn(item.id, 'add', 'Add');
@@ -60,6 +66,7 @@ function renderReviewItem(item) {
             <div class="review-body">
                 <div><strong>Incoming:</strong> ${incomingHtml}</div>
                 ${item.existing_summary ? `<div><strong>Existing:</strong> ${escapeHtml(item.existing_summary)}</div>` : ''}
+                ${changedHtml}
             </div>
             <div class="review-actions">${actions}</div>
         </div>`;
