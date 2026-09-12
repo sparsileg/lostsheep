@@ -179,9 +179,22 @@ async function generateDirectoryPdf() {
 // local-only removal left state.page pointing at a numeric offset that
 // no longer matched the (now smaller) filtered result set, silently
 // skipping unreviewed households when the user hit Next (issue #5).
+//
+// allowSystemTagChange: false (#59) — this quick-toggle button must
+// never displace a "Do not contact" tag. A household holding one comes
+// back from tag_households untouched, reported via skipped_system; the
+// user gets a toast explaining why instead of the tag silently staying
+// put with no indication anything was refused.
 async function markKnown(id, targetTag) {
     try {
-        await Api.tagHouseholds([id], targetTag);
+        const result = await Api.tagHouseholds([id], targetTag, false);
+        if (result.skipped_system > 0) {
+            showMessage(
+                "This household is marked Do not contact — that can only be changed from the household's own edit screen.",
+                CONSTANTS.MESSAGE_TYPES.WARNING,
+                5000
+            );
+        }
         await loadHouseholds();
         await refreshTagFilterOptions();
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
@@ -259,7 +272,11 @@ async function openHouseholdModal(id) {
         staticLabel: '+ set tag',
         onSelect: async (name) => {
             if (!name) return;
-            await Api.tagHouseholds([id], name);
+            // allowSystemTagChange: true (#59) — this dropdown is the one
+            // authorized place a system tag ("Do not contact") can be
+            // assigned or replaced: an explicit, per-household decision
+            // made from that household's own edit screen.
+            await Api.tagHouseholds([id], name, true);
             const fresh = await Api.getHousehold(id);
             document.getElementById('modalTags').innerHTML = renderTagChips(fresh.tags, { onRemove: true });
             wireTagRemoval();

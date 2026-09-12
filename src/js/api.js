@@ -16,7 +16,8 @@ const Api = {
     createTag: (name) => invoke('create_tag', { name }),
     renameTag: (id, newName) => invoke('rename_tag', { id, newName }),
     deleteTag: (id) => invoke('delete_tag', { id }),
-    tagHouseholds: (householdIds, tagName) => invoke('tag_households', { householdIds, tagName }),
+    tagHouseholds: (householdIds, tagName, allowSystemTagChange) =>
+        invoke('tag_households', { householdIds, tagName, allowSystemTagChange }),
     untagHousehold: (householdId, tagId) => invoke('untag_household', { householdId, tagId }),
     bulkTagSearchResults: (search, tagName) => invoke('bulk_tag_search_results', { search, tagName }),
 

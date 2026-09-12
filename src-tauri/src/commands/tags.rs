@@ -118,26 +118,81 @@ pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64
     Ok(affected)
 }
 
+#[derive(Serialize)]
+pub struct TagResult {
+    pub tagged: i64,
+    /// Households left untouched because they currently carry a
+    /// system_key tag ("Do not contact") and allow_system_tag_change was
+    /// false (#59). The frontend's quick-toggle and bulk-tag callers use
+    /// this to tell the user why nothing happened for those households,
+    /// rather than silently succeeding on a subset with no signal.
+    pub skipped_system: i64,
+}
+
 /// Tags are capped at one per household — functionally more like a
 /// category than a tag right now, by design. Applying a tag always
-/// clears whatever was there before, on every household in the list.
+/// clears whatever was there before, EXCEPT a system_key tag ("Do not
+/// contact") on a household, unless allow_system_tag_change is true
+/// (#59). That flag exists so the one call site that's supposed to be
+/// able to touch system tags — the household edit modal's own "+ set
+/// tag" dropdown, an explicit per-household decision — still can, while
+/// the Known/Not Known quick-toggle button and bulk-tag-search-results
+/// (both act on households the user hasn't individually reviewed) can't.
+/// Applying a system tag itself as the target, with the flag false, is
+/// refused outright for the same reason.
 #[tauri::command]
-pub fn tag_households(state: State<AppState>, household_ids: Vec<i64>, tag_name: String) -> Result<(), String> {
-    let count = household_ids.len();
+pub fn tag_households(
+    state: State<AppState>,
+    household_ids: Vec<i64>,
+    tag_name: String,
+    allow_system_tag_change: bool,
+) -> Result<TagResult, String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let tag_id = get_or_create_tag_id(&tx, &tag_name).map_err(|e| e.to_string())?;
+
+    if !allow_system_tag_change {
+        let target_is_system: bool = tx
+            .query_row("SELECT system_key IS NOT NULL FROM tags WHERE id = ?1", params![tag_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if target_is_system {
+            return Err("this tag can only be set from a household's own edit screen".to_string());
+        }
+    }
+
+    let mut tagged: i64 = 0;
+    let mut skipped_system: i64 = 0;
     for hid in household_ids {
+        if !allow_system_tag_change {
+            let has_system: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM household_tags ht JOIN tags t ON t.id = ht.tag_id \
+                     WHERE ht.household_id = ?1 AND t.system_key IS NOT NULL)",
+                    params![hid],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if has_system {
+                skipped_system += 1;
+                continue;
+            }
+        }
         tx.execute("DELETE FROM household_tags WHERE household_id = ?1", params![hid]).map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
             params![hid, tag_id],
         )
         .map_err(|e| e.to_string())?;
+        tagged += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
-    super::logs::log(&conn, "info", &format!("tagged {count} household(s) with \"{tag_name}\""), None);
-    Ok(())
+    super::logs::log(
+        &conn,
+        "info",
+        &format!("tagged {tagged} household(s) with \"{tag_name}\" ({skipped_system} skipped — Do not contact)"),
+        None,
+    );
+    Ok(TagResult { tagged, skipped_system })
 }
 
 #[tauri::command]
@@ -156,19 +211,20 @@ pub fn untag_household(state: State<AppState>, household_id: i64, tag_id: i64) -
 /// (commands::households) rather than search_households itself — that
 /// path applies the 500-row display cap, which this used to try to opt
 /// out of with page_size: 100000 and get silently clamped back down
-/// (issue #22). The returned count is exactly how many ids were tagged,
-/// not an assumed page size.
+/// (issue #22). Always passes allow_system_tag_change: false (#59) — a
+/// bulk operation over a whole search result set is exactly the
+/// unreviewed-in-detail case that guard exists for; a household marked
+/// "Do not contact" comes out of this untouched, reflected in the
+/// returned skipped_system count.
 #[tauri::command]
 pub fn bulk_tag_search_results(
     state: State<AppState>,
     search: super::households::SearchParams,
     tag_name: String,
-) -> Result<i64, String> {
+) -> Result<TagResult, String> {
     let ids = {
         let conn = state.pool.get().map_err(|e| e.to_string())?;
         super::households::matching_household_ids(&conn, &search)?
     };
-    let count = ids.len() as i64;
-    tag_households(state, ids, tag_name)?;
-    Ok(count)
+    tag_households(state, ids, tag_name, false)
 }

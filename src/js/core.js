@@ -29,7 +29,7 @@ function initMessageBar() {
     area.appendChild(slot);
 }
 
-function showMessage(text, type = CONSTANTS.MESSAGE_TYPES.INFO, timeoutMs = 4000) {
+function showMessage(text, type = CONSTANTS.MESSAGE_TYPES.INFO, timeoutMs = 15000) {
     const area = document.getElementById('messageArea');
     if (!area) return;
     initMessageBar();
