@@ -11,10 +11,6 @@ conversation history were used as input.
 
 ## Scope correction: the actual threat model
 
-The audit brief describes a multi-user REST application: API keys, CORS,
-sessions, BOLA, horizontal and vertical privilege escalation, rate limiting,
-replay attacks, mass assignment. **None of that exists in this application.**
-
 Lost Sheep is a single-user, local-first Tauri 2 desktop application. There is
 no server, no HTTP listener, no authentication layer, no user table, no
 tenancy, no session, and no client/server trust boundary. The frontend and
@@ -24,14 +20,7 @@ commands via `generate_handler!`; every one of them operates on the single
 local database belonging to the single local user.
 
 Per your instruction, I modelled against the real threat surface and did not
-manufacture findings for the categories that do not apply. Those are:
-
-| Brief category | Status here |
-|---|---|
-| Authentication, sessions, API keys | Not applicable — no auth layer exists |
-| Authorization, BOLA, privilege escalation | Not applicable — one user, one dataset |
-| CORS, CSRF, rate limiting, replay | Not applicable — no HTTP surface |
-| Mass assignment, pagination leakage, ID enumeration | Not applicable — all data belongs to the one caller |
+manufacture findings for the categories that do not apply. 
 
 What I audited instead, as the genuine attack and failure surface:
 
@@ -94,8 +83,9 @@ token gating the destructive half of restore.
    mirrored visit history within 30 days** (C-2). `schema.sql` seeds
    `deletedRetentionDays = '365'`; `ALLOWED_RETENTION_DAYS` is `[1, 7, 14, 30]`;
    `run_prune()` filters the stored value against that array and falls back to
+   
    30. The sweep runs unattended in `main.rs`'s `setup()` before the window
-   paints. `deleted_visits` cascades away with the parent row.
+       paints. `deleted_visits` cascades away with the parent row.
 
 4. **The Known / Not Known button silently removes a "Do not contact" tag**
    (C-3). `tag_households()` opens with an unconditional `DELETE FROM
@@ -162,39 +152,39 @@ rather than inferred.
 
 ### High severity
 
-| ID | Finding | Location |
-|---|---|---|
-| C-1 | Backup fails outright on any database created after issue #39 | `commands/backup.rs::strip_road_graph` |
-| R-1 | Restore silently discards every visit and comment since the backup | `commands/backup.rs::restore_preview` / `restore_commit` |
-| C-2 | Retention prune destroys deleted households and their visits in ≤30 days | `commands/settings.rs::run_prune`, `db/schema.sql` |
-| C-3 | Known / Not Known button silently clears "Do not contact" | `commands/tags.rs::tag_households`, `views/households-view.js::markKnown` |
-| R-3 | No durable household identity | `db/schema.sql`, `commands/import.rs::resolve_review_item` |
-| R-4 | No recovery for comments and visits if the database is lost | architectural |
+| ID      | Finding                                                                  | Location                                                                  |
+| ------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| ~~C-1~~ | Backup fails outright on any database created after issue #39            | `commands/backup.rs::strip_road_g~~~~raph`                                |
+| R-1     | Restore silently discards every visit and comment since the backup       | `commands/backup.rs::restore_preview` / `restore_commit`                  |
+| C-2     | Retention prune destroys deleted households and their visits in ≤30 days | `commands/settings.rs::run_prune`, `db/schema.sql`                        |
+| C-3     | Known / Not Known button silently clears "Do not contact"                | `commands/tags.rs::tag_households`, `views/households-view.js::markKnown` |
+| R-3     | No durable household identity                                            | `db/schema.sql`, `commands/import.rs::resolve_review_item`                |
+| R-4     | No recovery for comments and visits if the database is lost              | architectural                                                             |
 
 ### Medium severity
 
-| ID | Finding | Location |
-|---|---|---|
-| C-4 | Re-import silently discards changed phone, email, city, state, ZIP, address line 2 | `commands/import.rs::run_diff` |
-| C-5 | Restoring a deleted household can fail on a raw UNIQUE constraint | `commands/households.rs::restore_deleted_household` |
-| C-6 | Resolving a review item detaches siblings; Confirm Delete becomes a silent no-op that reports success | `commands/import.rs::resolve_review_item` |
-| C-7 | "Add all new records" is not atomic and reports no partial progress | `commands/import.rs::resolve_all_new_records` |
-| C-8 | Households without coordinates are invisible on the map and in every visit list | `commands/visits.rs::fetch_grouped_households` |
-| C-9 | `roads.rs` carries an unclamped duplicate of the haversine fixed in #24 | `commands/roads.rs::haversine_m` |
-| C-10 | `.pbf` ingest has no size cap and can exhaust memory with no error | `commands/roads.rs::ingest_road_database` |
-| C-11 | Log Viewer auto-refresh never fires — checks `.active` on the wrong element | `views/log-viewer.js::startLogTail` |
-| C-12 | PDF import blocks the async runtime for its entire duration | `commands/import.rs::import_pdf`, `pdf_parser.rs::parse_pdf` |
-| C-13 | Parser silently drops households whose surname starts with a non-ASCII capital | `pdf_parser.rs::name_line_re` |
-| C-14 | CSV import corrupts quoted fields and reads the file uncapped | `commands/import.rs::import_csv` |
-| P-1 | Visit-list snapping is quadratic over the whole road node table | `commands/visits.rs::snap_to_graph`, `two_opt_improve` |
-| S-1 | PDF exports write the full directory unencrypted outside the app | `views/directory-pdf.js`, `map-view.js`, `data-validation-pdf.js` |
-| S-2 | Map tiles disclose the congregation's location to a third party | `views/map-view.js`, `tauri.conf.json` CSP |
-| U-1 | A second backup on the same calendar day always fails, with no way to proceed | `views/backup-restore.js`, `commands/paths.rs` |
-| U-2 | Household modal discards unsaved comments and visit notes with no prompt | `views/households-view.js::openHouseholdModal` |
-| U-3 | Review items claim "Changed: Comments" on every annotated household | `commands/import.rs::changed_fields` |
-| U-4 | The "Minimum log level" setting has no effect on what is written | `commands/logs.rs::log` |
-| U-5 | Visits and comments cannot be exported in any machine-readable form | `views/visits-report-view.js` |
-| R-2 | Nothing indicates whether a backup has ever been taken or how old it is | `views/backup-restore.js`, `sidebar.js` |
+| ID      | Finding                                                                                               | Location                                                          |
+| ------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| C-4     | Re-import silently discards changed phone, email, city, state, ZIP, address line 2                    | `commands/import.rs::run_diff`                                    |
+| C-5     | Restoring a deleted household can fail on a raw UNIQUE constraint                                     | `commands/households.rs::restore_deleted_household`               |
+| C-6     | Resolving a review item detaches siblings; Confirm Delete becomes a silent no-op that reports success | `commands/import.rs::resolve_review_item`                         |
+| C-7     | "Add all new records" is not atomic and reports no partial progress                                   | `commands/import.rs::resolve_all_new_records`                     |
+| C-8     | Households without coordinates are invisible on the map and in every visit list                       | `commands/visits.rs::fetch_grouped_households`                    |
+| C-9     | `roads.rs` carries an unclamped duplicate of the haversine fixed in #24                               | `commands/roads.rs::haversine_m`                                  |
+| C-10    | `.pbf` ingest has no size cap and can exhaust memory with no error                                    | `commands/roads.rs::ingest_road_database`                         |
+| C-11    | Log Viewer auto-refresh never fires — checks `.active` on the wrong element                           | `views/log-viewer.js::startLogTail`                               |
+| C-12    | PDF import blocks the async runtime for its entire duration                                           | `commands/import.rs::import_pdf`, `pdf_parser.rs::parse_pdf`      |
+| C-13    | Parser silently drops households whose surname starts with a non-ASCII capital                        | `pdf_parser.rs::name_line_re`                                     |
+| C-14    | CSV import corrupts quoted fields and reads the file uncapped                                         | `commands/import.rs::import_csv`                                  |
+| P-1     | Visit-list snapping is quadratic over the whole road node table                                       | `commands/visits.rs::snap_to_graph`, `two_opt_improve`            |
+| S-1     | PDF exports write the full directory unencrypted outside the app                                      | `views/directory-pdf.js`, `map-view.js`, `data-validation-pdf.js` |
+| S-2     | Map tiles disclose the congregation's location to a third party                                       | `views/map-view.js`, `tauri.conf.json` CSP                        |
+| ~~U-1~~ | A second backup on the same calendar day always fails, with no way to proceed                         | `views/backup-restore.js`, `commands/paths.rs`                    |
+| U-2     | Household modal discards unsaved comments and visit notes with no prompt                              | `views/households-view.js::openHouseholdModal`                    |
+| U-3     | Review items claim "Changed: Comments" on every annotated household                                   | `commands/import.rs::changed_fields`                              |
+| U-4     | The "Minimum log level" setting has no effect on what is written                                      | `commands/logs.rs::log`                                           |
+| U-5     | Visits and comments cannot be exported in any machine-readable form                                   | `views/visits-report-view.js`                                     |
+| R-2     | Nothing indicates whether a backup has ever been taken or how old it is                               | `views/backup-restore.js`, `sidebar.js`                           |
 
 ### Requires verification
 
@@ -333,15 +323,15 @@ a note about them.
 Reattaching a journal to a database it did not come from, tier by tier. Nothing
 is ever auto-discarded.
 
-| Tier | Match | Handling |
-|---|---|---|
-| 1 | `household_uid` exact | auto-accept |
-| 2 | `(source_key, source_key_seq)` exact | auto-accept |
-| 3 | `source_key` exact, seq ambiguous | show candidates, user picks |
-| 4 | normalized full name + `address_key` | auto-accept |
-| 5 | normalized full name only (household moved) | user confirms |
-| 6 | `address_key` only (name changed) | user confirms |
-| 7 | no match | park as unmatched, never discard |
+| Tier | Match                                       | Handling                         |
+| ---- | ------------------------------------------- | -------------------------------- |
+| 1    | `household_uid` exact                       | auto-accept                      |
+| 2    | `(source_key, source_key_seq)` exact        | auto-accept                      |
+| 3    | `source_key` exact, seq ambiguous           | show candidates, user picks      |
+| 4    | normalized full name + `address_key`        | auto-accept                      |
+| 5    | normalized full name only (household moved) | user confirms                    |
+| 6    | `address_key` only (name changed)           | user confirms                    |
+| 7    | no match                                    | park as unmatched, never discard |
 
 Tier 7 matters more than it looks. An unmatched note stays parked indefinitely
 and is re-run against the database after every future import, so a household
