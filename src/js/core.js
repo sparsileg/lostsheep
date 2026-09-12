@@ -109,8 +109,97 @@ const Core = {
         });
 
         showView('map', list.querySelector('.nav-item'));
+
+        // #58: was an unattended, unprompted prune at Rust startup —
+        // silently destroying deleted households' entire visit history
+        // after as little as a month. Not awaited: this is a courtesy
+        // check, it must never delay the app becoming usable.
+        checkStartupPruneCandidates();
     },
 };
+
+// ── Startup retention-cleanup confirmation (#58) ────────────────────────
+// Nothing is ever pruned without the user seeing exactly what would go
+// first. Runs on every launch; if there's nothing past the retention
+// window, it's a no-op and nothing is shown.
+async function checkStartupPruneCandidates() {
+    let candidates;
+    try {
+        candidates = await Api.listPruneCandidates();
+    } catch (e) {
+        console.error('checkStartupPruneCandidates: could not load candidates', e);
+        return;
+    }
+    const households = candidates.deleted_households || [];
+    const logs = candidates.logs || 0;
+    if (households.length === 0 && logs === 0) return;
+    showPruneConfirmModal(households, logs);
+}
+
+function daysAgoLabel(isoString) {
+    const then = new Date(isoString).getTime();
+    if (isNaN(then)) return '';
+    const days = Math.floor((Date.now() - then) / (1000 * 60 * 60 * 24));
+    if (days <= 0) return 'today';
+    if (days === 1) return '1 day ago';
+    return `${days} days ago`;
+}
+
+function showPruneConfirmModal(households, logs) {
+    // Same defensive clear as settings-modal.js — never stack an
+    // unremoved overlay under a new one.
+    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+
+    const rows = households.map(h => `
+        <tr>
+            <td>${escapeHtml(h.first_name)} ${escapeHtml(h.last_name)}</td>
+            <td>${escapeHtml(daysAgoLabel(h.deleted_at))}</td>
+        </tr>
+    `).join('');
+
+    overlay.innerHTML = `
+        <div class="modal">
+            <h2>Retention cleanup ready</h2>
+            <p>These records have passed the retention period set in Settings and are due to
+               be permanently removed, including all visit history and comments. This cannot
+               be undone.</p>
+            ${households.length > 0 ? `
+                <table class="kw-table">
+                    <thead><tr><th>Household</th><th>Deleted</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            ` : ''}
+            <p>${households.length} deleted household${households.length === 1 ? '' : 's'}, ${logs} log entrie${logs === 1 ? '' : 's'}.</p>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" id="pruneConfirmBtn">Delete permanently</button>
+                <button class="btn" id="pruneCancelBtn">Not now</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    // "Not now" just closes — nothing is dismissed permanently, the same
+    // candidates (plus whatever else has aged past the window since) are
+    // offered again next launch.
+    document.getElementById('pruneCancelBtn').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    document.getElementById('pruneConfirmBtn').addEventListener('click', async () => {
+        try {
+            const result = await Api.pruneOldDeletedAndLogs();
+            showMessage(
+                `Removed ${result.deleted_households} deleted household(s), ${result.logs} log entrie(s).`,
+                CONSTANTS.MESSAGE_TYPES.SUCCESS
+            );
+        } catch (e) {
+            console.error('showPruneConfirmModal: prune failed', e);
+            showMessage(`Retention cleanup failed: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
+        }
+        overlay.remove();
+    });
+}
 
 window.CONSTANTS = CONSTANTS;
 window.escapeHtml = escapeHtml;

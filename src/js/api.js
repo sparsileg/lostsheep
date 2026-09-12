@@ -57,6 +57,7 @@ const Api = {
     saveSettings: (values) => invoke('save_settings', { values }),
     pruneOldDeletedAndLogs: () => invoke('prune_old_deleted_and_logs'),
     previewPruneImpact: (deletedDays, logDays) => invoke('preview_prune_impact', { deletedDays, logDays }),
+    listPruneCandidates: () => invoke('list_prune_candidates'),
     getLogs: (levels, page, pageSize) => invoke('get_logs', { levels, page, pageSize }),
 };
 

@@ -4,13 +4,17 @@ use serde::Serialize;
 use std::collections::HashMap;
 use tauri::State;
 
-/// Retention is now a fixed dropdown in the UI (30/90/180/365 days) rather
+/// Retention is a fixed dropdown in the UI (1/7/30/180/365 days) rather
 /// than free-text — but save_settings has no whitelist otherwise and any
 /// value can still reach it over IPC, so this is validated here too, not
 /// just constrained in the frontend. Closes the "0 means delete
 /// everything" and "negative value silently no-ops" cases (#28) by
 /// construction: neither is a member of this set.
-pub const ALLOWED_RETENTION_DAYS: [i64; 4] = [1, 7, 14, 30];
+///
+/// Single shared set for both deleted-household and log retention (#58
+/// decision: not split — deleted households just default to the long
+/// end of this same range instead of having their own scale).
+pub const ALLOWED_RETENTION_DAYS: [i64; 5] = [1, 7, 30, 180, 365];
 
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, String> {
@@ -29,7 +33,7 @@ fn validate_retention(values: &HashMap<String, String>) -> Result<(), String> {
         if let Some(raw) = values.get(key) {
             let n: i64 = raw.trim().parse().map_err(|_| format!("{key} must be a number"))?;
             if !ALLOWED_RETENTION_DAYS.contains(&n) {
-                return Err(format!("{key} must be one of 1, 7, 14, or 30 days"));
+                return Err(format!("{key} must be one of 1, 7, 30, 180, or 365 days"));
             }
         }
     }
@@ -102,7 +106,7 @@ pub struct PruneImpact {
 #[tauri::command]
 pub fn preview_prune_impact(state: State<AppState>, deleted_days: i64, log_days: i64) -> Result<PruneImpact, String> {
     if !ALLOWED_RETENTION_DAYS.contains(&deleted_days) || !ALLOWED_RETENTION_DAYS.contains(&log_days) {
-        return Err("retention values must be one of 1, 7, 14, or 30 days".to_string());
+        return Err("retention values must be one of 1, 7, 30, 180, or 365 days".to_string());
     }
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let deleted_modifier = format!("-{deleted_days} days");
@@ -130,19 +134,16 @@ pub struct PruneResult {
     pub logs: i64,
 }
 
-/// No longer called from Save (#28) — retention is a policy setting, not
-/// a trigger. This needs to be called at application startup instead,
-/// where an unattended sweep is expected housekeeping rather than a
-/// side effect of an unrelated button. NOT YET WIRED UP: that call needs
-/// to go in main.rs's setup, after db::open_pool() — main.rs wasn't part
-/// of this patch. Left as a #[tauri::command] (not made private) so it
-/// stays available for issue #28's suggested on-demand "Prune Now"
-/// hamburger-menu entry later, with its own confirmation.
-/// The actual sweep, over a plain connection — extracted so main.rs can
-/// call this directly at startup without needing a managed `State`
-/// (which doesn't exist yet that early in setup()). The #[tauri::command]
-/// below is now a thin wrapper over this, kept for the on-demand "Prune
-/// Now" hamburger-menu entry (#28) that still goes through IPC.
+/// No longer called from Save (#28), and no longer called unattended at
+/// startup either (#58) — an unattended sweep with zero prompt and zero
+/// visible signal is exactly what silently destroyed deleted households'
+/// visit history in as little as a month. Startup now calls
+/// `list_prune_candidates` below instead, shows the user what would be
+/// removed, and only reaches this function if they confirm. Still a
+/// plain-connection function (not a bare command) so it can be called
+/// either from that confirmation flow's IPC command
+/// (`prune_old_deleted_and_logs`) or, in principle, from setup() again in
+/// the future without needing a managed `State`.
 pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
     let settings: HashMap<String, String> = {
         let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
@@ -194,4 +195,83 @@ pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
 pub fn prune_old_deleted_and_logs(state: State<AppState>) -> Result<PruneResult, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     run_prune(&conn)
+}
+
+#[derive(Serialize)]
+pub struct DeletedHouseholdSummary {
+    pub id: i64,
+    pub first_name: String,
+    pub last_name: String,
+    pub deleted_at: String,
+}
+
+#[derive(Serialize)]
+pub struct PruneCandidates {
+    pub deleted_households: Vec<DeletedHouseholdSummary>,
+    pub logs: i64,
+}
+
+/// Startup gate for #58. Reads the *currently stored* retention settings
+/// (same fallback-on-invalid-value behavior as run_prune) and returns the
+/// actual households that would be pruned right now — not just a count —
+/// so the frontend can show the user what they're about to lose, and how
+/// long ago each one was deleted, before anything is actually removed.
+/// Called on every app launch; removes nothing itself.
+#[tauri::command]
+pub fn list_prune_candidates(state: State<AppState>) -> Result<PruneCandidates, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let settings: HashMap<String, String> = {
+        let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let deleted_days: i64 = settings
+        .get("deletedRetentionDays")
+        .and_then(|v| v.parse().ok())
+        .filter(|n| ALLOWED_RETENTION_DAYS.contains(n))
+        .unwrap_or(30);
+    let log_days: i64 = settings
+        .get("logRetentionDays")
+        .and_then(|v| v.parse().ok())
+        .filter(|n| ALLOWED_RETENTION_DAYS.contains(n))
+        .unwrap_or(30);
+
+    let deleted_modifier = format!("-{deleted_days} days");
+    let log_modifier = format!("-{log_days} days");
+
+    let deleted_households = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, first_name, last_name, deleted_at FROM deleted_households \
+                 WHERE deleted_at < datetime('now', ?1)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![deleted_modifier], |r| {
+                Ok(DeletedHouseholdSummary {
+                    id: r.get(0)?,
+                    first_name: r.get(1)?,
+                    last_name: r.get(2)?,
+                    deleted_at: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    let logs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM logs WHERE created_at < datetime('now', ?1)",
+            params![log_modifier],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(PruneCandidates { deleted_households, logs })
 }

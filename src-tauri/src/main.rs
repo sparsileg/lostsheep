@@ -49,30 +49,13 @@ fn main() {
             let roads_db_path = data_dir.join("roads.db");
             let roads_pool = db::open_roads_pool(&roads_db_path).expect("failed to open roads database");
 
-            // #28: retention pruning runs unattended at startup now, not
-            // as a side effect of Settings Save. run_prune() takes a
-            // plain connection rather than State<AppState> specifically
-            // so it can be called here, before app.manage() below exists.
-            // Best-effort — a failure here must not block the app from
-            // opening.
-            {
-                let conn = pool.get().expect("failed to get db connection for startup prune");
-                match commands::settings::run_prune(&conn) {
-                    Ok(result) => {
-                        commands::logs::log(
-                            &conn,
-                            "info",
-                            &format!(
-                                "startup prune: removed {} deleted household(s), {} log row(s)",
-                                result.deleted_households, result.logs
-                            ),
-                            None,
-                        );
-                    }
-                    Err(e) => eprintln!("startup prune failed (non-fatal): {e}"),
-                }
-            }
-
+            // #58: retention pruning no longer runs unattended here. An
+            // unattended sweep with no prompt and no visible signal was
+            // exactly what silently destroyed deleted households' visit
+            // history after as little as a month. The frontend now calls
+            // list_prune_candidates on launch, shows the user what would
+            // be removed and how long ago it was deleted, and only calls
+            // prune_old_deleted_and_logs if they confirm.
             app.manage(AppState { pool, roads_pool, db_path, live_key_hex: key_hex, last_preview: std::sync::Mutex::new(None) });
             Ok(())
         })
@@ -122,6 +105,7 @@ fn main() {
             commands::settings::save_settings,
             commands::settings::prune_old_deleted_and_logs,
             commands::settings::preview_prune_impact,
+            commands::settings::list_prune_candidates,
             commands::logs::get_logs,
         ])
         .run(tauri::generate_context!())
