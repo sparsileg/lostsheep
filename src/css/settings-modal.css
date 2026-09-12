@@ -11,3 +11,5 @@
 .settings-modal > label { display: block; margin: 10px 0 4px; font-weight: 600; }
 .settings-folder-row { display: flex; gap: 8px; align-items: center; }
 .settings-folder-row input { flex: 1; }
+
+.settings-separator { border: none; border-top: 1px solid var(--border-color); margin: 10px 0; }

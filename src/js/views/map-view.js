@@ -1,3 +1,55 @@
+// #72: tiles are cached to disk (via Api.getCachedTile/saveCachedTile,
+// backed by commands/tiles.rs) so a tile already viewed once is never
+// re-requested from tile.openstreetmap.org. The fetch itself still
+// happens here in the webview, which already has CSP permission
+// (connect-src) to reach the tile domain — the backend only does local
+// disk I/O. getTileUrl() is inherited unchanged from L.TileLayer, so the
+// existing {s}/{z}/{x}/{y} subdomain-rotation template still applies to
+// the URL used on a cache miss.
+const CachedTileLayer = L.TileLayer.extend({
+    initialize(url, options) {
+        L.TileLayer.prototype.initialize.call(this, url, options);
+        // Object URLs the browser will otherwise keep alive forever —
+        // revoked as soon as Leaflet unloads the tile that used them.
+        this.on('tileunload', (e) => {
+            if (e.tile && e.tile.src && e.tile.src.startsWith('blob:')) {
+                URL.revokeObjectURL(e.tile.src);
+            }
+        });
+    },
+    createTile(coords, done) {
+        const tile = document.createElement('img');
+        const { z, x, y } = coords;
+        (async () => {
+            try {
+                const cached = await Api.getCachedTile(z, x, y);
+                if (cached) {
+                    tile.src = tileBytesToBlobUrl(cached);
+                    done(null, tile);
+                    return;
+                }
+                const url = this.getTileUrl(coords);
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`tile fetch failed: ${resp.status}`);
+                const bytes = Array.from(new Uint8Array(await resp.arrayBuffer()));
+                tile.src = tileBytesToBlobUrl(bytes);
+                done(null, tile);
+                // Fire-and-forget — a failed write just means this tile
+                // isn't cached yet and gets fetched again next time; it
+                // doesn't block the tile from displaying now.
+                Api.saveCachedTile(z, x, y, bytes).catch(e => console.error('saveCachedTile failed', e));
+            } catch (e) {
+                done(e, tile);
+            }
+        })();
+        return tile;
+    },
+});
+
+function tileBytesToBlobUrl(bytes) {
+    return URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+}
+
 registerView('map', {
     init() {
         document.getElementById('mapViewRoot').innerHTML = `
@@ -33,7 +85,7 @@ registerView('map', {
         // to the nearest zoomSnap value on its own. Revisit 0.25 for
         // either if it feels off.
         this.map = L.map('mapEl', { zoomSnap: 0.25, zoomDelta: 0.25 }).setView([39.5, -98.35], 4);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        new CachedTileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
         }).addTo(this.map);
         this.markersLayer = L.layerGroup().addTo(this.map);

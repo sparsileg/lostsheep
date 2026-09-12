@@ -21,17 +21,26 @@ async function openSettingsModal() {
             <div class="settings-row"><label>Minimum log level</label><div id="sLogLevelDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label>Households page size</label><div id="sPageSizeDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label for="sVisitSize">Default visit-list size</label><input type="number" id="sVisitSize" min="1"></div>
+            <hr class="settings-separator">
 
             <label>Backup folder</label>
             <div class="settings-folder-row">
                 <input type="text" id="sBackupFolder" readonly placeholder="Not set">
                 <button class="btn" id="sChooseFolderBtn">Choose…</button>
             </div>
+            <hr class="settings-separator">
 
             <label>Visit route start point</label>
             <div class="settings-row"><label for="sRouteStartLabel">Label</label><input type="text" id="sRouteStartLabel" placeholder="e.g. Church"></div>
             <div class="settings-row"><label for="sRouteStartLatLon">Latitude, Longitude</label><input type="text" id="sRouteStartLatLon" placeholder="e.g. 39.5, -98.35"></div>
-            <p style="opacity:.6; margin-top:-8px;">Fill in the label and coordinates to route generated visit lists from this point, or leave both blank. Coordinates can be comma- or space-separated, latitude first.</p>
+            <hr class="settings-separator">
+
+            <label>Map</label>
+            <div class="settings-row">
+                <label id="sMapUpdateLabel">Last map update: —</label>
+                <button class="btn" id="sRefreshMapBtn">Refresh Map</button>
+            </div>
+            <hr class="settings-separator">
 
             <div class="modal-buttons">
                 <button class="btn btn-primary" id="sSaveBtn">Save</button>
@@ -54,6 +63,26 @@ async function openSettingsModal() {
             document.getElementById('sRouteStartLatLon').value = (lat && lon) ? `${lat}, ${lon}` : (lat || lon || '');
         }
         document.getElementById('sBackupFolder').value = settings.backupFolder || '';
+
+        // #72: not a "setting" — reads/writes the on-disk tile cache
+        // directly, nothing staged into `pending`, nothing touched by
+        // Save/Cancel below.
+        const mapUpdateLabel = document.getElementById('sMapUpdateLabel');
+        const refreshTileCacheLabel = async () => {
+            let epochSecs = null;
+            try { epochSecs = await Api.getTileCacheStatus(); } catch (e) { console.error(e); }
+            mapUpdateLabel.textContent = epochSecs
+                ? `Last map update: ${new Date(epochSecs * 1000).toLocaleString()}`
+                : 'Last map update: never — pan or zoom the map to begin caching.';
+        };
+        await refreshTileCacheLabel();
+        document.getElementById('sRefreshMapBtn').addEventListener('click', async () => {
+            try {
+                await Api.clearTileCache();
+                await refreshTileCacheLabel();
+                showMessage('Map tile cache cleared — tiles will refetch as you pan and zoom.', CONSTANTS.MESSAGE_TYPES.INFO);
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        });
 
         document.getElementById('sChooseFolderBtn').addEventListener('click', async () => {
             const folder = await open({ directory: true, defaultPath: settings.backupFolder || undefined });
