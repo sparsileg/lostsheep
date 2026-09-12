@@ -45,8 +45,11 @@ let lvTailInterval = null;
 function startLogTail() {
     if (lvTailInterval !== null) return; // idempotent — init() can run more than once
     lvTailInterval = setInterval(() => {
-        const root = document.getElementById('logsRoot');
-        if (!root || !root.classList.contains('active')) return;
+        // #54: was checking #logsRoot, the inner div — showView() (core.js)
+        // toggles .active on the .view section (#view-logs), never on
+        // logsRoot itself, so this guard returned every tick, forever.
+        const section = document.getElementById('view-logs');
+        if (!section || !section.classList.contains('active')) return;
         if (lvState.page !== 1) return;
         loadLogs();
     }, 3000);
