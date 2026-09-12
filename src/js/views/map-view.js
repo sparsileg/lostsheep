@@ -61,6 +61,18 @@ registerView('map', {
         this.routeOverlayEnabled = false;
         this.map.on('moveend zoomend', () => { if (this.roadsOverlayEnabled) loadRoadsOverlay(); });
 
+        // Right-click: copy the clicked point's coordinates. Leaflet
+        // doesn't preventDefault the browser's own context menu on its
+        // own — done explicitly here so only ours shows. Shift+right-
+        // click is the escape hatch back to the native menu (Inspect
+        // Element, Reload, etc.) — needed since this fires for every
+        // right-click anywhere on the map, which is most of the screen.
+        this.map.on('contextmenu', (e) => {
+            if (e.originalEvent.shiftKey) return;
+            L.DomEvent.preventDefault(e.originalEvent);
+            showMapCoordMenu(e);
+        });
+
         this.tagDropdown = mountDropdown(document.getElementById('mapTagDropdown'), {
             items: [{ value: '', label: 'All households with coordinates' }],
             value: '',
@@ -741,5 +753,52 @@ function resetSeed() {
     // producing — same as a freshly generated route (generateVisitList).
     clearIconSearch();
     showMessage('Seed cleared.', CONSTANTS.MESSAGE_TYPES.INFO, 2000);
+}
+
+// Right-click "copy lat, lon" menu. Reuses .hamburger-menu/.hamburger-
+// menu-item (sidebar.js/hamburger-menu.css) for theming; the
+// .map-coord-menu class (map-view.css) widens it beyond that class's
+// fixed 220px so the coordinate string doesn't wrap. Position (top/left)
+// is still set here at runtime since it follows the click point, same
+// reason sidebar.js's positionHamburgerMenu() sets its menu's position
+// in JS rather than CSS — no inline styling beyond that positioning.
+function showMapCoordMenu(e) {
+    document.querySelectorAll('.map-coord-menu').forEach(el => el.remove());
+    const { lat, lng } = e.latlng;
+    const label = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+    const menu = document.createElement('div');
+    menu.className = 'hamburger-menu map-coord-menu open';
+    menu.innerHTML = `<div class="hamburger-menu-item" data-action="copy-latlon">Copy ${escapeHtml(label)}</div>`;
+    document.body.appendChild(menu);
+
+    const { clientX, clientY } = e.originalEvent;
+    const maxLeft = window.innerWidth - menu.offsetWidth - 8;
+    const maxTop = window.innerHeight - menu.offsetHeight - 8;
+    menu.style.left = `${Math.max(8, Math.min(clientX, maxLeft))}px`;
+    menu.style.top = `${Math.max(8, Math.min(clientY, maxTop))}px`;
+
+    menu.querySelector('[data-action="copy-latlon"]').addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(label);
+            showMessage('Coordinates copied.', CONSTANTS.MESSAGE_TYPES.SUCCESS, 2000);
+        } catch (err) {
+            console.error('showMapCoordMenu: clipboard write failed', err);
+            showMessage('Could not copy coordinates — see console for details', CONSTANTS.MESSAGE_TYPES.ERROR);
+        }
+        menu.remove();
+    });
+
+    // Dismiss on any outside click, one shot — same pattern
+    // mapPreviewPanel uses above and sidebar.js's hamburger menu uses.
+    setTimeout(() => {
+        function onDocClick(ev) {
+            if (!menu.contains(ev.target)) {
+                menu.remove();
+                document.removeEventListener('click', onDocClick);
+            }
+        }
+        document.addEventListener('click', onDocClick);
+    }, 0);
 }
 

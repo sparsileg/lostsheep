@@ -30,9 +30,8 @@ async function openSettingsModal() {
 
             <label>Visit route start point</label>
             <div class="settings-row"><label for="sRouteStartLabel">Label</label><input type="text" id="sRouteStartLabel" placeholder="e.g. Church"></div>
-            <div class="settings-row"><label for="sRouteStartLat">Latitude</label><input type="number" id="sRouteStartLat" step="any" placeholder="-90 to 90"></div>
-            <div class="settings-row"><label for="sRouteStartLon">Longitude</label><input type="number" id="sRouteStartLon" step="any" placeholder="-180 to 180"></div>
-            <p style="opacity:.6; margin-top:-8px;">Fill in all three to route generated visit lists from this point, or leave all three blank.</p>
+            <div class="settings-row"><label for="sRouteStartLatLon">Latitude, Longitude</label><input type="text" id="sRouteStartLatLon" placeholder="e.g. 39.5, -98.35"></div>
+            <p style="opacity:.6; margin-top:-8px;">Fill in the label and coordinates to route generated visit lists from this point, or leave both blank. Coordinates can be comma- or space-separated, latitude first.</p>
 
             <div class="modal-buttons">
                 <button class="btn btn-primary" id="sSaveBtn">Save</button>
@@ -49,8 +48,11 @@ async function openSettingsModal() {
 
         document.getElementById('sVisitSize').value = settings.defaultVisitGroupSize || 10;
         document.getElementById('sRouteStartLabel').value = settings.routeStartLabel || '';
-        document.getElementById('sRouteStartLat').value = settings.routeStartLat || '';
-        document.getElementById('sRouteStartLon').value = settings.routeStartLon || '';
+        {
+            const lat = settings.routeStartLat || '';
+            const lon = settings.routeStartLon || '';
+            document.getElementById('sRouteStartLatLon').value = (lat && lon) ? `${lat}, ${lon}` : (lat || lon || '');
+        }
         document.getElementById('sBackupFolder').value = settings.backupFolder || '';
 
         document.getElementById('sChooseFolderBtn').addEventListener('click', async () => {
@@ -86,8 +88,19 @@ async function openSettingsModal() {
         document.getElementById('sSaveBtn').addEventListener('click', async () => {
             pending.defaultVisitGroupSize = document.getElementById('sVisitSize').value;
             pending.routeStartLabel = document.getElementById('sRouteStartLabel').value.trim();
-            pending.routeStartLat = document.getElementById('sRouteStartLat').value.trim();
-            pending.routeStartLon = document.getElementById('sRouteStartLon').value.trim();
+            // Combined field, comma- or whitespace-separated, latitude
+            // first — split back into the two keys the backend still
+            // stores/validates separately (settings.rs's
+            // validate_route_start). An unparseable or partial value is
+            // passed through as-is rather than caught here; backend
+            // validation already produces a clear error for both "not a
+            // number" and "only some of label/lat/lon filled in".
+            {
+                const raw = document.getElementById('sRouteStartLatLon').value.trim();
+                const parts = raw.split(/[\s,]+/).filter(Boolean);
+                pending.routeStartLat = parts[0] || '';
+                pending.routeStartLon = parts[1] || '';
+            }
             // deletedRetentionDays/logRetentionDays already live on `pending`
             // via the dropdowns' onSelect above — nothing to read from an
             // input here now that they're fixed values, not free text.
