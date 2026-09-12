@@ -11,6 +11,25 @@
 
 use std::collections::HashMap;
 
+/// Bucket size (degrees) for the coordinate grid index below. Issue #66:
+/// visits.rs's snap_to_graph() used to be a full linear scan of `coords`
+/// per cache-miss snap — fine for a small hand-built graph, not for a
+/// county-sized extract (hundreds of thousands of nodes). 0.01° is
+/// roughly 1.1km of latitude per cell at any latitude, and roughly
+/// 1.1km*cos(lat) of longitude — small enough that a snap's search
+/// radius (a handful of cells around the query point, see
+/// visits.rs::snap_to_graph) touches a small, near-constant number of
+/// nodes regardless of total graph size, not a divisor tuned against
+/// today's specific extract.
+pub const GRID_CELL_DEG: f64 = 0.01;
+
+/// Which grid cell a coordinate falls in. Shared by build time (below)
+/// and query time (visits.rs::snap_to_graph) so both always agree on
+/// bucket boundaries.
+pub fn grid_cell(lat: f64, lon: f64) -> (i32, i32) {
+    ((lat / GRID_CELL_DEG).floor() as i32, (lon / GRID_CELL_DEG).floor() as i32)
+}
+
 /// One road_edge — from/to node ids and their coordinates (denormalized
 /// from road_nodes at build time — see build_road_graph()'s doc comment,
 /// issue #80) — and the road's name if it has one (road_names, joined via
@@ -34,6 +53,7 @@ pub struct RoadEdge {
 /// invocation (once per diagnostics scan, once per generate_visit_list
 /// call) — see build_road_graph() below for the per-call query cost this
 /// replaced in both former separate loaders.
+#[derive(Default)]
 pub struct RoadGraph {
     /// node_id -> (lat, lon). visits.rs's node-distance snap and A*
     /// heuristic read this directly. diagnostics.rs's bbox-overlap edge
@@ -42,6 +62,13 @@ pub struct RoadGraph {
     /// below at build time instead (issue #80) — see that field's doc
     /// comment for why.
     pub coords: HashMap<i64, (f64, f64)>,
+    /// Grid-bucket index over `coords` (issue #66) — grid_cell(lat, lon)
+    /// -> every node id whose coords fall in that cell. visits.rs's
+    /// snap_to_graph() queries this instead of scanning all of `coords`
+    /// on a cache miss. diagnostics.rs doesn't use this — its
+    /// nearby_scored_edges() already has its own bbox-overlap scan over
+    /// `edges`, unrelated to node snapping.
+    pub grid: HashMap<(i32, i32), Vec<i64>>,
     /// Every edge, coords included, for diagnostics.rs's
     /// nearby_scored_edges() full-scan-and-score — see RoadEdge's doc
     /// comment (issue #80) for why coords live here, not looked up from
@@ -77,12 +104,17 @@ impl RoadGraph {
 /// the whole call.
 pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
     let mut coords: HashMap<i64, (f64, f64)> = HashMap::new();
+    // Issue #66: built alongside coords, one pass, so there is no separate
+    // "index the graph" step after the fact — a node is in the grid the
+    // instant it exists in coords.
+    let mut grid: HashMap<(i32, i32), Vec<i64>> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare("SELECT id, lat, lon FROM road_nodes") {
         if let Ok(rows) = stmt.query_map([], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))
         }) {
             for (id, lat, lon) in rows.flatten() {
                 coords.insert(id, (lat, lon));
+                grid.entry(grid_cell(lat, lon)).or_default().push(id);
             }
         }
     }
@@ -129,5 +161,42 @@ pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
         }
     }
 
-    RoadGraph { coords, edges, adjacency }
+    RoadGraph { coords, grid, edges, adjacency }
+}
+
+/// Cache-aware graph load, shared by both callers (issue #66 follow-up):
+/// visits.rs's generate_visit_list and diagnostics.rs's
+/// find_potential_problems each used to run their own full roads.db
+/// rebuild on every call — this was the single biggest per-call cost in
+/// generate_visit_list (measured ~1.8s of ~3.6s against a real
+/// county-sized extract) and diagnostics.rs paid the identical cost
+/// independently. One cache, in AppState, shared by both: whichever
+/// caller runs first each app session pays the build; the other gets it
+/// for free. A successful road-graph re-ingest
+/// (roads.rs::ingest_road_database) clears the cache once, and both
+/// callers pick that up automatically — neither has (or needs) its own
+/// invalidation path.
+///
+/// Returns None when nothing has been ingested (empty road_nodes) or the
+/// roads.db pool is unreachable — deliberately NOT cached, since that
+/// query is already cheap and caching "no graph yet" would hide a graph
+/// ingested later behind whichever cache-clearing path happened to run.
+pub fn load_or_build(
+    cache: &std::sync::Mutex<Option<std::sync::Arc<RoadGraph>>>,
+    roads_conn: &rusqlite::Connection,
+) -> Option<std::sync::Arc<RoadGraph>> {
+    {
+        let cached = cache.lock().unwrap();
+        if let Some(graph) = cached.as_ref() {
+            return Some(graph.clone()); // Arc clone — refcount bump, not a data copy
+        }
+    }
+
+    let graph = build_road_graph(roads_conn);
+    if graph.is_empty() {
+        return None;
+    }
+    let graph = std::sync::Arc::new(graph);
+    *cache.lock().unwrap() = Some(graph.clone());
+    Some(graph)
 }
