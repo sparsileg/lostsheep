@@ -71,7 +71,7 @@ async function openSettingsModal() {
             value: settings.pageSize || '10',
             onSelect: (val) => { pending.pageSize = val; },
         });
-        const retentionItems = ['1', '7', '14', '30'].map(n => ({ value: n, label: `${n} days` }));
+        const retentionItems = ['1', '7', '30', '180', '365'].map(n => ({ value: n, label: `${n} days` }));
         mountDropdown(document.getElementById('sDeletedDaysDropdown'), {
             items: retentionItems,
             value: settings.deletedRetentionDays || '30',

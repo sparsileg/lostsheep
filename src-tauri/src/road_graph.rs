@@ -13,9 +13,13 @@ use std::collections::HashMap;
 
 /// One road_edge — from/to node ids and their coordinates (denormalized
 /// from road_nodes at build time — see build_road_graph()'s doc comment,
-/// issue #80), real distance (meters, from roads.db's own distance_m
-/// column, not recomputed here), and the road's name if it has one
-/// (road_names, joined via name_id).
+/// issue #80) — and the road's name if it has one (road_names, joined via
+/// name_id). Segment distance is NOT carried here: diagnostics.rs's only
+/// consumer (nearby_scored_edges) computes its own point-to-segment
+/// distance from the coords below, and routing's distance figure lives
+/// on `adjacency`'s tuples instead, which is the only thing visits.rs
+/// reads. A `distance_m` field here would just be a second, unread copy
+/// of that same number.
 pub struct RoadEdge {
     pub from_id: i64,
     pub to_id: i64,
@@ -23,7 +27,6 @@ pub struct RoadEdge {
     pub from_lon: f64,
     pub to_lat: f64,
     pub to_lon: f64,
-    pub distance_m: f64,
     pub name: Option<String>,
 }
 
@@ -121,7 +124,7 @@ pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
                 else {
                     continue;
                 };
-                edges.push(RoadEdge { from_id, to_id, from_lat, from_lon, to_lat, to_lon, distance_m, name });
+                edges.push(RoadEdge { from_id, to_id, from_lat, from_lon, to_lat, to_lon, name });
             }
         }
     }
