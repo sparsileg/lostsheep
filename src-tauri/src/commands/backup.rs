@@ -65,12 +65,17 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     let tmp_db = TmpFile(tmp_path("lost-sheep-backup"));
     db::rekey_copy(&state.db_path, &state.live_key_hex, &tmp_db.0, &dest_key).map_err(|e| e.to_string())?;
 
-    // The road graph (issue #7) is ingested from a user-held, easily
-    // re-fetched .pbf and can run 10x+ larger than the rest of the DB —
-    // no reason to bloat every backup with data that isn't backup-worthy
-    // in the first place. Stripped from this copy only, after the export,
-    // so the live DB itself is untouched.
-    strip_road_graph(&tmp_db.0, &dest_key)?;
+    // Issue #39 moved the road graph into its own plain SQLite file
+    // (roads.db), never touched by this backup path — nothing left in
+    // the main DB to strip out. Issue #52: the strip_road_graph() call
+    // that used to run here targeted road_edges/road_nodes, tables
+    // schema.sql stopped creating at #39 — hard-failed backup outright
+    // on any database created after that point (self-concealing on a
+    // legacy dev DB, which still carries the vestigial, permanently-
+    // empty tables from before #39 and so never hit the missing-table
+    // error). Removed rather than made tolerant — see issue #52's
+    // Option A: there is nothing left for this step to ever legitimately
+    // do going forward.
     strip_display_only_settings(&tmp_db.0, &dest_key)?;
 
     write_backup_zip(&dest_path, &tmp_db.0, &salt)?;
@@ -102,21 +107,9 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     result
 }
 
-/// Deletes the road graph from a backup-bound *copy* of the DB and
-/// reclaims the freed space — the copy is a scratch file the caller
-/// deletes when done (TmpFile), never the live DB, so this never touches
-/// what's actually ingested via ingest_road_database.
-fn strip_road_graph(path: &std::path::Path, key_hex: &str) -> Result<(), String> {
-    let conn = db::open_with_key(&path.to_path_buf(), key_hex).map_err(|e| e.to_string())?;
-    conn.execute_batch("DELETE FROM road_edges; DELETE FROM road_nodes; VACUUM;")
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 // Issue #40: showRoadsOverlay/showRouteOverlay are this-machine display
 // preferences, not congregation data — stripped from the backup copy
-// only, same pattern as strip_road_graph above and how backupFolder is
-// already excluded (paths.rs).
+// only, matching how backupFolder is already excluded (paths.rs).
 const DISPLAY_ONLY_SETTINGS_KEYS: [&str; 2] = ["showRoadsOverlay", "showRouteOverlay"];
 
 fn strip_display_only_settings(path: &std::path::Path, key_hex: &str) -> Result<(), String> {
