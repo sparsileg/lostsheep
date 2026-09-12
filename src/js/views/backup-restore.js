@@ -51,7 +51,7 @@ const BackupRestore = {
             if (!p1 || p1 !== p2) { showMessage('Passphrases must match and not be empty.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
             if (p1.length < MIN_PASSPHRASE_LEN) { showMessage(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
-            const dest = await join(settings.backupFolder, `lost-sheep-backup-${todayStamp()}.zip`);
+            const dest = await join(settings.backupFolder, `lost-sheep-backup-${backupTimestamp()}.zip`);
 
             try {
                 // backup_database returns the path it actually wrote to and
@@ -137,7 +137,21 @@ function modalShell(innerHtml) {
     return overlay;
 }
 
-function todayStamp() { return new Date().toISOString().slice(0, 10); }
+// Issue #73: day-only granularity meant a second same-day backup always
+// collided with the first — resolve_write_dest (paths.rs) correctly
+// refuses to overwrite, but the UI has no field to pick a different
+// name, so the user had no way to proceed. Second granularity makes
+// same-day backups sort naturally and only collide if run within the
+// same second. Format is yyyymmdd-hhmmss (Stan's call) — no colons
+// (Windows forbids ':' in filenames, and this app targets Windows/
+// macOS/Linux) and no dashes inside the date/time parts, just the one
+// separating the two.
+function backupTimestamp() {
+    const iso = new Date().toISOString(); // "2026-09-11T14:32:05.123Z"
+    const date = iso.slice(0, 10).replace(/-/g, ''); // "20260911"
+    const time = iso.slice(11, 19).replace(/:/g, ''); // "143205"
+    return `${date}-${time}`;
+}
 
 // Modules don't leak top-level declarations onto `window` the way classic
 // scripts did — roads-ingest.js uses this as a bare global (see its own
