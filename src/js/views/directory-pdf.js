@@ -56,22 +56,26 @@ const DirectoryPdf = {
             pageMargins: [54, 70, 54, 40],
             defaultStyle: { font: 'Roboto', fontSize: 10 },
             header: {
-                text: `Lost Sheep - ${label}`,
-                fontSize: 9,
-                bold: true,
-                color: colors.headingText,
-                alignment: 'center',
                 margin: [0, 20, 0, 0],
+                stack: [
+                    { text: `Lost Sheep - ${label}`, fontSize: 9, bold: true, color: colors.headingText, alignment: 'center' },
+                    { text: 'For Church use only. Information is confidential.', fontSize: 7, italics: true, color: colors.headingText, alignment: 'center', margin: [0, 2, 0, 0] },
+                ],
             },
             footer: (currentPage, pageCount) => {
                 const date = this._formattedDate(now);
                 const isOdd = currentPage % 2 === 1;
                 return {
                     margin: [54, 10, 54, 0],
-                    columns: [
-                        { width: 150, text: isOdd ? '' : date, fontSize: 8, color: colors.latLonText, alignment: 'left' },
-                        { width: '*', text: `Page ${currentPage} of ${pageCount}`, fontSize: 8, color: colors.latLonText, alignment: 'center' },
-                        { width: 150, text: isOdd ? date : '', fontSize: 8, color: colors.latLonText, alignment: 'right' },
+                    stack: [
+                        {
+                            columns: [
+                                { width: 150, text: isOdd ? '' : date, fontSize: 8, color: colors.latLonText, alignment: 'left' },
+                                { width: '*', text: `Page ${currentPage} of ${pageCount}`, fontSize: 8, color: colors.latLonText, alignment: 'center' },
+                                { width: 150, text: isOdd ? date : '', fontSize: 8, color: colors.latLonText, alignment: 'right' },
+                            ],
+                        },
+                        { text: 'For Church use only. Information is confidential.', fontSize: 7, italics: true, color: colors.latLonText, alignment: 'center', margin: [0, 2, 0, 0] },
                     ],
                 };
             },
