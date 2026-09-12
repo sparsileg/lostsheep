@@ -21,6 +21,23 @@ pub struct AppState {
     // enforced step, not just a UI convention. (src_path, token) — cleared
     // (single-use) on every commit attempt, matched or not.
     pub last_preview: std::sync::Mutex<Option<(String, String)>>,
+    // Issue #66: generate_visit_list used to rebuild the entire in-memory
+    // RoadGraph from roads.db on every single call — the single biggest
+    // cost in that command by a wide margin (measured ~1.8s of a ~3.6s
+    // total on a real county-sized extract), even though the graph only
+    // changes when ingest_road_database() runs. Cached here instead;
+    // ingest_road_database() clears it back to None on a successful
+    // re-ingest (see roads.rs), so a stale graph can never be served.
+    // Arc, not RoadGraph directly, so a cache hit is a cheap refcount
+    // bump under the lock rather than cloning every node/edge/adjacency
+    // entry — RoadGraph doesn't derive Clone, and shouldn't need to.
+    // Outer Arc (issue #66 follow-up): diagnostics.rs's
+    // find_potential_problems shares this same cache but runs inside a
+    // spawn_blocking closure that can't hold a borrowed State<AppState>
+    // (not 'static) — same reason pool/roads_pool are cloned out before
+    // that closure today. Cloning the outer Arc is what makes the cache
+    // itself movable into that closure the same way.
+    pub road_graph_cache: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<road_graph::RoadGraph>>>>,
 }
 
 fn main() {
@@ -56,7 +73,14 @@ fn main() {
             // list_prune_candidates on launch, shows the user what would
             // be removed and how long ago it was deleted, and only calls
             // prune_old_deleted_and_logs if they confirm.
-            app.manage(AppState { pool, roads_pool, db_path, live_key_hex: key_hex, last_preview: std::sync::Mutex::new(None) });
+            app.manage(AppState {
+                pool,
+                roads_pool,
+                db_path,
+                live_key_hex: key_hex,
+                last_preview: std::sync::Mutex::new(None),
+                road_graph_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

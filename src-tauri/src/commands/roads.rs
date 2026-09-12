@@ -282,6 +282,12 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
 
     tx.commit().map_err(|e| e.to_string())?;
 
+    // Issue #66: the just-committed graph is now stale in memory (if
+    // anything had loaded it yet) — clear the cache so the next
+    // generate_visit_list call rebuilds from the freshly-ingested data
+    // instead of serving the old graph indefinitely.
+    *state.road_graph_cache.lock().unwrap() = None;
+
     let log_conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(
         &log_conn,

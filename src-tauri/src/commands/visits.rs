@@ -1,4 +1,4 @@
-use crate::road_graph::{build_road_graph, RoadGraph};
+use crate::road_graph::{grid_cell, load_or_build, RoadGraph, GRID_CELL_DEG};
 use crate::AppState;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -264,13 +264,16 @@ pub fn fetch_grouped_households(
 /// is the "no graph" case throughout this file — never an error, per
 /// #38's acceptance criteria: a missing/partial graph must fall back to
 /// straight-line, not block generating a visit list.
-fn load_road_graph(state: &State<AppState>) -> Option<RoadGraph> {
+///
+/// Issue #66: this used to run the full roads.db read on every call —
+/// measured at ~1.8s of a ~3.6s generate_visit_list call against a real
+/// county-sized extract, the single biggest cost in that command. Now a
+/// thin wrapper over road_graph::load_or_build(), which also serves
+/// diagnostics.rs's find_potential_problems from this same cache — see
+/// that function's doc comment for the cache/invalidation contract.
+fn load_road_graph(state: &State<AppState>) -> Option<std::sync::Arc<RoadGraph>> {
     let conn = state.roads_pool.get().ok()?;
-    let graph = build_road_graph(&conn);
-    if graph.is_empty() {
-        return None; // no road graph ingested — straight-line throughout, same as before #38
-    }
-    Some(graph)
+    load_or_build(&state.road_graph_cache, &conn)
 }
 
 /// Cache for snap_to_graph() results within a single generate_visit_list
@@ -290,28 +293,54 @@ fn snap_cache_key(lat: f64, lon: f64) -> (i64, i64) {
     ((lat * 1e7).round() as i64, (lon * 1e7).round() as i64)
 }
 
-/// Nearest road node to (lat, lon) within tolerance_m, or None. Linear
-/// scan over every loaded node on a cache miss — fine at this graph's
-/// in-memory scale for the *distinct points* actually snapped (a handful
-/// per generate_visit_list call — see SnapCache doc comment), unlike
-/// roads.rs's get_nearest_road_node which runs far more often (every map
-/// pan/zoom) and so earns its SQL bounding-box prefilter. Cache is keyed
-/// on (lat, lon) only, not tolerance_m — every call site in this file
-/// passes the same SNAP_TOLERANCE_M constant, so a single cache per call
-/// is correct; if a caller ever needs two different tolerances against
-/// the same graph in one invocation, this cache would need splitting by
-/// tolerance too.
+// Meters per degree of latitude — near-constant at any latitude, used
+// below to size the grid search radius. Longitude's meters-per-degree
+// shrinks with cos(latitude), so that axis is sized separately in
+// snap_to_graph rather than reusing this same figure for both.
+const METERS_PER_DEGREE_LAT: f64 = 111_320.0;
+
+/// Nearest road node to (lat, lon) within tolerance_m, or None. Issue
+/// #66: used to be a full linear scan of every loaded node on a cache
+/// miss — fine for a handful of distinct points against a small graph,
+/// not against a county-sized extract (hundreds of thousands of nodes).
+/// Now queries RoadGraph's grid index (road_graph.rs, built once per
+/// call in load_road_graph) instead: only the cells within tolerance_m
+/// of (lat, lon) are visited, so cost scales with local node density,
+/// not total graph size — matching the same principle roads.rs's
+/// get_nearest_road_node already applies via its SQL bounding-box
+/// prefilter, just as an in-memory grid instead of a SQL query. Cache is
+/// keyed on (lat, lon) only, not tolerance_m — every call site in this
+/// file passes the same SNAP_TOLERANCE_M constant, so a single cache per
+/// call is correct; if a caller ever needs two different tolerances
+/// against the same graph in one invocation, this cache would need
+/// splitting by tolerance too.
 fn snap_to_graph(graph: &RoadGraph, lat: f64, lon: f64, tolerance_m: f64, cache: &mut SnapCache) -> Option<(i64, f64)> {
     let key = snap_cache_key(lat, lon);
     if let Some(cached) = cache.get(&key) {
         return *cached;
     }
 
+    // Ring radius in cells, computed per axis since a degree of longitude
+    // covers fewer meters than a degree of latitude away from the
+    // equator. +1 cell of buffer on each so a query point sitting right
+    // at a cell edge still sees every node within tolerance_m, even one
+    // just across that boundary.
+    let lat_rings = (tolerance_m / METERS_PER_DEGREE_LAT / GRID_CELL_DEG).ceil() as i32 + 1;
+    let meters_per_degree_lon = (METERS_PER_DEGREE_LAT * lat.to_radians().cos().abs()).max(1.0);
+    let lon_rings = (tolerance_m / meters_per_degree_lon / GRID_CELL_DEG).ceil() as i32 + 1;
+
+    let (center_row, center_col) = grid_cell(lat, lon);
     let mut best: Option<(i64, f64)> = None;
-    for (&id, &(nlat, nlon)) in &graph.coords {
-        let d = crate::geo::haversine_meters(lat, lon, nlat, nlon);
-        if d <= tolerance_m && best.map_or(true, |(_, bd)| d < bd) {
-            best = Some((id, d));
+    for row in (center_row - lat_rings)..=(center_row + lat_rings) {
+        for col in (center_col - lon_rings)..=(center_col + lon_rings) {
+            let Some(ids) = graph.grid.get(&(row, col)) else { continue };
+            for &id in ids {
+                let Some(&(nlat, nlon)) = graph.coords.get(&id) else { continue };
+                let d = crate::geo::haversine_meters(lat, lon, nlat, nlon);
+                if d <= tolerance_m && best.map_or(true, |(_, bd)| d < bd) {
+                    best = Some((id, d));
+                }
+            }
         }
     }
     cache.insert(key, best);
@@ -342,29 +371,51 @@ impl Ord for AStarFrontierNode {
     }
 }
 
+// Issue #66 follow-up: astar_distance/astar_path used to allocate a fresh
+// HashMap (best_cost, and came_from for the path variant) and BinaryHeap
+// on every single call — with ~150 A* calls in a typical generate_
+// visit_list run (selection re-rank + nearest-neighbor walk + two_opt's
+// O(n^2) matrix), that's ~150 sets of heap allocations for buffers that
+// are the same shape every time. Reused here instead: one scratch
+// allocation per generate_visit_list call, cleared (not reallocated)
+// between A* runs. clear() drops entries but keeps the underlying
+// capacity, so after the first few calls warm it up, subsequent calls
+// allocate nothing for these three structures at all.
+struct AStarScratch {
+    best_cost: HashMap<i64, f64>,
+    came_from: HashMap<i64, i64>, // only populated/used by astar_path
+    open: BinaryHeap<AStarFrontierNode>,
+}
+
+impl AStarScratch {
+    fn new() -> Self {
+        Self { best_cost: HashMap::new(), came_from: HashMap::new(), open: BinaryHeap::new() }
+    }
+}
+
 /// A* shortest-path distance between two already-snapped nodes, using
 /// haversine to the goal as the admissible heuristic (never overestimates
 /// true road distance, since road distance is always >= straight-line).
 /// None if the goal is unreachable from start within the loaded graph
 /// (e.g. two disconnected road-network islands in the ingested extract).
-fn astar_distance(graph: &RoadGraph, start: i64, goal: i64) -> Option<f64> {
+fn astar_distance(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScratch) -> Option<f64> {
     if start == goal {
         return Some(0.0);
     }
     let goal_coord = *graph.coords.get(&goal)?;
 
-    let mut best_cost: HashMap<i64, f64> = HashMap::new();
-    best_cost.insert(start, 0.0);
-    let mut open = BinaryHeap::new();
-    open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
+    scratch.best_cost.clear();
+    scratch.open.clear();
+    scratch.best_cost.insert(start, 0.0);
+    scratch.open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
 
-    while let Some(AStarFrontierNode { cost, node, .. }) = open.pop() {
+    while let Some(AStarFrontierNode { cost, node, .. }) = scratch.open.pop() {
         if node == goal {
             return Some(cost);
         }
         // Stale heap entry from before a cheaper path to this node was
         // found — skip rather than re-expand.
-        if let Some(&known) = best_cost.get(&node) {
+        if let Some(&known) = scratch.best_cost.get(&node) {
             if cost > known {
                 continue;
             }
@@ -372,12 +423,12 @@ fn astar_distance(graph: &RoadGraph, start: i64, goal: i64) -> Option<f64> {
         if let Some(neighbors) = graph.adjacency.get(&node) {
             for &(next, edge_dist, _) in neighbors {
                 let new_cost = cost + edge_dist;
-                let is_better = best_cost.get(&next).map_or(true, |&c| new_cost < c);
+                let is_better = scratch.best_cost.get(&next).map_or(true, |&c| new_cost < c);
                 if is_better {
-                    best_cost.insert(next, new_cost);
+                    scratch.best_cost.insert(next, new_cost);
                     if let Some(&(nlat, nlon)) = graph.coords.get(&next) {
                         let h = crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
-                        open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
+                        scratch.open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
                     }
                 }
             }
@@ -390,30 +441,30 @@ fn astar_distance(graph: &RoadGraph, start: i64, goal: i64) -> Option<f64> {
 /// path via a predecessor map — only called once per chosen stop (not
 /// once per candidate evaluated), since the scan loop above only needs
 /// the distance, not the geometry, to pick a winner.
-fn astar_path(graph: &RoadGraph, start: i64, goal: i64) -> Option<(f64, Vec<i64>)> {
+fn astar_path(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScratch) -> Option<(f64, Vec<i64>)> {
     if start == goal {
         return Some((0.0, vec![start]));
     }
     let goal_coord = *graph.coords.get(&goal)?;
 
-    let mut best_cost: HashMap<i64, f64> = HashMap::new();
-    let mut came_from: HashMap<i64, i64> = HashMap::new();
-    best_cost.insert(start, 0.0);
-    let mut open = BinaryHeap::new();
-    open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
+    scratch.best_cost.clear();
+    scratch.came_from.clear();
+    scratch.open.clear();
+    scratch.best_cost.insert(start, 0.0);
+    scratch.open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
 
-    while let Some(AStarFrontierNode { cost, node, .. }) = open.pop() {
+    while let Some(AStarFrontierNode { cost, node, .. }) = scratch.open.pop() {
         if node == goal {
             let mut path = vec![goal];
             let mut cur = goal;
-            while let Some(&prev) = came_from.get(&cur) {
+            while let Some(&prev) = scratch.came_from.get(&cur) {
                 path.push(prev);
                 cur = prev;
             }
             path.reverse();
             return Some((cost, path));
         }
-        if let Some(&known) = best_cost.get(&node) {
+        if let Some(&known) = scratch.best_cost.get(&node) {
             if cost > known {
                 continue;
             }
@@ -421,13 +472,13 @@ fn astar_path(graph: &RoadGraph, start: i64, goal: i64) -> Option<(f64, Vec<i64>
         if let Some(neighbors) = graph.adjacency.get(&node) {
             for &(next, edge_dist, _) in neighbors {
                 let new_cost = cost + edge_dist;
-                let is_better = best_cost.get(&next).map_or(true, |&c| new_cost < c);
+                let is_better = scratch.best_cost.get(&next).map_or(true, |&c| new_cost < c);
                 if is_better {
-                    best_cost.insert(next, new_cost);
-                    came_from.insert(next, node);
+                    scratch.best_cost.insert(next, new_cost);
+                    scratch.came_from.insert(next, node);
                     if let Some(&(nlat, nlon)) = graph.coords.get(&next) {
                         let h = crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
-                        open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
+                        scratch.open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
                     }
                 }
             }
@@ -463,12 +514,13 @@ impl RouteDistanceSource {
 /// loaded, either endpoint can't snap within tolerance, or no path
 /// exists between the two snap nodes in the loaded graph.
 fn route_leg_distance(
-    graph: &Option<RoadGraph>,
+    graph: Option<&RoadGraph>,
     from_lat: f64,
     from_lon: f64,
     to_lat: f64,
     to_lon: f64,
     cache: &mut SnapCache,
+    scratch: &mut AStarScratch,
 ) -> (f64, RouteDistanceSource) {
     let Some(graph) = graph else {
         return (
@@ -482,7 +534,7 @@ fn route_leg_distance(
 
     match (from_snap, to_snap) {
         (Some((from_node, from_snap_dist)), Some((to_node, to_snap_dist))) => {
-            match astar_distance(graph, from_node, to_node) {
+            match astar_distance(graph, from_node, to_node, scratch) {
                 Some(road_dist) => (from_snap_dist + road_dist + to_snap_dist, RouteDistanceSource::Road),
                 None => (
                     crate::geo::haversine_meters(from_lat, from_lon, to_lat, to_lon),
@@ -503,13 +555,14 @@ fn route_leg_distance(
 /// for this same (from, to) pair; re-snapping here is cheap and avoids
 /// threading extra state through the scan loop just to skip it.
 fn route_leg_path(
-    graph: &Option<RoadGraph>,
+    graph: Option<&RoadGraph>,
     from_lat: f64,
     from_lon: f64,
     to_lat: f64,
     to_lon: f64,
     source: &RouteDistanceSource,
     cache: &mut SnapCache,
+    scratch: &mut AStarScratch,
 ) -> Vec<RoutePathPoint> {
     let straight = || {
         vec![
@@ -529,7 +582,7 @@ fn route_leg_path(
     let (Some((from_node, _)), Some((to_node, _))) = (from_snap, to_snap) else {
         return straight();
     };
-    let Some((_, node_path)) = astar_path(graph, from_node, to_node) else {
+    let Some((_, node_path)) = astar_path(graph, from_node, to_node, scratch) else {
         return straight();
     };
 
@@ -667,31 +720,54 @@ fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64
 /// changes the *search* cost function; the displayed route still ends at
 /// a real stop with its own real leg distance/path, no synthetic return
 /// leg is added to the output.
+// Issue #66 diagnostic: per-phase timing inside two_opt_improve, logged
+// by generate_visit_list's caller so we can see from real usage (Log
+// Viewer) which phase actually dominates wall time, instead of guessing.
+// dist_start/dist_matrix are where every route_leg_distance() call (snap
+// + A*) happens; search/finalize do no distance-graph work of their own
+// (search is pure array lookups against the matrix already built;
+// finalize re-runs route_leg_distance/route_leg_path once per final
+// stop, O(n) not O(n²)).
+#[derive(Default)]
+struct TwoOptTiming {
+    dist_start_ms: f64,
+    dist_matrix_ms: f64,
+    search_ms: f64,
+    finalize_ms: f64,
+}
+
 fn two_opt_improve(
-    graph: &Option<RoadGraph>,
+    graph: Option<&RoadGraph>,
     start_lat: f64,
     start_lon: f64,
     stops: Vec<VisitListEntry>,
     cache: &mut SnapCache,
-) -> Vec<VisitListEntry> {
+    scratch: &mut AStarScratch,
+) -> (Vec<VisitListEntry>, TwoOptTiming) {
     let n = stops.len();
     if n < 2 || n > TWO_OPT_MAX_STOPS {
-        return stops;
+        return (stops, TwoOptTiming::default());
     }
 
+    let t_dist_start = std::time::Instant::now();
     let mut dist_start: Vec<f64> = Vec::with_capacity(n);
     for e in &stops {
-        dist_start.push(route_leg_distance(graph, start_lat, start_lon, e.latitude, e.longitude, cache).0);
+        dist_start.push(route_leg_distance(graph, start_lat, start_lon, e.latitude, e.longitude, cache, scratch).0);
     }
+    let dist_start_ms = t_dist_start.elapsed().as_secs_f64() * 1000.0;
 
+    let t_dist_matrix = std::time::Instant::now();
     let mut dist_matrix = vec![vec![0.0_f64; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let d = route_leg_distance(graph, stops[i].latitude, stops[i].longitude, stops[j].latitude, stops[j].longitude, cache).0;
+            let d = route_leg_distance(graph, stops[i].latitude, stops[i].longitude, stops[j].latitude, stops[j].longitude, cache, scratch).0;
             dist_matrix[i][j] = d;
             dist_matrix[j][i] = d;
         }
     }
+    let dist_matrix_ms = t_dist_matrix.elapsed().as_secs_f64() * 1000.0;
+
+    let t_search = std::time::Instant::now();
     let leg_dist = |from: Option<usize>, to: usize| -> f64 {
         match from {
             None => dist_start[to],
@@ -730,23 +806,27 @@ fn two_opt_improve(
     // stranded no matter how many 2-opt passes run. Reuses this same
     // perm/dist_start/dist_matrix, no new distance calls.
     or_opt_pass(&mut perm, &dist_start, &dist_matrix);
+    let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
 
     // Materialize the final order, then recompute each leg's
     // distance/source/path fresh — 2-opt/or-opt only tracked bare
     // distances during the search above, not which RouteDistanceSource or
     // path geometry go with each pair.
+    let t_finalize = std::time::Instant::now();
     let mut result: Vec<VisitListEntry> = perm.into_iter().map(|i| stops[i].clone()).collect();
     let mut cur = (start_lat, start_lon);
     for entry in result.iter_mut() {
-        let (d, source) = route_leg_distance(graph, cur.0, cur.1, entry.latitude, entry.longitude, cache);
-        let path = route_leg_path(graph, cur.0, cur.1, entry.latitude, entry.longitude, &source, cache);
+        let (d, source) = route_leg_distance(graph, cur.0, cur.1, entry.latitude, entry.longitude, cache, scratch);
+        let path = route_leg_path(graph, cur.0, cur.1, entry.latitude, entry.longitude, &source, cache, scratch);
         entry.distance_meters = d;
         entry.distance_context = "route".to_string();
         entry.route_distance_source = Some(source.as_str().to_string());
         entry.route_path = Some(path);
         cur = (entry.latitude, entry.longitude);
     }
-    result
+    let finalize_ms = t_finalize.elapsed().as_secs_f64() * 1000.0;
+
+    (result, TwoOptTiming { dist_start_ms, dist_matrix_ms, search_ms, finalize_ms })
 }
 
 // How much bigger the haversine-sorted shortlist is than the final N,
@@ -761,6 +841,14 @@ const ROAD_SELECTION_SHORTLIST_MULTIPLIER: usize = 3;
 /// together" rule.
 #[tauri::command]
 pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListParams) -> Result<Vec<VisitListEntry>, String> {
+    // Issue #66 diagnostic: total wall time plus a per-phase breakdown,
+    // logged once at the end via commands::logs::log (DEBUG level, Log
+    // Viewer). Grid-indexed snapping (this issue's earlier patch) sped
+    // up snap_to_graph itself but didn't change overall wall time in
+    // testing — this instrumentation exists to show, from a real call
+    // against the real roads.db, which phase actually costs the time
+    // instead of guessing from code inspection alone.
+    let t_total = std::time::Instant::now();
     let conn = state.pool.get().map_err(|e| e.to_string())?;
 
     // seed_household_id = 0 is used by map_data::get_map_data for
@@ -831,11 +919,13 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
     // by the road-distance selection re-rank below (if enabled) and the
     // route-ordering walk further down (if a start point is configured) —
     // rather than querying roads.db twice for the same call.
+    let t_load_graph = std::time::Instant::now();
     let graph = if use_road_selection || route_start.is_some() {
         load_road_graph(&state)
     } else {
         None
     };
+    let load_graph_ms = t_load_graph.elapsed().as_secs_f64() * 1000.0;
     // Issue #79: one snap-result cache shared across the shortlist
     // re-rank below, the nearest-neighbor walk, and two_opt_improve —
     // all three re-snap the same small set of household coordinates
@@ -844,9 +934,16 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
     // point is scanned against the full node set at most once for this
     // whole call instead of once per leg that references it.
     let mut snap_cache: SnapCache = HashMap::new();
+    // Issue #66 follow-up: one reusable A* scratch buffer for this whole
+    // call — see AStarScratch's doc comment for why (avoids ~150
+    // allocate-per-call HashMap/BinaryHeap pairs across the selection
+    // re-rank, the nearest-neighbor walk, and two_opt_improve's matrix).
+    let mut astar_scratch = AStarScratch::new();
 
     let want = params.count as usize;
+    let mut selection_ms = 0.0;
     if use_road_selection {
+        let t_selection = std::time::Instant::now();
         let shortlist_len = want.saturating_mul(ROAD_SELECTION_SHORTLIST_MULTIPLIER).min(entries.len());
         // Road distance from the seed decides *which* N addresses make
         // the list — distance_meters/distance_context on the kept entries
@@ -856,7 +953,7 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         // below when one is configured, same as before.
         let mut ranked: Vec<(usize, f64)> = Vec::with_capacity(shortlist_len);
         for (i, e) in entries[..shortlist_len].iter().enumerate() {
-            let d = route_leg_distance(&graph, seed.0, seed.1, e.latitude, e.longitude, &mut snap_cache).0;
+            let d = route_leg_distance(graph.as_deref(), seed.0, seed.1, e.latitude, e.longitude, &mut snap_cache, &mut astar_scratch).0;
             ranked.push((i, d));
         }
         ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -864,11 +961,15 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         let mut keep_indexes: Vec<usize> = ranked.into_iter().map(|(i, _)| i).collect();
         keep_indexes.sort_unstable();
         entries = keep_indexes.into_iter().map(|i| entries[i].clone()).collect();
+        selection_ms = t_selection.elapsed().as_secs_f64() * 1000.0;
     } else {
         entries.truncate(want);
     }
 
+    let mut walk_ms = 0.0;
+    let mut two_opt_timing: Option<TwoOptTiming> = None;
     if let Some((start_lat, start_lon)) = route_start {
+        let t_walk = std::time::Instant::now();
         let mut remaining = entries;
         let mut ordered: Vec<VisitListEntry> = Vec::with_capacity(remaining.len());
         let mut cur = (start_lat, start_lon);
@@ -877,7 +978,7 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             let mut best_dist = f64::MAX;
             let mut best_source = RouteDistanceSource::StraightLineNoGraph;
             for (i, e) in remaining.iter().enumerate() {
-                let (d, source) = route_leg_distance(&graph, cur.0, cur.1, e.latitude, e.longitude, &mut snap_cache);
+                let (d, source) = route_leg_distance(graph.as_deref(), cur.0, cur.1, e.latitude, e.longitude, &mut snap_cache, &mut astar_scratch);
                 if d < best_dist {
                     best_dist = d;
                     best_idx = i;
@@ -885,7 +986,7 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
                 }
             }
             let mut next = remaining.remove(best_idx);
-            let path = route_leg_path(&graph, cur.0, cur.1, next.latitude, next.longitude, &best_source, &mut snap_cache);
+            let path = route_leg_path(graph.as_deref(), cur.0, cur.1, next.latitude, next.longitude, &best_source, &mut snap_cache, &mut astar_scratch);
             next.distance_meters = best_dist;
             next.distance_context = "route".to_string();
             next.route_distance_source = Some(best_source.as_str().to_string());
@@ -893,12 +994,36 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             cur = (next.latitude, next.longitude);
             ordered.push(next);
         }
+        walk_ms = t_walk.elapsed().as_secs_f64() * 1000.0;
         // 2-opt tour-ordering pass — reuses the same in-memory graph
         // this walk already loaded. Nearest-neighbor above only ever
         // decides "closest unvisited stop next"; this cleans up the
         // worst of that heuristic's mistakes afterward.
-        entries = two_opt_improve(&graph, start_lat, start_lon, ordered, &mut snap_cache);
+        let (improved, timing) = two_opt_improve(graph.as_deref(), start_lat, start_lon, ordered, &mut snap_cache, &mut astar_scratch);
+        entries = improved;
+        two_opt_timing = Some(timing);
     }
+
+    // Issue #66 diagnostic: one summary row per call, DEBUG level — cheap
+    // enough to leave running rather than gating behind a settings flag.
+    // route_walk/two_opt fields are only present when a route start point
+    // is configured, since that's the only path that runs either.
+    let mut timing_msg = format!(
+        "stops={} graph_loaded={} load_graph={load_graph_ms:.1}ms",
+        entries.len(),
+        graph.is_some(),
+    );
+    if use_road_selection {
+        timing_msg.push_str(&format!(" selection_rerank={selection_ms:.1}ms"));
+    }
+    if let Some(t) = &two_opt_timing {
+        timing_msg.push_str(&format!(
+            " route_walk={walk_ms:.1}ms two_opt_dist_start={:.1}ms two_opt_dist_matrix={:.1}ms two_opt_search={:.1}ms two_opt_finalize={:.1}ms",
+            t.dist_start_ms, t.dist_matrix_ms, t.search_ms, t.finalize_ms
+        ));
+    }
+    timing_msg.push_str(&format!(" total={:.1}ms", t_total.elapsed().as_secs_f64() * 1000.0));
+    super::logs::log(&conn, "debug", &timing_msg, Some("visits::generate_visit_list#66"));
 
     let _dedupe_guard: HashSet<String> = HashSet::new(); // reserved: cross-group id collision guard if needed later
     Ok(entries)

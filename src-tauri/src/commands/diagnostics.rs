@@ -69,7 +69,7 @@
 // an explicit "No geocoordinates on file" flag (check 2 can't run without
 // coordinates to snap).
 
-use crate::road_graph::{build_road_graph, RoadGraph};
+use crate::road_graph::{self, RoadGraph};
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -529,6 +529,10 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     // than fully reflowed, to keep this diff to the actual change.
     let pool = state.pool.clone();
     let roads_pool = state.roads_pool.clone();
+    // Issue #66 follow-up: cheap outer-Arc clone, same reason
+    // pool/roads_pool are cloned here rather than moving `state` itself —
+    // State<'_, AppState> isn't 'static, this is.
+    let road_graph_cache = state.road_graph_cache.clone();
 
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PotentialProblem>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -560,7 +564,26 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     // via the shared road_graph module, replacing every
     // per-household/per-BFS-hop query nearby_scored_edges() and
     // edges_at_node() used to issue against roads_conn directly.
-    let road_graph = build_road_graph(&roads_conn);
+    // Issue #66 follow-up: now served from the same cache
+    // generate_visit_list() (visits.rs) populates — a data-validation
+    // scan no longer pays its own full roads.db rebuild if a route was
+    // already generated this session (or vice versa), and a re-ingest
+    // (roads.rs::ingest_road_database) invalidates it for both callers
+    // at once. None means nothing has been ingested (not cached, per
+    // load_or_build's doc comment) — falls back to an empty RoadGraph
+    // here rather than propagating an Option, since every downstream
+    // function in this file (edges_at_node, road_name_problem, etc.)
+    // already expects a plain &RoadGraph and already handles "empty" via
+    // roads_available below, same as before this change.
+    let cached_road_graph = road_graph::load_or_build(&road_graph_cache, &roads_conn);
+    let empty_road_graph_fallback;
+    let road_graph: &RoadGraph = match &cached_road_graph {
+        Some(g) => g.as_ref(),
+        None => {
+            empty_road_graph_fallback = RoadGraph::default();
+            &empty_road_graph_fallback
+        }
+    };
 
     struct Row {
         id: i64,
@@ -746,7 +769,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                         let mut trace_opt: Option<&mut Vec<String>> =
                             if want_trace { Some(&mut local_trace) } else { None };
 
-                        if let Some(reason) = road_name_problem(&road_graph, lat, lon, name, &mut trace_opt) {
+                        if let Some(reason) = road_name_problem(road_graph, lat, lon, name, &mut trace_opt) {
                             if want_trace {
                                 local_trace.push(format!("RESULT: flagged — {reason}"));
                                 debug_trace = Some(local_trace);
