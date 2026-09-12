@@ -98,19 +98,23 @@ const PotentialProblemsPdf = {
             pageMargins: [54, 70, 54, 40],
             defaultStyle: { font: 'Roboto', fontSize: 10 },
             header: {
-                text: 'Lost Sheep - Data Validation Findings',
-                fontSize: 9,
-                bold: true,
-                color: colors.headingText,
-                alignment: 'center',
                 margin: [0, 20, 0, 0],
+                stack: [
+                    { text: 'Lost Sheep - Data Validation Findings', fontSize: 9, bold: true, color: colors.headingText, alignment: 'center' },
+                    { text: 'For Church use only. Information is confidential.', fontSize: 7, italics: true, color: colors.headingText, alignment: 'center', margin: [0, 2, 0, 0] },
+                ],
             },
             footer: (currentPage, pageCount) => ({
                 margin: [54, 10, 54, 0],
-                columns: [
-                    { width: 150, text: this._formattedDate(now), fontSize: 8, color: colors.detailText, alignment: 'left' },
-                    { width: '*', text: `Page ${currentPage} of ${pageCount}`, fontSize: 8, color: colors.detailText, alignment: 'center' },
-                    { width: 150, text: '' },
+                stack: [
+                    {
+                        columns: [
+                            { width: 150, text: this._formattedDate(now), fontSize: 8, color: colors.detailText, alignment: 'left' },
+                            { width: '*', text: `Page ${currentPage} of ${pageCount}`, fontSize: 8, color: colors.detailText, alignment: 'center' },
+                            { width: 150, text: '' },
+                        ],
+                    },
+                    { text: 'For Church use only. Information is confidential.', fontSize: 7, italics: true, color: colors.detailText, alignment: 'center', margin: [0, 2, 0, 0] },
                 ],
             }),
             content,
