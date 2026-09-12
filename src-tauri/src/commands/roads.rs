@@ -10,6 +10,7 @@
 // transaction that wipes both tables before inserting. A malformed file
 // fails before any of that runs, so the existing graph is untouched.
 
+use crate::geo;
 use crate::AppState;
 use osmpbf::{Element, ElementReader};
 use std::collections::{HashMap, HashSet};
@@ -79,15 +80,11 @@ struct ParsedWay {
     name: Option<String>,
 }
 
-fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const EARTH_RADIUS_M: f64 = 6_371_000.0;
-    let lat1r = lat1.to_radians();
-    let lat2r = lat2.to_radians();
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2) + lat1r.cos() * lat2r.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * EARTH_RADIUS_M * a.sqrt().asin()
-}
+// #65: private copy removed — this used to omit the .min(1.0) clamp
+// crate::geo::haversine_meters carries for near-antipodal-point rounding
+// (#24), so it could return NaN on a malformed .pbf's coordinates where
+// the canonical one couldn't. Both call sites below now call the
+// canonical function directly instead.
 
 /// Parses `file_path`, builds an in-memory node/edge graph, and replaces
 /// the stored road graph with it. Runs on Tauri's command thread pool
@@ -186,7 +183,7 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
             if let Some(prev_id) = prev {
                 if prev_id != node_id {
                     let (plat, plon) = coords[&prev_id];
-                    edge_rows.push((prev_id, node_id, haversine_m(plat, plon, lat, lon), way.name.clone()));
+                    edge_rows.push((prev_id, node_id, geo::haversine_meters(plat, plon, lat, lon), way.name.clone()));
                 }
             }
             prev = Some(node_id);
@@ -401,7 +398,7 @@ pub fn get_nearest_road_node(state: State<AppState>, lat: f64, lon: f64) -> Resu
     let mut best: Option<(f64, f64, f64)> = None; // (lat, lon, distance_m)
     for row in rows {
         let (nlat, nlon) = row.map_err(|e| e.to_string())?;
-        let d = haversine_m(lat, lon, nlat, nlon);
+        let d = geo::haversine_meters(lat, lon, nlat, nlon);
         if best.as_ref().map_or(true, |b| d < b.2) {
             best = Some((nlat, nlon, d));
         }

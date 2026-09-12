@@ -471,11 +471,16 @@ function clearIconSearch() {
     applyIconSearch('');
 }
 
-// Plain haversine, meters — mirrors commands/geo.rs's haversine_meters()
-// (and roads.rs's own separate copy) rather than importing it; this is
-// the frontend's only distance calc, needed here to show the loop's
-// closing leg (last stop back to the configured start point), which the
-// backend doesn't compute or return.
+// Plain haversine, meters. #65: the two Rust copies (commands/geo.rs and
+// commands/roads.rs) converged onto one function (geo::haversine_meters);
+// this JS copy is the intentional remaining exception, not sharing that
+// convergence, since it computes the loop's closing leg (last stop back
+// to the configured start point), which the backend doesn't compute or
+// return — pulling this into an IPC round-trip per calculation isn't
+// worth it for an interactive map. It already uses atan2(sqrt(a),
+// sqrt(1-a)) rather than asin(sqrt(a)), which doesn't have the
+// near-antipodal NaN failure mode #24/#65 fixed on the Rust side — no
+// clamp needed here.
 function haversineMeters(lat1, lon1, lat2, lon2) {
     const R = 6371000;
     const toRad = (d) => (d * Math.PI) / 180;
