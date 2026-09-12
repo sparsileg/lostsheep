@@ -91,8 +91,18 @@ async function addAllNew() {
     const batchId = await currentBatchId();
     if (!batchId) return;
     try {
-        const count = await Api.resolveAllNewRecords(batchId);
-        showMessage(`Added ${count} new record(s).`, CONSTANTS.MESSAGE_TYPES.INFO);
+        // #63: backend now reports partial progress instead of aborting on
+        // the first failure — { added, failed: [{item_id, error}, ...] }.
+        const result = await Api.resolveAllNewRecords(batchId);
+        if (result.failed.length > 0) {
+            showMessage(
+                `Added ${result.added} of ${result.added + result.failed.length}; ` +
+                `${result.failed.length} could not be added — see the Log Viewer. Safe to try again.`,
+                CONSTANTS.MESSAGE_TYPES.ERROR
+            );
+        } else {
+            showMessage(`Added ${result.added} new record(s).`, CONSTANTS.MESSAGE_TYPES.INFO);
+        }
         await loadReviewQueue();
     } catch (e) {
         showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);

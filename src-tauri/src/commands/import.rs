@@ -787,12 +787,38 @@ pub fn commit_import_batch(state: State<AppState>, batch_id: i64) -> Result<(), 
     Ok(())
 }
 
+/// One item's outcome within a bulk "add all new" run — only populated for
+/// items that failed, so the frontend can name each one.
+#[derive(Serialize)]
+pub struct BulkAddFailure {
+    pub item_id: i64,
+    pub error: String,
+}
+
+#[derive(Serialize)]
+pub struct BulkAddResult {
+    pub added: i64,
+    pub failed: Vec<BulkAddFailure>,
+}
+
 /// Bulk-resolves every still-pending "new" item in a batch as "add" — one
 /// click instead of clicking Add on each one individually. Deliberately
 /// leaves "changed" and "removed" items alone; those need a real decision
 /// (replace vs merge vs add-as-new, confirm a removal), not a rubber stamp.
+///
+/// Issue #63: each item is still its own transaction (resolve_review_item's
+/// own #21 guarantee), so this loop is N independent commits, not one big
+/// one. Previously the first `Err` aborted the whole loop and discarded the
+/// running count — the caller got a bare error string with no indication
+/// how many of the batch had actually landed. Now every item is attempted;
+/// successes and failures are both collected and returned, and each
+/// failure is logged individually so the record can be identified without
+/// re-running anything. A failed item's `resolution` stays 'pending' (its
+/// own transaction never committed), so re-running this command later
+/// retries only the ones that didn't make it — already-added items are
+/// skipped by the same WHERE clause as before.
 #[tauri::command]
-pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<i64, String> {
+pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<BulkAddResult, String> {
     let ids: Vec<i64> = {
         let conn = state.pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -805,11 +831,18 @@ pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<
             .collect();
         rows
     };
-    let count = ids.len() as i64;
+
+    // resolve_review_item already logs each item's own outcome (success or
+    // failure) to the logs table itself — nothing extra to log here.
+    let mut added = 0i64;
+    let mut failed = Vec::new();
     for id in ids {
-        resolve_review_item(state.clone(), id, "add".to_string(), None)?;
+        match resolve_review_item(state.clone(), id, "add".to_string(), None) {
+            Ok(()) => added += 1,
+            Err(e) => failed.push(BulkAddFailure { item_id: id, error: e }),
+        }
     }
-    Ok(count)
+    Ok(BulkAddResult { added, failed })
 }
 
 /// The frontend used to track "which batch still needs review" purely in
