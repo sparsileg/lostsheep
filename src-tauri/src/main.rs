@@ -6,6 +6,7 @@ mod db;
 mod geo;
 mod keychain;
 mod pdf_parser;
+mod road_graph;
 
 use std::path::PathBuf;
 use tauri::Manager;

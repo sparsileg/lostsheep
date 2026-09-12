@@ -69,6 +69,7 @@
 // an explicit "No geocoordinates on file" flag (check 2 can't run without
 // coordinates to snap).
 
+use crate::road_graph::{build_road_graph, RoadGraph};
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -239,86 +240,17 @@ fn road_name_from_address(address_line1: &str) -> Option<String> {
     Some(words[start..words.len() - 1].join(" "))
 }
 
-/// One edge's endpoints, coordinates, and name — enough to reproduce
-/// everything nearby_scored_edges() used to fetch per-household via SQL.
-struct RoadEdge {
-    from_id: i64,
-    to_id: i64,
-    from_lat: f64,
-    from_lon: f64,
-    to_lat: f64,
-    to_lon: f64,
-    name: Option<String>,
-}
-
-/// In-memory copy of road_edges/road_nodes/road_names (issue #51) — built
-/// once per scan instead of re-querying roads.db per household and per
-/// BFS hop. roads.db is ~38MB, trivial to hold in RAM; the old per-row
-/// scalar max()/min() bbox query in nearby_scored_edges() wasn't
-/// sargable, forcing a full table scan + two joins on every single
-/// household (and edges_at_node() re-ran its own query per BFS hop on
-/// top of that) — this made the scan I/O-bound rather than CPU-bound, so
-/// a release build wasn't meaningfully faster than dev. Same
-/// precompute-once pattern already used here for road_full_set/
-/// road_dropped_set.
-struct RoadGraph {
-    /// Every edge, for nearby_scored_edges()'s full-scan-and-score.
-    edges: Vec<RoadEdge>,
-    /// node_id -> every (neighbor_node_id, edge_name) reachable by one
-    /// edge — both directions of each edge are present as two entries,
-    /// same coverage the old CASE-expression SQL gave edges_at_node().
-    adjacency: HashMap<i64, Vec<(i64, Option<String>)>>,
-}
-
-/// Single full read of road_edges (joined to road_nodes x2 and
-/// road_names) — replaces every per-household/per-hop query that used to
-/// hit roads_conn directly. Empty (rather than erroring) if the query
-/// fails to prepare, matching the old edges_at_node()/nearby_scored_edges()
-/// behavior of returning nothing on a prepare error instead of failing
-/// the whole scan.
-fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
-    let mut edges = Vec::new();
-    let mut adjacency: HashMap<i64, Vec<(i64, Option<String>)>> = HashMap::new();
-
-    let query = "SELECT e.from_node_id, e.to_node_id, fn.lat, fn.lon, tn.lat, tn.lon, rn.name \
-                 FROM road_edges e \
-                 JOIN road_nodes fn ON fn.id = e.from_node_id \
-                 JOIN road_nodes tn ON tn.id = e.to_node_id \
-                 LEFT JOIN road_names rn ON rn.id = e.name_id";
-    let mut stmt = match conn.prepare(query) {
-        Ok(s) => s,
-        Err(_) => return RoadGraph { edges, adjacency },
-    };
-    let rows = match stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, f64>(2)?,
-            r.get::<_, f64>(3)?,
-            r.get::<_, f64>(4)?,
-            r.get::<_, f64>(5)?,
-            r.get::<_, Option<String>>(6)?,
-        ))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return RoadGraph { edges, adjacency },
-    };
-
-    for row in rows.flatten() {
-        let (from_id, to_id, from_lat, from_lon, to_lat, to_lon, name) = row;
-        adjacency.entry(from_id).or_default().push((to_id, name.clone()));
-        adjacency.entry(to_id).or_default().push((from_id, name.clone()));
-        edges.push(RoadEdge { from_id, to_id, from_lat, from_lon, to_lat, to_lon, name });
-    }
-
-    RoadGraph { edges, adjacency }
-}
-
 /// Every neighbor node reachable via a single road_edge from `node_id`,
 /// paired with that edge's name (None if the edge is unnamed). In-memory
-/// lookup (issue #51) — was a fresh SQL query per call.
+/// lookup (issue #51) against the shared RoadGraph (issue #78) — was a
+/// fresh SQL query per call. Distance is dropped here — this file only
+/// ever needs the name for the hop-by-hop walk below.
 fn edges_at_node(graph: &RoadGraph, node_id: i64) -> Vec<(i64, Option<String>)> {
-    graph.adjacency.get(&node_id).cloned().unwrap_or_default()
+    graph
+        .adjacency
+        .get(&node_id)
+        .map(|neighbors| neighbors.iter().map(|(n, _dist, name)| (*n, name.clone())).collect())
+        .unwrap_or_default()
 }
 
 /// Rules 3+4 fallback, generalized (#48 follow-up): many "no name on
@@ -449,6 +381,14 @@ fn nearby_scored_edges(
 
     let mut scored: Vec<(f64, i64, i64, Option<String>)> = Vec::new();
     for e in &graph.edges {
+        // Issue #80: RoadEdge (shared road_graph.rs) carries its own
+        // endpoint coords again, resolved once per edge at graph-build
+        // time — not looked up from graph.coords here per household.
+        // #78 had dropped these fields and made this loop do 2 HashMap
+        // lookups per edge per household, silently reintroducing the
+        // per-item overhead #51 existed to eliminate (confirmed: #51's
+        // 50x speedup measured zero after #78 landed).
+        //
         // An edge's bbox overlaps the search box unless it's entirely
         // above/below/left/right of it — same test the old SQL WHERE
         // clause ran, just as plain scalar comparisons here.
@@ -616,9 +556,10 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     };
     let roads_available = !road_full_set.is_empty();
 
-    // Issue #51: one full read of road_edges/road_nodes/road_names,
-    // replacing every per-household/per-BFS-hop query nearby_scored_edges()
-    // and edges_at_node() used to issue against roads_conn directly.
+    // Issue #51 / #78: one full read of road_edges/road_nodes/road_names
+    // via the shared road_graph module, replacing every
+    // per-household/per-BFS-hop query nearby_scored_edges() and
+    // edges_at_node() used to issue against roads_conn directly.
     let road_graph = build_road_graph(&roads_conn);
 
     struct Row {
