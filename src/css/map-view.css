@@ -118,3 +118,9 @@
 #view-map.active { display: flex; flex-direction: column; }
 #mapViewRoot { display: flex; flex-direction: column; }
 #mapEl { min-height: 300px; border: 1px solid var(--border-color); }
+
+/* Right-click coordinate-copy menu — reuses .hamburger-menu/.hamburger-
+   menu-item (sidebar.js/hamburger-menu.css) for theming, but that class
+   is a fixed 220px, too narrow to hold "Copy -123.456789, 45.123456" on
+   one line. Widened here instead of touching the shared class. */
+.map-coord-menu { width: auto; min-width: 260px; white-space: nowrap; }
