@@ -89,6 +89,10 @@ pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) ->
         .map_err(|e| e.to_string())?;
     }
     super::logs::log(&conn, "info", &format!("settings saved: {}", keys.join(", ")), None);
+    // Issue #76: a logLevel change takes effect immediately, not just on
+    // next launch — cheap to always call, refresh_min_level_cache() is a
+    // single indexed lookup, not a hot-path cost.
+    super::logs::refresh_min_level_cache(&conn);
     Ok(())
 }
 

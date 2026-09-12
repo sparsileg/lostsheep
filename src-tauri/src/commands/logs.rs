@@ -1,11 +1,68 @@
 use crate::AppState;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::State;
+
+/// Severity ordinal — lower is more severe. Matches schema.sql's CHECK
+/// constraint values (error/warning/info/debug). An unrecognized string
+/// (shouldn't happen; every call site is a hardcoded literal) is treated
+/// as "info" — neither silently dropped nor allowed to bypass the
+/// configured minimum.
+fn level_ordinal(level: &str) -> u8 {
+    match level {
+        "error" => 0,
+        "warning" => 1,
+        "info" => 2,
+        "debug" => 3,
+        _ => 2,
+    }
+}
+
+/// Issue #76: the "Minimum log level" Settings control used to have no
+/// effect on what got written — every caller wrote unconditionally, and
+/// the setting only changed which Log Viewer checkboxes started ticked.
+/// This is the write-time filter the label actually promises.
+///
+/// A process-wide atomic, not a per-call settings query: log() runs
+/// inside open transactions and hot loops (generate_visit_list's #66
+/// timing diagnostic, import's per-item logging) where a settings lookup
+/// per call would reintroduce exactly the kind of hidden per-call cost
+/// #51/#66 spent real effort eliminating elsewhere. It also has to work
+/// when log() is called before AppState exists, which rules out
+/// anything backed by AppState. Starts at "debug" (log everything) so
+/// nothing is silently lost between process start and the first
+/// refresh_min_level_cache() call.
+static MIN_LOG_LEVEL_ORDINAL: AtomicU8 = AtomicU8::new(3);
+
+/// Loads the configured minimum level into the cache above. Called once
+/// at startup (main.rs, right after the main pool opens) and again every
+/// time Settings saves (save_settings, settings.rs) so a live change
+/// takes effect immediately rather than waiting for the next launch. A
+/// missing key (fresh database, never configured) or a read error leaves
+/// the cached value as whatever it already was — defaults to "log
+/// everything" until a real value is ever saved, which is the same
+/// direction of failure as this issue's own "errors must always be
+/// written" acceptance criterion.
+pub fn refresh_min_level_cache(conn: &Connection) {
+    if let Ok(level) = conn.query_row(
+        "SELECT value FROM settings WHERE key = 'logLevel'",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        MIN_LOG_LEVEL_ORDINAL.store(level_ordinal(&level), Ordering::Relaxed);
+    }
+}
 
 /// Internal write helper — called from other command modules on
 /// significant operations (import, delete, backup, restore, etc).
 pub fn log(conn: &Connection, level: &str, message: &str, context: Option<&str>) {
+    // Errors are always written regardless of the configured minimum
+    // (issue #76 acceptance criterion) — a write-time filter must never
+    // be able to hide the one thing an operator most needs to see.
+    if level != "error" && level_ordinal(level) > MIN_LOG_LEVEL_ORDINAL.load(Ordering::Relaxed) {
+        return;
+    }
     let _ = conn.execute(
         "INSERT INTO logs (level, message, context) VALUES (?1, ?2, ?3)",
         params![level, message, context],
