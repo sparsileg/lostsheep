@@ -572,21 +572,27 @@ const OR_OPT_MAX_PASSES: usize = 50;
 /// repeats until a full pass finds no improvement or OR_OPT_MAX_PASSES is
 /// hit. Chain relocation (moving a run of 2+ consecutive stops together)
 /// is out of scope here — single-stop relocation is what the reported
-/// stranded-stop symptom needs.
+/// stranded-stop symptom needs. Issue #81: the tail position (last stop)
+/// is priced against the return trip to start, so a stop far from start
+/// is no longer a free place to end the tour.
 fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64>]) {
     let n = perm.len();
     if n < 3 {
         return; // nothing to relocate relative to
     }
 
-    // (None, None) never occurs in practice (n >= 3 here); (Some, None)
-    // is "last leg of the route", which has no return trip and so costs
-    // nothing.
+    // (None, None) never occurs in practice (n >= 3 here). (Some, None) is
+    // "last stop of the route" — issue #81: priced as the closing leg back
+    // to the configured start point (dist_start is symmetric start<->stop
+    // distance, same reuse 2-opt's leg_dist already makes for the first
+    // leg), not free. This is what gives or-opt a reason to relocate a
+    // stop that's far from start away from the tail position.
     let edge_cost = |from: Option<usize>, to: Option<usize>| -> f64 {
         match (from, to) {
             (None, Some(t)) => dist_start[t],
             (Some(f), Some(t)) => dist_matrix[f][t],
-            _ => 0.0,
+            (Some(f), None) => dist_start[f],
+            (None, None) => 0.0,
         }
     };
 
@@ -653,6 +659,14 @@ fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64
 /// on every pass. Each entry's distance_meters/route_distance_source/
 /// route_path is recomputed fresh afterward against the final order,
 /// since which pairs end up adjacent changes.
+///
+/// Issue #81: both this pass and or_opt_pass() price the last stop in the
+/// tour against dist_start (the closing leg back to the configured start
+/// point), not as a free ending — otherwise neither pass has any reason
+/// to avoid stranding a far-from-start stop at the tail. This only
+/// changes the *search* cost function; the displayed route still ends at
+/// a real stop with its own real leg distance/path, no synthetic return
+/// leg is added to the output.
 fn two_opt_improve(
     graph: &Option<RoadGraph>,
     start_lat: f64,
@@ -695,8 +709,14 @@ fn two_opt_improve(
             for j in (i + 1)..n {
                 let prev = if i == 0 { None } else { Some(perm[i - 1]) };
                 let next = if j == n - 1 { None } else { Some(perm[j + 1]) };
-                let old_cost = leg_dist(prev, perm[i]) + next.map_or(0.0, |nx| dist_matrix[perm[j]][nx]);
-                let new_cost = leg_dist(prev, perm[j]) + next.map_or(0.0, |nx| dist_matrix[perm[i]][nx]);
+                // next == None means the segment endpoint (perm[j] before
+                // the swap, perm[i] after) becomes the last stop of the
+                // tour. Issue #81: priced as the closing leg back to the
+                // configured start point (dist_start), not free — matches
+                // or_opt_pass()'s edge_cost so both passes agree on what a
+                // tour costs and neither can undo the other's fix.
+                let old_cost = leg_dist(prev, perm[i]) + next.map_or(dist_start[perm[j]], |nx| dist_matrix[perm[j]][nx]);
+                let new_cost = leg_dist(prev, perm[j]) + next.map_or(dist_start[perm[i]], |nx| dist_matrix[perm[i]][nx]);
                 if new_cost + 1e-9 < old_cost {
                     perm[i..=j].reverse();
                     improved = true;
