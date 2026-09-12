@@ -53,6 +53,12 @@ const Api = {
     // diagnostics
     findPotentialProblems: () => invoke('find_potential_problems'),
 
+    // map tiles (#72)
+    getCachedTile: (z, x, y) => invoke('get_cached_tile', { z, x, y }),
+    saveCachedTile: (z, x, y, bytes) => invoke('save_cached_tile', { z, x, y, bytes }),
+    getTileCacheStatus: () => invoke('get_tile_cache_status'),
+    clearTileCache: () => invoke('clear_tile_cache'),
+
     // settings / logs
     getSettings: () => invoke('get_settings'),
     saveSettings: (values) => invoke('save_settings', { values }),

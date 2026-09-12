@@ -11,7 +11,7 @@
   "app": {
     "withGlobalTauri": false,
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; img-src 'self' data: asset: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.tile.openstreetmap.org"
+      "csp": "default-src 'self'; script-src 'self'; img-src 'self' data: asset: blob: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.tile.openstreetmap.org"
     },
     "windows": [
       {

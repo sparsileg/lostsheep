@@ -113,7 +113,10 @@ function showAboutModal() {
         Licensed under the GPL. Source:
         <a href="https://github.com/unpins/poppler-utils/releases" target="_blank" rel="noopener">unpins/poppler-utils</a>.</p>
         <p>Road and map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>,
-        licensed under the Open Database License (ODbL).</p>
+        licensed under the Open Database License (ODbL). Map tile images are fetched from OpenStreetMap's
+        servers over the internet as needed; this discloses the general area being viewed to that server.
+        Already-fetched tiles are cached locally and are not re-fetched until you clear the cache
+        (Settings &rarr; Refresh Map).</p>
         <button class="btn" id="closeAbout">Close</button>
     </div>`;
     document.body.appendChild(overlay);

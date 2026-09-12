@@ -8,4 +8,5 @@ pub mod paths;
 pub mod roads;
 pub mod settings;
 pub mod tags;
+pub mod tiles;
 pub mod visits;

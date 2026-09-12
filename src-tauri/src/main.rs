@@ -100,6 +100,11 @@ fn main() {
             commands::roads::get_nearest_road_node,
             // diagnostics
             commands::diagnostics::find_potential_problems,
+            // map tiles (#72)
+            commands::tiles::get_cached_tile,
+            commands::tiles::save_cached_tile,
+            commands::tiles::get_tile_cache_status,
+            commands::tiles::clear_tile_cache,
             // settings / logs
             commands::settings::get_settings,
             commands::settings::save_settings,
