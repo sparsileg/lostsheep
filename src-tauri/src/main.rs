@@ -60,6 +60,17 @@ fn main() {
 
             let pool = db::open_pool(&db_path, &key_hex).expect("failed to open encrypted database");
 
+            // Issue #76: prime the write-time log-level filter from
+            // whatever's already stored, before any other command (or
+            // this same setup() function, further down) can call
+            // logs::log(). Best-effort — if this fails (fresh database,
+            // no logLevel saved yet) the cache keeps its "log everything"
+            // default, same as the crate-level doc comment on
+            // MIN_LOG_LEVEL_ORDINAL describes.
+            if let Ok(conn) = pool.get() {
+                commands::logs::refresh_min_level_cache(&conn);
+            }
+
             // Issue #39: road graph lives in its own plain (unencrypted)
             // SQLite file, alongside the main DB. Never touched by
             // restore (#25/#26) — that's the whole point of the split.
