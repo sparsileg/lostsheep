@@ -75,7 +75,18 @@ pub fn resolve_write_dest(state: &State<AppState>, raw: &str) -> Result<PathBuf,
     let dest = parent.join(file_name);
 
     if dest.exists() {
-        return Err(format!("a file already exists at {}: choose a different name", dest.display()));
+        // Issue #73: "choose a different name" was written for an API
+        // caller — the Backup dialog has no filename field, so it told
+        // the user to do something the UI didn't let them do. Minute-
+        // granularity timestamps (backup-restore.js's backupTimestamp())
+        // make an actual same-day collision rare now; when one still
+        // happens (two backups within the same minute, or a leftover
+        // file from a previous run), point at something doable from
+        // where the user is instead.
+        return Err(format!(
+            "a backup already exists at {} — delete or move it, or try again in a minute",
+            dest.display()
+        ));
     }
 
     Ok(dest)
