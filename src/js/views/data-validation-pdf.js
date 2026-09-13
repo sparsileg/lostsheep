@@ -21,8 +21,13 @@ const PotentialProblemsPdf = {
         };
     },
 
-    download(problems) {
-        if (!problems || problems.length === 0) return;
+    download(problems, roadsChecked = true) {
+        // Issue #80: previously guarded on problems alone — an empty/
+        // un-ingested roads.db with zero flagged households produced no
+        // PDF at all, same silent-degradation gap the on-screen modal
+        // had. Still skip when there's genuinely nothing to say: real
+        // checks ran (roadsChecked) and found nothing (empty problems).
+        if ((!problems || problems.length === 0) && roadsChecked) return;
         const colors = this._colors();
         const now = new Date();
 
@@ -75,6 +80,22 @@ const PotentialProblemsPdf = {
         if (noAddress.length > 0) sections.push({ label: 'No address on file', items: noAddress, nameOnly: true });
 
         const content = [];
+
+        // Issue #80: printed before any section, in the same reason/
+        // warning color used for flagged findings, so it can't be missed
+        // even if the person only skims page 1 — this is the "clearly
+        // marked on the PDF" signal for a roads.db that had no data to
+        // check against, distinct from "checks ran, found nothing."
+        if (!roadsChecked) {
+            content.push({
+                text: 'Road database has no data for this scan — street-name checks were skipped for every household. Re-ingest under Road Management to restore them.',
+                fontSize: 10,
+                bold: true,
+                color: colors.reasonText,
+                margin: [0, 0, 0, 16],
+            });
+        }
+
         sections.forEach((section, i) => {
             content.push({
                 text: section.label,

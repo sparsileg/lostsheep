@@ -114,6 +114,20 @@ pub struct PotentialProblem {
     pub debug_trace: Option<Vec<String>>,
 }
 
+/// Issue #80: an empty/un-ingested roads.db and a fully-ingested one with
+/// no findings used to produce the identical response — a bare
+/// Vec<PotentialProblem>, empty either way. roads_checked distinguishes
+/// them: false means the road-name/snap checks below never ran at all
+/// for any household (see roads_available), not that they ran and found
+/// nothing wrong. sidebar.js's showPotentialProblemsModal() and
+/// data-validation-pdf.js both key off this to show a distinct warning
+/// instead of "no potential problems found."
+#[derive(Serialize)]
+pub struct DiagnosticsReport {
+    pub problems: Vec<PotentialProblem>,
+    pub roads_checked: bool,
+}
+
 /// Debug-trace budget for the road-name/snap check below — only the first
 /// this many *flagged* households get a trace attached, not the first
 /// this many households overall. Keeps the report from ballooning when
@@ -515,7 +529,7 @@ fn road_name_problem(
 
 
 #[tauri::command]
-pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<PotentialProblem>, String> {
+pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>) -> Result<DiagnosticsReport, String> {
     // #48 follow-up: this used to be a plain sync fn. At ~390 households
     // the scan takes a minute or two, and a non-async command with no
     // spawn_blocking runs on the same thread as the webview's own event
@@ -534,7 +548,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     // State<'_, AppState> isn't 'static, this is.
     let road_graph_cache = state.road_graph_cache.clone();
 
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PotentialProblem>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<DiagnosticsReport, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let roads_conn = roads_pool.get().map_err(|e| e.to_string())?;
 
@@ -801,7 +815,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
 
     problems.extend(group_problems);
 
-    Ok(problems)
+    Ok(DiagnosticsReport { problems, roads_checked: roads_available })
     })
     .await
     .map_err(|e| e.to_string())?

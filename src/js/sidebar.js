@@ -152,7 +152,7 @@ async function showPotentialProblemsModal() {
         ProgressRing.hide();
     };
 
-    let problems;
+    let report;
     try {
         // sidebar.js is a classic script (no static import support), same
         // constraint roads-ingest.js's module doesn't have — dynamic
@@ -163,7 +163,7 @@ async function showPotentialProblemsModal() {
             const { processed, total } = event.payload;
             ProgressRing.update(total > 0 ? (processed / total) * 100 : 100);
         });
-        problems = await Api.findPotentialProblems();
+        report = await Api.findPotentialProblems();
     } catch (e) {
         console.error('findPotentialProblems failed', e);
         cleanup();
@@ -171,6 +171,8 @@ async function showPotentialProblemsModal() {
         return;
     }
     cleanup();
+
+    const { problems, roads_checked } = report;
 
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -187,8 +189,22 @@ async function showPotentialProblemsModal() {
 
     const body = overlay.querySelector('#potentialProblemsBody');
 
+    // Issue #80: roads_checked is checked BEFORE the "nothing flagged"
+    // shortcut below — an empty/un-ingested roads.db and a fully-working
+    // one with zero findings used to render identically ("No potential
+    // problems found."), which is exactly the silent-degradation this
+    // issue is about. false here means the street-name/snap checks never
+    // ran for any household this scan, not that they ran clean.
+    const roadsWarning = !roads_checked
+        ? '<p style="color:#b02a2a;font-weight:bold;">⚠ Road database has no data — street-name checks were skipped for every household this scan. Re-ingest under Road Management to restore them.</p>'
+        : '';
+
     if (!problems.length) {
-        body.innerHTML = '<p>No potential problems found.</p>';
+        body.innerHTML = roadsWarning || '<p>No potential problems found.</p>';
+        // Still worth a PDF when roads were skipped, even with zero
+        // findings — the report itself is the durable record of why
+        // fewer/no issues showed up this time.
+        if (!roads_checked) PotentialProblemsPdf.download(problems, roads_checked);
         return;
     }
 
@@ -198,8 +214,8 @@ async function showPotentialProblemsModal() {
     // has no way to know the real destination path (webview download
     // behavior, OS/user-config dependent), so the modal states the
     // presumed default rather than a path it can't actually confirm.
-    PotentialProblemsPdf.download(problems);
-    body.innerHTML = `<p>${problems.length} household(s) flagged. Report saved to your Downloads folder.</p>`;
+    PotentialProblemsPdf.download(problems, roads_checked);
+    body.innerHTML = roadsWarning + `<p>${problems.length} household(s) flagged. Report saved to your Downloads folder.</p>`;
 }
 
 function updateHamburgerContextualSection() { /* no per-view hamburger sections in v1 */ }

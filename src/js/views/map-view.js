@@ -634,6 +634,26 @@ function tagLabelForFilename(label) {
     return label.replace(/\s+/g, '_');
 }
 
+// Issue #80: an empty/un-ingested roads.db and a fully-ingested one that
+// simply has no nearby roads for this particular route produce the same
+// downstream shape today — a normal-looking route where every leg
+// happens to be straight-line. route_distance_source already carries
+// enough information to tell "the graph was never usable for this route"
+// apart from "this route has a mix of road and straight-line legs, as
+// expected on the edge of coverage": only the former — every route-
+// context leg falling back — gets a banner. Non-route lists
+// (distance_context !== 'route', no route start configured) never carry
+// route_distance_source at all and are excluded rather than counted as
+// vacuously "all straight-line".
+function routeUsedStraightLineFallback(entries) {
+    const routeEntries = entries.filter(e => e.distance_context === 'route');
+    if (routeEntries.length === 0) return false;
+    return routeEntries.every(e =>
+        e.route_distance_source === 'straight_line_no_snap' ||
+        e.route_distance_source === 'straight_line_no_graph'
+    );
+}
+
 async function generateVisitList() {
     if (!MapView.seedHouseholdId) return;
     const tagId = MapView.selectedTagId ? Number(MapView.selectedTagId) : null;
@@ -667,12 +687,14 @@ async function generateVisitList() {
     const startsAtRoute = entries.length > 0 && entries[0].distance_context === 'route' && !!startInfo;
     const returnLeg = computeReturnLeg(entries, startInfo);
     const tagLabel = currentTagLabel();
+    const roadsDegraded = routeUsedStraightLineFallback(entries);
 
-    MapView.lastVisitListText = buildVisitListText(entries, returnLeg, startsAtRoute ? startInfo : null);
+    MapView.lastVisitListText = buildVisitListText(entries, returnLeg, startsAtRoute ? startInfo : null, roadsDegraded);
     MapView.lastVisitEntries = entries;
     MapView.lastVisitReturnLeg = returnLeg;
     MapView.lastVisitTagLabel = tagLabel;
     MapView.lastVisitStartInfo = startsAtRoute ? startInfo : null;
+    MapView.lastVisitRoadsDegraded = roadsDegraded;
 
     // Issue #40 — redraw the route/snap overlay for this new list. A
     // no-op internally when the toggle is off.
@@ -688,12 +710,12 @@ async function generateVisitList() {
     // is built now but stays hidden until the person opts in via the
     // toggle button (on-demand, not shown automatically — most routes
     // are checked visually on the map, not by reading the list).
-    document.getElementById('mapPreviewPanel').innerHTML = buildVisitListHtml(entries, returnLeg, startsAtRoute ? startInfo : null);
+    document.getElementById('mapPreviewPanel').innerHTML = buildVisitListHtml(entries, returnLeg, startsAtRoute ? startInfo : null, roadsDegraded);
     document.getElementById('mapPreviewPanel').hidden = true;
     document.getElementById('mapPostRouteControls').hidden = false;
 }
 
-function buildVisitListHtml(entries, returnLeg, startInfo) {
+function buildVisitListHtml(entries, returnLeg, startInfo, roadsDegraded) {
     const items = entries.map((e, idx) => {
         const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
         const phones = e.phones.length ? ` — ${e.phones.map(escapeHtml).join(', ')}` : '';
@@ -708,8 +730,15 @@ function buildVisitListHtml(entries, returnLeg, startInfo) {
         ? `<li class="visit-list-return">↩ Back to ${escapeHtml(returnLeg.label)}
             <span class="visit-list-dist"> (${metersToMiles(returnLeg.meters).toFixed(2)} mi)</span></li>`
         : '';
+    // Issue #80 — same warning as the Copy Text / PDF outputs, styled
+    // like the on-screen message bar's error state rather than a plain
+    // paragraph, so it doesn't read as just another list note.
+    const warning = roadsDegraded
+        ? '<div class="visit-list-warning" style="color:#b02a2a;font-weight:bold;margin-bottom:8px;">⚠ Road database has no usable data for this route — distances below are straight-line, not road distance. Re-ingest under Road Management.</div>'
+        : '';
     return `
         <h3>Visit List (${entries.length} addresses)</h3>
+        ${warning}
         ${startInfo ? `<div class="visit-list-start">Starting at ${escapeHtml(startInfo.label)}</div>` : ''}
         <ol class="visit-list-items">${items}${returnItem}</ol>
     `;
@@ -720,8 +749,9 @@ function togglePreviewPanel() {
     if (panel) panel.hidden = !panel.hidden;
 }
 
-function buildVisitListText(entries, returnLeg, startInfo) {
+function buildVisitListText(entries, returnLeg, startInfo, roadsDegraded) {
     const lines = [];
+    if (roadsDegraded) lines.push('⚠ Road database has no usable data for this route — distances below are straight-line, not road distance. Re-ingest under Road Management.');
     if (startInfo) lines.push(`Starting at ${startInfo.label}`);
     entries.forEach(e => {
         const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
@@ -742,6 +772,7 @@ function downloadVisitListPdf() {
     const returnLeg = MapView.lastVisitReturnLeg;
     const tagLabel = MapView.lastVisitTagLabel || 'All households with coordinates';
     const startInfo = MapView.lastVisitStartInfo;
+    const roadsDegraded = MapView.lastVisitRoadsDegraded;
 
     const faint = '#777777';
     const body = entries.map((e, idx) => {
@@ -776,6 +807,15 @@ function downloadVisitListPdf() {
         defaultStyle: { font: 'Roboto', fontSize: 10 },
         content: [
             { text: `Visit Route — ${tagLabel}`, fontSize: 14, bold: true, color: '#2c3e50', margin: [0, 0, 0, 12] },
+            // Issue #80 — same signal as the on-screen preview and Copy
+            // Text output, printed prominently since this may be the
+            // only copy someone has once it's on paper.
+            ...(roadsDegraded ? [{
+                text: '⚠ Road database has no usable data for this route — distances below are straight-line, not road distance. Re-ingest under Road Management.',
+                bold: true,
+                color: '#b02a2a',
+                margin: [0, 0, 0, 12],
+            }] : []),
             ...(startInfo ? [{ text: `Starting at ${startInfo.label}`, italics: true, margin: [0, 4, 0, 8] }] : []),
             ...body,
         ],
