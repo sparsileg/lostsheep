@@ -102,7 +102,7 @@ async function loadHouseholds() {
         return `
         <tr class="hh-row" data-open="${h.id}">
             <td>${escapeHtml(formatDirectoryName(h))}</td>
-            <td>${escapeHtml(h.address_line1)}${h.city ? ', ' + escapeHtml(h.city) : ''}</td>
+            <td>${escapeHtml(h.address_line1)}${h.address_line2 ? ', ' + escapeHtml(h.address_line2) : ''}${h.city ? ', ' + escapeHtml(h.city) : ''}</td>
             <td>${renderTagChips(h.tags)}</td>
             <td><button class="btn" data-known="${h.id}" data-target-tag="${escapeHtml(targetTag)}">${label}</button></td>
         </tr>`;

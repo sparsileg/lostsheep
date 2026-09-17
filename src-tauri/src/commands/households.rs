@@ -1,5 +1,5 @@
 use crate::AppState;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -349,14 +349,49 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
+    // Issue #61: deleted_households doesn't carry source_key_seq (that's
+    // Piece 2 of the issue, folded into the R-3 schema work instead of
+    // done here) — the INSERT below can't just copy it forward the way
+    // every other column is. Look up this row's source_key first, using
+    // .optional() rather than a bare query_row so a bad id produces the
+    // same clean "no deleted household with id {id}" error as before,
+    // instead of a raw "query returned no rows" from rusqlite.
+    let source_key: Option<String> = tx
+        .query_row(
+            "SELECT source_key FROM deleted_households WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(source_key) = source_key else {
+        return Err(format!("no deleted household with id {id}"));
+    };
+
+    // Same expression import.rs's auto_accept_all()/resolve_review_item()
+    // already use to assign a fresh seq on a new household — restoring
+    // into whichever slot is actually free for this source_key, rather
+    // than taking households.source_key_seq's DEFAULT 0 and colliding
+    // with whatever a later import may have already placed there (the
+    // father-and-adult-son case source_key_seq exists for in the first
+    // place). Landing on a different seq than the household originally
+    // had is fine — the seq is a disambiguator, not an identity.
+    let next_seq: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(source_key_seq), -1) + 1 FROM households WHERE source_key = ?1",
+            params![source_key],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
     let affected = tx
         .execute(
             "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments) \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
              SELECT first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, ?2, has_minors, comments \
              FROM deleted_households WHERE id = ?1",
-            params![id],
+            params![id, next_seq],
         )
         .map_err(|e| e.to_string())?;
     if affected == 0 {

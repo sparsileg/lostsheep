@@ -394,7 +394,7 @@ async function loadMapData() {
         const marker = L.marker([g.latitude, g.longitude]).addTo(MapView.markersLayer);
         MapView.markersByAddressKey[g.address_key] = marker;
         MapView.markerBaseState[g.address_key] = { type: 'default' };
-        marker.bindPopup(`<strong>${escapeHtml(g.address_line1 || '(no address on file)')}</strong><br>${g.names.map(escapeHtml).join('<br>')}
+        marker.bindPopup(`<strong>${escapeHtml(formatEntryAddress(g))}</strong><br>${g.names.map(escapeHtml).join('<br>')}
             <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>`);
         marker.on('popupopen', () => {
             document.querySelector(`[data-select-seed="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
@@ -547,6 +547,15 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 // meters throughout; this only converts at render time.
 function metersToMiles(m) {
     return m / 1609.344;
+}
+
+// Joins address_line1 + address_line2 (unit/lot number, etc.) the same
+// way households-view.js's household detail modal already does — that
+// second line existed on the backend all along but every address string
+// built here (map popups, the visit list, its text/PDF export) only ever
+// read address_line1, silently dropping it.
+function formatEntryAddress(e) {
+    return [e.address_line1, e.address_line2].filter(Boolean).join(', ') || '(no address on file)';
 }
 
 // Configured route start point — label + coords straight from Settings
@@ -722,7 +731,7 @@ function buildVisitListHtml(entries, returnLeg, startInfo, roadsDegraded) {
         const distLabel = e.distance_context === 'route'
             ? (idx === 0 ? 'from start point' : 'from previous stop')
             : 'from seed';
-        return `<li>${escapeHtml(e.address_line1 || '(no address on file)')}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
+        return `<li>${escapeHtml(formatEntryAddress(e))}${cityLine.trim() ? ', ' + escapeHtml(cityLine.trim()) : ''}
             — ${e.names.map(escapeHtml).join(', ')}${phones}
             <span class="visit-list-dist"> (${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})</span></li>`;
     }).join('');
@@ -756,7 +765,7 @@ function buildVisitListText(entries, returnLeg, startInfo, roadsDegraded) {
     entries.forEach(e => {
         const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
         const phones = e.phones.length ? ` — ${e.phones.join(', ')}` : '';
-        lines.push(`${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`);
+        lines.push(`${formatEntryAddress(e)}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`);
     });
     if (returnLeg) lines.push(`↩ Back to ${returnLeg.label} (${metersToMiles(returnLeg.meters).toFixed(2)} mi)`);
     return lines.join('\n');
@@ -785,7 +794,7 @@ function downloadVisitListPdf() {
             margin: [0, 0, 0, 6],
             text: [
                 { text: `${idx + 1}. `, bold: true },
-                `${e.address_line1 || '(no address on file)'}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones} `,
+                `${formatEntryAddress(e)}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones} `,
                 { text: `(${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})`, color: faint, fontSize: 8 },
             ],
         };

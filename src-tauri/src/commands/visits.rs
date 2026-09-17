@@ -127,6 +127,7 @@ pub struct RoutePathPoint {
 pub struct VisitListEntry {
     pub address_key: String,
     pub address_line1: Option<String>,
+    pub address_line2: Option<String>,
     pub city: Option<String>,
     pub state: Option<String>,
     pub zip: Option<String>,
@@ -185,14 +186,14 @@ pub fn fetch_grouped_households(
 ) -> Result<Vec<VisitListEntry>, String> {
     let sql = match tag_id {
         Some(_) => {
-            "SELECT h.id, h.address_key, h.address_line1, h.city, h.state, h.zip, h.latitude, h.longitude, \
+            "SELECT h.id, h.address_key, h.address_line1, h.address_line2, h.city, h.state, h.zip, h.latitude, h.longitude, \
              h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.phone_1, h.phone_2 \
              FROM households h JOIN household_tags ht ON ht.household_id = h.id \
              WHERE ht.tag_id = ?1 AND h.latitude IS NOT NULL AND h.longitude IS NOT NULL \
              AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact')"
         }
         None => {
-            "SELECT h.id, h.address_key, h.address_line1, h.city, h.state, h.zip, h.latitude, h.longitude, \
+            "SELECT h.id, h.address_key, h.address_line1, h.address_line2, h.city, h.state, h.zip, h.latitude, h.longitude, \
              h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.phone_1, h.phone_2 \
              FROM households h WHERE h.latitude IS NOT NULL AND h.longitude IS NOT NULL \
              AND h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact')"
@@ -201,21 +202,21 @@ pub fn fetch_grouped_households(
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
 
     struct Row {
-        id: i64, address_key: String, address_line1: Option<String>,
+        id: i64, address_key: String, address_line1: Option<String>, address_line2: Option<String>,
         city: Option<String>, state: Option<String>, zip: Option<String>,
         lat: f64, lon: f64, name: String, phones: Vec<String>,
     }
     fn map_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
-        let name = match r.get::<_, Option<String>>(10)? {
-            Some(first2) => format!("{} {} & {} {}", r.get::<_, String>(8)?, r.get::<_, String>(9)?, first2, r.get::<_, Option<String>>(11)?.unwrap_or_default()),
-            None => format!("{} {}", r.get::<_, String>(8)?, r.get::<_, String>(9)?),
+        let name = match r.get::<_, Option<String>>(11)? {
+            Some(first2) => format!("{} {} & {} {}", r.get::<_, String>(9)?, r.get::<_, String>(10)?, first2, r.get::<_, Option<String>>(12)?.unwrap_or_default()),
+            None => format!("{} {}", r.get::<_, String>(9)?, r.get::<_, String>(10)?),
         };
-        let phones: Vec<String> = [r.get::<_, Option<String>>(12)?, r.get::<_, Option<String>>(13)?]
+        let phones: Vec<String> = [r.get::<_, Option<String>>(13)?, r.get::<_, Option<String>>(14)?]
             .into_iter().flatten().collect();
         Ok(Row {
-            id: r.get(0)?, address_key: r.get(1)?, address_line1: r.get(2)?,
-            city: r.get(3)?, state: r.get(4)?, zip: r.get(5)?,
-            lat: r.get(6)?, lon: r.get(7)?, name, phones,
+            id: r.get(0)?, address_key: r.get(1)?, address_line1: r.get(2)?, address_line2: r.get(3)?,
+            city: r.get(4)?, state: r.get(5)?, zip: r.get(6)?,
+            lat: r.get(7)?, lon: r.get(8)?, name, phones,
         })
     }
     let rows: Vec<Row> = if let Some(tag_id) = tag_id {
@@ -239,6 +240,7 @@ pub fn fetch_grouped_households(
             VisitListEntry {
                 address_key: key,
                 address_line1: first.address_line1.clone(),
+                address_line2: first.address_line2.clone(),
                 city: first.city.clone(),
                 state: first.state.clone(),
                 zip: first.zip.clone(),
