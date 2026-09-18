@@ -1,5 +1,5 @@
 /**
- * potential-problems-pdf.js
+ * data-validation-pdf.js
  * PDF export for the Potential Problems diagnostic list (issue #48
  * follow-up) — a separate, offline-workable checklist so households can
  * be examined one at a time without the app open.
@@ -141,7 +141,7 @@ const PotentialProblemsPdf = {
             content,
         };
 
-        pdfMake.createPdf(docDefinition).download(`LostSheep-PotentialProblems-${this._timestamp(now)}.pdf`);
+        pdfMake.createPdf(docDefinition).download(`LostSheep-DataValidation-${this._timestamp(now)}.pdf`);
     },
 
     // One household entry — name/address, then a bulleted reason per
@@ -151,9 +151,12 @@ const PotentialProblemsPdf = {
         const nameLine = p.tag
             ? `${p.household_name || '(no name on file)'} (${p.tag})`
             : (p.household_name || '(no name on file)');
+        const addressLine = p.address_line1
+            ? (p.address_line2 ? `${p.address_line1}, ${p.address_line2}` : p.address_line1)
+            : '(no address on file)';
         const stack = [
             { text: nameLine, fontSize: 12, bold: true, color: colors.headingText },
-            { text: p.address_line1 || '(no address on file)', fontSize: 10, color: colors.detailText, margin: [0, 1, 0, 4] },
+            { text: addressLine, fontSize: 10, color: colors.detailText, margin: [0, 1, 0, 4] },
         ];
         p.reasons.forEach(r => {
             stack.push({ text: `\u2022 ${r}`, fontSize: 9, color: colors.reasonText, margin: [10, 0, 0, 1] });
@@ -166,8 +169,11 @@ const PotentialProblemsPdf = {
     // together is what makes the source problem fixable), then the
     // reason(s) same as a normal entry.
     _groupEntry(p, colors) {
+        const addressLine = p.address_line1
+            ? (p.address_line2 ? `${p.address_line1}, ${p.address_line2}` : p.address_line1)
+            : '(no address on file)';
         const stack = [
-            { text: p.address_line1 || '(no address on file)', fontSize: 12, bold: true, color: colors.headingText, margin: [0, 0, 0, 4] },
+            { text: addressLine, fontSize: 12, bold: true, color: colors.headingText, margin: [0, 0, 0, 4] },
         ];
         (p.household_names || [p.household_name]).forEach(name => {
             stack.push({ text: name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 1] });

@@ -97,6 +97,7 @@ pub struct PotentialProblem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub household_names: Option<Vec<String>>,
     pub address_line1: Option<String>,
+    pub address_line2: Option<String>,
     /// The household's tag (Known / Not known / Do Not Contact), if any —
     /// households are capped at one tag apiece. None when untagged.
     pub tag: Option<String>,
@@ -603,6 +604,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
         id: i64,
         household_name: String,
         address_line1: Option<String>,
+        address_line2: Option<String>,
         address_key: String,
         lat: Option<f64>,
         lon: Option<f64>,
@@ -611,7 +613,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
     let mut stmt = conn
         .prepare(
             "SELECT h.id, h.first_name, h.last_name, h.first_name_2, h.last_name_2, h.address_line1, \
-             h.latitude, h.longitude, h.address_key, \
+             h.address_line2, h.latitude, h.longitude, h.address_key, \
              (SELECT t.name FROM household_tags ht JOIN tags t ON t.id = ht.tag_id \
               WHERE ht.household_id = h.id LIMIT 1) AS tag_name \
              FROM households h",
@@ -636,10 +638,11 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                 id: r.get(0)?,
                 household_name,
                 address_line1: r.get(5)?,
-                lat: r.get(6)?,
-                lon: r.get(7)?,
-                address_key: r.get(8)?,
-                tag_name: r.get(9)?,
+                address_line2: r.get(6)?,
+                lat: r.get(7)?,
+                lon: r.get(8)?,
+                address_key: r.get(9)?,
+                tag_name: r.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -711,6 +714,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
             household_ids: Some(members.iter().map(|m| m.id).collect()),
             household_names: Some(members.iter().map(|m| m.household_name.clone()).collect()),
             address_line1: members[0].address_line1.clone(),
+            address_line2: members[0].address_line2.clone(),
             tag: None, // members may hold different tags — not meaningful to pick one
             reasons: vec![format!(
                 "Shared address — {} households with differing or missing geocoordinates",
@@ -736,6 +740,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                     household_ids: None,
                     household_names: None,
                     address_line1: row.address_line1.clone(),
+                    address_line2: row.address_line2.clone(),
                     tag: row.tag_name.clone(),
                     reasons: vec!["No address on file".to_string()],
                     debug_trace: None,
@@ -806,6 +811,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                 household_ids: None,
                 household_names: None,
                 address_line1: row.address_line1.clone(),
+                address_line2: row.address_line2.clone(),
                 tag: row.tag_name.clone(),
                 reasons,
                 debug_trace,
