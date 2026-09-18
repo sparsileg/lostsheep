@@ -67,7 +67,18 @@ fn name_line_re() -> &'static Regex {
     // anchor in this source: every household record starts with a line
     // containing a top-level comma, and nothing else in the document does
     // (addresses, coordinates, phones, minors lists all lack a comma).
-    RE.get_or_init(|| Regex::new(r"^([A-Z][^,\n]{0,60}), (.+)$").unwrap())
+    //
+    // Issue #56: the leading class used to be [A-Z] — the ASCII-only
+    // class, which never matches a surname starting with Á, Ñ, Ö, Ø, Č,
+    // Ł, etc. A missed match here isn't a rejected record, it's a
+    // record that's never detected as a block start at all — its lines
+    // get silently absorbed into the PRECEDING household's block. \p{Lu}
+    // is the Unicode "uppercase letter" class (regex crate supports
+    // Unicode classes by default) and covers the same ASCII letters plus
+    // every accented/non-Latin uppercase letter. The {0,60} cap on the
+    // rest of the surname is left as-is (open question, needs checking
+    // against the real directory before touching it — see issue #56).
+    RE.get_or_init(|| Regex::new(r"^([\p{Lu}][^,\n]{0,60}), (.+)$").unwrap())
 }
 /// Rejects a coordinate that failed to parse, or parsed to NaN/inf
 /// (`f64::from_str` accepts both), or falls outside the valid range for
@@ -267,6 +278,36 @@ fn parse_directory_text(text: &str) -> ParseResult {
 
     let mut records = Vec::new();
     let mut warnings = Vec::new();
+
+    // Issue #56: every line from name_idx[0] onward falls inside some
+    // block already (blocks run start..next-start..end-of-file), so the
+    // only lines that can fall outside every block are the ones BEFORE
+    // the first detected record start. Ordinarily that's zero — page
+    // header/copyright boilerplate is stripped in clean_lines(). A
+    // nonzero count here means something in the input wasn't recognized
+    // as either boilerplate or a record start, which is exactly the
+    // shape of gap this issue is about (a real record silently missing
+    // no block at all, not just merged into a neighbour). Deliberately
+    // does not fire on the existing fixture — see mod tests below.
+    if let Some(&first) = name_idx.first() {
+        if first > 0 {
+            warnings.push(ParseWarning {
+                context: lines[0].clone(),
+                message: format!(
+                    "{} line(s) before the first detected household were not recognized as boilerplate or a record start — possible parsing gap",
+                    first
+                ),
+            });
+        }
+    } else if !lines.is_empty() {
+        warnings.push(ParseWarning {
+            context: lines[0].clone(),
+            message: format!(
+                "no household records detected in {} line(s) of input — possible parsing gap",
+                lines.len()
+            ),
+        });
+    }
 
     for (bi, &start) in name_idx.iter().enumerate() {
         let end = name_idx.get(bi + 1).copied().unwrap_or(lines.len());
@@ -506,7 +547,20 @@ mod tests {
         let result = parse_directory_text(SAMPLE);
         // One record per directory ENTRY now, not per person — couples
         // collapse to a single row (first_name_2/last_name_2 populated).
-        assert_eq!(result.records.len(), 17, "warnings: {:?}", result.warnings);
+        assert_eq!(result.records.len(), 18, "warnings: {:?}", result.warnings);
+    }
+
+    #[test]
+    fn issue_56_reconciliation_warning_does_not_fire_on_clean_fixture() {
+        // Constraint: the added-lines-before-first-block check must stay
+        // silent on this fixture, or every other test's warning-count
+        // assumptions become noise.
+        let result = parse_directory_text(SAMPLE);
+        assert!(
+            !result.warnings.iter().any(|w| w.message.contains("possible parsing gap")),
+            "unexpected parsing-gap warning: {:?}",
+            result.warnings
+        );
     }
 
     #[test]
@@ -573,6 +627,30 @@ mod tests {
         let result = parse_directory_text(SAMPLE);
         let r = result.records.iter().find(|r| r.last_name == "Sanchez de Lozada Bulley").unwrap();
         assert_eq!(r.first_name, "Sydney McKayla");
+    }
+
+    #[test]
+    fn handles_unicode_uppercase_surname() {
+        // Issue #56: [A-Z] used to be ASCII-only, so a surname starting
+        // with Ö never registered as a block start at all — this asserts
+        // the record exists as its own entry, not merged into a neighbour.
+        let result = parse_directory_text(SAMPLE);
+        let r = result.records.iter().find(|r| r.last_name == "Öhman")
+            .unwrap_or_else(|| panic!("Öhman entry missing entirely — record was dropped"));
+        assert_eq!(r.first_name, "Erik");
+        assert_eq!(r.address_line1.as_deref(), Some("104 Aster Ln"));
+        assert!(!r.has_minors);
+    }
+
+    #[test]
+    fn accented_surname_does_not_corrupt_preceding_household() {
+        // Issue #56: before the fix, the undetected "Öhman, Erik" block
+        // was absorbed into the preceding household (Dana Halvorsen),
+        // wrongly setting her has_minors flag from Öhman's own leftover
+        // lines. Confirms the fix, not just that Öhman parses.
+        let result = parse_directory_text(SAMPLE);
+        let dana = result.records.iter().find(|r| r.first_name == "Dana").unwrap();
+        assert!(!dana.has_minors, "Dana wrongly flagged has_minors — Öhman block was absorbed into her record");
     }
 
     #[test]
