@@ -533,6 +533,57 @@ fn changed_fields(existing: &ExistingForDiff, incoming: &ParsedRecord) -> Vec<St
     out
 }
 
+/// Issue #83: builds a single timestamped note recording whichever of
+/// phone/email/address/coordinates `old` had that `incoming` is about to
+/// overwrite. Only fields where `old` actually had a value AND it differs
+/// from `incoming` are mentioned — a field going from blank to populated
+/// isn't something being replaced, so it's left out. Returns None when
+/// nothing worth preserving changed (the common case — most Replace
+/// resolutions are a name/address dedupe with no personal-info drift).
+fn build_preserved_info_note(old: &ExistingForDiff, incoming: &ParsedRecord, dtg: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(v) = &old.phone_1 {
+        if old.phone_1 != incoming.phone_1 { parts.push(format!("Previous phone: {v}.")); }
+    }
+    if let Some(v) = &old.email_1 {
+        if old.email_1 != incoming.email_1 { parts.push(format!("Previous email: {v}.")); }
+    }
+    if let Some(v) = &old.phone_2 {
+        if old.phone_2 != incoming.phone_2 { parts.push(format!("Previous phone 2: {v}.")); }
+    }
+    if let Some(v) = &old.email_2 {
+        if old.email_2 != incoming.email_2 { parts.push(format!("Previous email 2: {v}.")); }
+    }
+
+    let address_changed = old.address_line1 != incoming.address_line1
+        || old.address_line2 != incoming.address_line2
+        || old.city != incoming.city
+        || old.state != incoming.state
+        || old.zip != incoming.zip;
+    let had_old_address = old.address_line1.is_some() || old.city.is_some();
+    if address_changed && had_old_address {
+        let mut addr = old.address_line1.clone().unwrap_or_default();
+        if let Some(l2) = &old.address_line2 { addr.push_str(&format!(", {l2}")); }
+        if let Some(c) = &old.city { addr.push_str(&format!(", {c}")); }
+        if let Some(s) = &old.state { addr.push_str(&format!(" {s}")); }
+        if let Some(z) = &old.zip { addr.push_str(&format!(" {z}")); }
+        parts.push(format!("Previous address: {addr}."));
+    }
+
+    if old.latitude.is_some() && (old.latitude != incoming.latitude || old.longitude != incoming.longitude) {
+        let lat = old.latitude.map(|v| v.to_string()).unwrap_or_default();
+        let lng = old.longitude.map(|v| v.to_string()).unwrap_or_default();
+        parts.push(format!("Previous coordinates: {lat}, {lng}."));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("[Replaced {dtg}] {}", parts.join(" ")))
+    }
+}
+
 #[tauri::command]
 pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<ReviewItem>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
@@ -674,6 +725,12 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
             let mut preserved_tag_ids: Vec<i64> = Vec::new();
             let mut existing_comments: Option<String> = None;
             let mut carried_household_uid: Option<String> = None;
+            // Issue #83: phone/email/address/coordinates the incoming
+            // record is about to overwrite, formatted as a single
+            // timestamped note so they aren't lost outright. Populated
+            // below, alongside existing_comments, only for replace/merge
+            // against a real existing household.
+            let mut preserved_info_note: Option<String> = None;
             if action == "replace" || action == "merge" {
                 if let Some(old_id) = existing_id {
                     {
@@ -691,6 +748,37 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
                         .optional()
                         .map_err(|e| e.to_string())?
                         .flatten();
+                    // Issue #83: read the full old record (same columns
+                    // changed_fields() already diffs for display) so any
+                    // phone/email/address/coordinates about to be
+                    // overwritten can be written into the note below
+                    // before this row's own values are replaced.
+                    let old_for_note: Option<ExistingForDiff> = tx
+                        .query_row(
+                            "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
+                             phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
+                             longitude, comments FROM households WHERE id = ?1",
+                            params![old_id],
+                            |r| {
+                                Ok(ExistingForDiff {
+                                    first_name: r.get(0)?, last_name: r.get(1)?,
+                                    first_name_2: r.get(2)?, last_name_2: r.get(3)?,
+                                    phone_1: r.get(4)?, email_1: r.get(5)?,
+                                    phone_2: r.get(6)?, email_2: r.get(7)?,
+                                    address_line1: r.get(8)?, address_line2: r.get(9)?,
+                                    city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
+                                    latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
+                                })
+                            },
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    if let Some(old) = &old_for_note {
+                        let dtg: String = tx
+                            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get(0))
+                            .map_err(|e| e.to_string())?;
+                        preserved_info_note = build_preserved_info_note(old, &rec, &dtg);
+                    }
                     // Issue #69: carry the household's durable identity
                     // forward across Replace/Merge — this is the load-
                     // bearing part of the whole issue. Read before the
@@ -735,6 +823,16 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
                 (None, Some(existing)) => Some(existing.to_string()),
                 (Some(incoming), Some(existing)) if incoming == existing => Some(existing.to_string()),
                 (Some(incoming), Some(existing)) => Some(format!("{incoming}\n\n{existing}")),
+            };
+            // Issue #83: append the preserved-info note (if anything
+            // changed) after the carried-forward comment text — same
+            // append-don't-clobber principle as #20's comment handling
+            // just above.
+            let final_comments = match (final_comments, preserved_info_note) {
+                (None, None) => None,
+                (Some(c), None) => Some(c),
+                (None, Some(note)) => Some(note),
+                (Some(c), Some(note)) => Some(format!("{c}\n\n{note}")),
             };
 
             let source_key_seq: i64 = tx

@@ -71,15 +71,21 @@ function renderReviewItem(item) {
     // affected buttons are left out of `actions` entirely rather than
     // wired up disabled, so there's nothing to click that can only fail.
     const staleHtml = item.stale
-        ? `<div class="review-stale-warning">This item's linked household was already changed earlier in this batch — Delete/Replace/Merge would fail. Choose Ignore, or Add as New if you still want this record.</div>`
+        ? `<div class="review-stale-warning">This item's linked household was already changed earlier in this batch — Delete/Replace would fail. Choose Ignore, or Add as New if you still want this record.</div>`
         : '';
 
     let actions = '';
     if (item.match_type === 'new') actions = actionBtn(item.id, 'add', 'Add');
     if (item.match_type === 'changed') {
+        // Issue #82: "Merge" retired — it ran the exact same code as
+        // Replace (no field-level reconciliation was ever implemented),
+        // so it only invited the user to expect behavior that didn't
+        // exist. The backend still accepts a 'merge' resolution value for
+        // already-resolved rows from before this change; it's just no
+        // longer offered here.
         actions = item.stale
             ? actionBtn(item.id, 'add', 'Add as New')
-            : actionBtn(item.id, 'replace', 'Replace') + actionBtn(item.id, 'merge', 'Merge') + actionBtn(item.id, 'add', 'Add as New');
+            : actionBtn(item.id, 'replace', 'Replace') + actionBtn(item.id, 'add', 'Add as New');
     }
     if (item.match_type === 'removed' && !item.stale) actions = actionBtn(item.id, 'delete', 'Confirm Delete');
     actions += actionBtn(item.id, 'ignore', 'Ignore');
