@@ -502,8 +502,20 @@ fn changed_fields(existing: &ExistingForDiff, incoming: &ParsedRecord) -> Vec<St
     {
         out.push("Phone/Email".to_string());
     }
-    if existing.comments != incoming.comments {
-        out.push("Comments".to_string());
+    // Issue #75: the parser almost never produces a comment (see
+    // ParsedRecord::comments' doc comment — "never auto-populated" except
+    // the rare 3+-heads case), so comparing existing.comments (the user's
+    // own notes) against incoming.comments (near-always None) was really
+    // testing "does the user have notes on this household?" — flagging
+    // "Comments" as changed on every annotated household even though
+    // Replace/Merge always preserve the user's comment text unchanged
+    // (see resolve_review_item's final_comments handling, #20). Only
+    // report Comments when the parser genuinely produced one worth
+    // reviewing (the 3+-heads case) — Option B.
+    if let Some(incoming_comment) = &incoming.comments {
+        if existing.comments.as_deref() != Some(incoming_comment.as_str()) {
+            out.push("Comments".to_string());
+        }
     }
     out
 }

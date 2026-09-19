@@ -54,6 +54,14 @@ function renderReviewItem(item) {
         ? `<div class="review-changed-fields"><strong>Changed:</strong> ${item.changed_fields.map(escapeHtml).join(', ')}</div>`
         : '';
 
+    // Issue #75: reassurance that Replace/Merge never touch the user's own
+    // notes — shown only where those actions are offered (match_type
+    // 'changed'), regardless of whether Comments happens to be in
+    // changed_fields this time (the 3+-heads case can still list it).
+    const commentsNoteHtml = item.match_type === 'changed'
+        ? `<div class="review-comments-note">Your household comments are always kept as-is on Replace or Merge.</div>`
+        : '';
+
     let actions = '';
     if (item.match_type === 'new') actions = actionBtn(item.id, 'add', 'Add');
     if (item.match_type === 'changed') actions = actionBtn(item.id, 'replace', 'Replace') + actionBtn(item.id, 'merge', 'Merge') + actionBtn(item.id, 'add', 'Add as New');
@@ -67,6 +75,7 @@ function renderReviewItem(item) {
                 <div><strong>Incoming:</strong> ${incomingHtml}</div>
                 ${item.existing_summary ? `<div><strong>Existing:</strong> ${escapeHtml(item.existing_summary)}</div>` : ''}
                 ${changedHtml}
+                ${commentsNoteHtml}
             </div>
             <div class="review-actions">${actions}</div>
         </div>`;
