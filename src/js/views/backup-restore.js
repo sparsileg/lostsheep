@@ -99,9 +99,18 @@ const BackupRestore = {
 
 function renderDiff(overlay, preview, srcPath, pass, token) {
     const area = overlay.querySelector('#rsDiffArea');
+    // Issue #67 Piece 1: visits and comments are what actually changes day
+    // to day — households rarely do — so a restore that looks like a
+    // no-op on the household count can still discard real history.
+    // Flagged as a loss (not a neutral number) whenever the current side
+    // has more than the backup would restore.
+    const visitsLost = preview.current_visit_count > preview.backup_visit_count;
+    const commentsLost = preview.current_commented_household_count > preview.backup_commented_household_count;
     area.innerHTML = `
         <h3>Before / After</h3>
         <p>Current: ${preview.current_household_count} records. Backup: ${preview.backup_household_count} records.</p>
+        <p class="${visitsLost ? 'restore-warning' : ''}">Visits — current: ${preview.current_visit_count}, backup: ${preview.backup_visit_count}${visitsLost ? ' — restoring will discard the difference' : ''}</p>
+        <p class="${commentsLost ? 'restore-warning' : ''}">Households with comments — current: ${preview.current_commented_household_count}, backup: ${preview.backup_commented_household_count}${commentsLost ? ' — restoring will discard the difference' : ''}</p>
 
         <h3>By Tag (current → after restore)</h3>
         <table><thead><tr><th>Tag</th><th>Current</th><th>After Restore</th></tr></thead><tbody>

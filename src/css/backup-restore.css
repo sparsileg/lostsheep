@@ -1,5 +1,10 @@
 #rsDiffArea table { margin: 10px 0; max-height: 260px; overflow-y: auto; display: block; }
 
+/* Issue #67 Piece 1: flags the restore preview's visit/comment rows as an
+   actual loss (not a neutral number) when the current database has more
+   than the backup would restore. */
+.restore-warning { color: #8a1f1f; font-weight: bold; }
+
 .passphrase-row { display: flex; gap: 6px; align-items: center; }
 .passphrase-row input { width: auto !important; flex: none; }
 .passphrase-toggle { padding: 4px 8px; }

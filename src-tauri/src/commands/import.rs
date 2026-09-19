@@ -59,22 +59,6 @@ pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: S
     result
 }
 
-/// #49: an exact source_key match (identical name+address text) used to be
-/// discarded as unchanged unconditionally, even when the incoming PDF's
-/// geocoded coordinates for that address had moved — the new coordinates
-/// were silently thrown away. Coordinates come straight from parsed
-/// decimal text (pdf_parser's coord_re + valid_coord) each import — an
-/// unchanged address re-geocodes to the same float, so plain inequality
-/// is the drift check; no distance/tolerance needed.
-fn coords_drifted(
-    existing_lat: Option<f64>,
-    existing_lon: Option<f64>,
-    incoming_lat: Option<f64>,
-    incoming_lon: Option<f64>,
-) -> bool {
-    (existing_lat, existing_lon) != (incoming_lat, incoming_lon)
-}
-
 /// One of the six values `households.role`/`role_2` CHECK constraints permit
 /// (schema.sql). Anything else is rejected here rather than carried forward —
 /// an out-of-vocabulary role previously survived the whole review pipeline
@@ -225,15 +209,36 @@ fn run_diff(
             // real drift is routed into review_queue like any other change.
             let existing_id = matching_ids[0];
             matched_existing_ids.insert(existing_id);
-            let (existing_lat, existing_lon): (Option<f64>, Option<f64>) = tx
+            // #60: source_key covers only names + address_line1, and this
+            // branch used to gate solely on coordinate drift — a phone,
+            // email, address_line2, city, state or zip change on an
+            // otherwise-identical name+address1 was silently discarded as
+            // "unchanged" (see coords_drifted's doc comment for the #49
+            // history this narrowed case grew out of). changed_fields()
+            // already compares the full set get_review_queue labels with —
+            // reuse it as the gate instead of a second, narrower
+            // definition of "different" (Option A).
+            let existing: ExistingForDiff = tx
                 .query_row(
-                    "SELECT latitude, longitude FROM households WHERE id = ?1",
+                    "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
+                     phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
+                     longitude, comments FROM households WHERE id = ?1",
                     params![existing_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| {
+                        Ok(ExistingForDiff {
+                            first_name: r.get(0)?, last_name: r.get(1)?,
+                            first_name_2: r.get(2)?, last_name_2: r.get(3)?,
+                            phone_1: r.get(4)?, email_1: r.get(5)?,
+                            phone_2: r.get(6)?, email_2: r.get(7)?,
+                            address_line1: r.get(8)?, address_line2: r.get(9)?,
+                            city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
+                            latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
+                        })
+                    },
                 )
                 .map_err(|e| e.to_string())?;
 
-            if coords_drifted(existing_lat, existing_lon, rec.latitude, rec.longitude) {
+            if !changed_fields(&existing, rec).is_empty() {
                 changed_count += 1;
                 tx.execute(
                     "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) \
@@ -242,7 +247,7 @@ fn run_diff(
                 )
                 .map_err(|e| e.to_string())?;
             } else {
-                // Exact source_key match, coordinates within tolerance =
+                // Exact source_key match, nothing changed_fields() flags —
                 // unchanged, discarded per spec.
                 unchanged_count += 1;
             }

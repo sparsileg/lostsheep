@@ -216,6 +216,15 @@ pub struct RestorePreview {
     pub rows: Vec<RestoreDiffRow>,
     pub backup_household_count: i64,
     pub current_household_count: i64,
+    // Issue #67 Piece 1: the before/after screen previously said nothing
+    // about visits or comments — the two things restore actually destroys
+    // in the common case (households rarely change much between backups;
+    // visits and comments accumulate daily). These make the loss visible
+    // before the user commits, without changing what restore itself does.
+    pub backup_visit_count: i64,
+    pub current_visit_count: i64,
+    pub backup_commented_household_count: i64,
+    pub current_commented_household_count: i64,
     pub tag_counts: Vec<TagCountRow>,
     // Issue #26: must be echoed back to restore_commit unchanged, or the
     // commit is refused. Proves a preview ran against this exact file.
@@ -232,6 +241,21 @@ fn tag_counts(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<S
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows.into_iter().collect())
+}
+
+/// Issue #67 Piece 1: how many visits exist, and how many households
+/// carry a non-empty comment, in a given database — same shape on both
+/// the backup and the live side so the caller can compare directly.
+fn visit_and_comment_counts(conn: &rusqlite::Connection) -> Result<(i64, i64), String> {
+    let visit_count: i64 = conn.query_row("SELECT count(*) FROM visits", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let commented_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM households WHERE comments IS NOT NULL AND trim(comments) != ''",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok((visit_count, commented_count))
 }
 
 /// Shows a before/after diff without touching the live DB — required by
@@ -350,10 +374,23 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
         })
         .collect();
 
+    let (current_visit_count, current_commented_household_count) = visit_and_comment_counts(&live_conn)?;
+    let (backup_visit_count, backup_commented_household_count) = visit_and_comment_counts(&backup_conn)?;
+
     *state.last_preview.lock().map_err(|_| "internal error: preview lock poisoned".to_string())? =
         Some((src_path.clone(), token.clone()));
 
-    Ok(RestorePreview { rows, backup_household_count: backup_count, current_household_count: live_count, tag_counts: tag_counts_out, token })
+    Ok(RestorePreview {
+        rows,
+        backup_household_count: backup_count,
+        current_household_count: live_count,
+        backup_visit_count,
+        current_visit_count,
+        backup_commented_household_count,
+        current_commented_household_count,
+        tag_counts: tag_counts_out,
+        token,
+    })
     })();
 
     if let Err(e) = &result {
