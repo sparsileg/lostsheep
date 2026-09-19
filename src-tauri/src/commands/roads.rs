@@ -41,6 +41,22 @@ const MAX_ROAD_EDGES_PER_QUERY: usize = 5_000;
 // counts as "close enough to a road."
 pub(crate) const SNAP_TOLERANCE_M: f64 = 300.0;
 
+// Issue #53: an unclipped regional/national .pbf (a full Geofabrik
+// state/country download, sitting right next to the properly clipped
+// extract, same .pbf extension, no way for the file picker to tell them
+// apart) blows the whole-parse-in-memory ingest past available RAM —
+// OOM-killed on Linux, allocation failure on Windows, no error, no log
+// entry, just the app vanishing mid-ingest. Calibrated against this
+// project's own known-good extract: a 6.9 MiB roads-only .pbf produced a
+// ~38 MB roads.db (~5.5x expansion — pbf's varint/delta/zlib encoding is
+// far denser than the flat node/edge rows this app stores). 100 MiB
+// roads-only input would extrapolate to roughly half a gigabyte in
+// memory — generous headroom over any real clipped county/region extract
+// while stopping well short of a multi-gigabyte accidental ingest. A
+// single named constant per the issue's constraint — retune here if a
+// legitimately larger clipped extract ever needs more room.
+const MAX_INGEST_PBF_BYTES: u64 = 100 * 1024 * 1024;
+
 #[derive(serde::Serialize)]
 pub struct RoadEdgeSegment {
     pub lat1: f64,
@@ -96,6 +112,24 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
     // below. file_path (raw) is kept only for log messages/error text.
     let resolved = super::paths::resolve_read_path(&file_path)?;
     let file_path = resolved.to_string_lossy().to_string();
+
+    // Issue #53: refuse before ever opening the file — an unclipped
+    // regional/national extract has the same .pbf extension as a properly
+    // clipped one, and the whole-parse-in-memory design (see this file's
+    // header comment) has no other chance to bail out before accumulating
+    // enough to be OOM-killed.
+    let file_size = std::fs::metadata(&resolved)
+        .map_err(|e| format!("could not read {file_path}: {e}"))?
+        .len();
+    if file_size > MAX_INGEST_PBF_BYTES {
+        return Err(format!(
+            "{file_path} is {:.0} MB, over the {} MB ingest limit — this looks like a full regional \
+             extract rather than a roads-only clip. Clip it to your area first (see the Road Management \
+             instructions), then try again.",
+            file_size as f64 / (1024.0 * 1024.0),
+            MAX_INGEST_PBF_BYTES / (1024 * 1024)
+        ));
+    }
 
     emit_progress(&app, "reading ways");
 
