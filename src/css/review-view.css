@@ -6,3 +6,9 @@
 .review-removed .review-badge { background: var(--error-color); color: #fff; }
 .review-body { flex: 1; }
 .review-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Issue #62: a 'changed'/'removed' item detached from its household by an
+   earlier resolution in the same batch — Delete/Replace/Merge would fail
+   on it, so it's dimmed and carries an explicit warning instead. */
+.review-stale { opacity: 0.7; }
+.review-stale-warning { color: var(--error-color); font-weight: bold; margin-top: 4px; }

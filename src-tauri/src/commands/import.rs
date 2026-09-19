@@ -453,6 +453,14 @@ pub struct ReviewItem {
     /// 'new'/'removed' items, where there's nothing on both sides to
     /// compare.
     pub changed_fields: Vec<String>,
+    /// Issue #62: true when this item's existing_household_id has been
+    /// nulled by an earlier resolution in the same batch (ON DELETE SET
+    /// NULL) — a 'changed' or 'removed' item that no longer refers to
+    /// anything. Delete/Replace/Merge will fail on these (see the #62
+    /// guard in resolve_review_item); the frontend uses this to warn the
+    /// user before they click rather than after. Always false for 'new'
+    /// items, which never had an existing_household_id to begin with.
+    pub stale: bool,
 }
 
 /// Existing household fields needed to diff against an incoming
@@ -583,9 +591,15 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
             }
             _ => Vec::new(),
         };
+        // Issue #62: 'changed'/'removed' items are matched against an
+        // existing household at insert time — existing_household_id is
+        // only ever None for these two if a later resolution in the same
+        // batch nulled it out from under them (ON DELETE SET NULL). 'new'
+        // items never had one to begin with, so they're never stale.
+        let stale = match_type != "new" && existing_household_id.is_none();
         out.push(ReviewItem {
             id, match_type, incoming_data, existing_household_id, existing_summary,
-            changed_fields: changed,
+            changed_fields: changed, stale,
         });
     }
     Ok(out)
@@ -620,6 +634,26 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| e.to_string())?;
+
+    // Issue #62: a prior resolution earlier in this batch can null out
+    // existing_household_id via ON DELETE SET NULL (deleting/replacing the
+    // household another review row still points at). "replace"/"merge" on
+    // a detached 'changed' item used to fall through and mint a fresh
+    // household — silently duplicating a record instead of replacing
+    // anything. "delete" on a detached 'removed' item used to no-op inside
+    // its own `if let Some(id) = existing_id` guard while still reporting
+    // success. Both cases are the same failure — the item no longer refers
+    // to anything — so both fail loudly here, before touching any table,
+    // and the item stays 'pending' so the user can Ignore it deliberately
+    // (Option A). "add" is unaffected: existing_id is expected to be None
+    // there and always has been.
+    if matches!(action.as_str(), "replace" | "merge" | "delete") && existing_id.is_none() {
+        return Err(
+            "the household this item referred to was already removed or replaced \
+             earlier in this batch — nothing left to act on; choose Ignore"
+                .to_string(),
+        );
+    }
 
     match action.as_str() {
         "add" | "replace" | "merge" => {
@@ -712,11 +746,11 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
                 .map_err(|e| e.to_string())?;
 
             // Issue #69: "add" always mints fresh (genuinely new
-            // household). "replace"/"merge" carry the old uid forward
-            // when available; a detached item (#62 — existing_id is None
-            // even though action is replace/merge) has nothing to carry
-            // and mints fresh rather than failing, matching how the rest
-            // of this branch already treats that case as add-like.
+            // household). "replace"/"merge" carry the old uid forward —
+            // existing_id is guaranteed Some here for those two actions
+            // (the #62 guard above rejects a detached replace/merge before
+            // this point), so carried_household_uid is always populated
+            // for them; the fallback below only fires for "add".
             let household_uid = carried_household_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
             tx.execute(

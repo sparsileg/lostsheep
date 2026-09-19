@@ -62,20 +62,37 @@ function renderReviewItem(item) {
         ? `<div class="review-comments-note">Your household comments are always kept as-is on Replace or Merge.</div>`
         : '';
 
+    // Issue #62: a 'changed' or 'removed' item can be left pointing at
+    // nothing by an earlier resolution in this same batch (a Replace/Merge/
+    // Delete elsewhere deleted the household this item's
+    // existing_household_id referred to). The backend now refuses
+    // Delete/Replace/Merge on these outright, but the user should see why
+    // before clicking rather than after — hence this warning, and the
+    // affected buttons are left out of `actions` entirely rather than
+    // wired up disabled, so there's nothing to click that can only fail.
+    const staleHtml = item.stale
+        ? `<div class="review-stale-warning">This item's linked household was already changed earlier in this batch — Delete/Replace/Merge would fail. Choose Ignore, or Add as New if you still want this record.</div>`
+        : '';
+
     let actions = '';
     if (item.match_type === 'new') actions = actionBtn(item.id, 'add', 'Add');
-    if (item.match_type === 'changed') actions = actionBtn(item.id, 'replace', 'Replace') + actionBtn(item.id, 'merge', 'Merge') + actionBtn(item.id, 'add', 'Add as New');
-    if (item.match_type === 'removed') actions = actionBtn(item.id, 'delete', 'Confirm Delete');
+    if (item.match_type === 'changed') {
+        actions = item.stale
+            ? actionBtn(item.id, 'add', 'Add as New')
+            : actionBtn(item.id, 'replace', 'Replace') + actionBtn(item.id, 'merge', 'Merge') + actionBtn(item.id, 'add', 'Add as New');
+    }
+    if (item.match_type === 'removed' && !item.stale) actions = actionBtn(item.id, 'delete', 'Confirm Delete');
     actions += actionBtn(item.id, 'ignore', 'Ignore');
 
     return `
-        <div class="review-item review-${item.match_type}">
+        <div class="review-item review-${item.match_type}${item.stale ? ' review-stale' : ''}">
             <span class="review-badge">${item.match_type}</span>
             <div class="review-body">
                 <div><strong>Incoming:</strong> ${incomingHtml}</div>
                 ${item.existing_summary ? `<div><strong>Existing:</strong> ${escapeHtml(item.existing_summary)}</div>` : ''}
                 ${changedHtml}
                 ${commentsNoteHtml}
+                ${staleHtml}
             </div>
             <div class="review-actions">${actions}</div>
         </div>`;
