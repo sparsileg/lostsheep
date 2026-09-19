@@ -107,7 +107,7 @@ const PotentialProblemsPdf = {
             });
             section.items.forEach(p => {
                 content.push(section.nameOnly
-                    ? { text: p.household_name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [0, 0, 0, 2] }
+                    ? { text: this._nameWithTag(p.household_name, p.tag), fontSize: 10, color: colors.detailText, margin: [0, 0, 0, 2] }
                     : section.isGroup
                         ? this._groupEntry(p, colors)
                         : this._entry(p, colors));
@@ -148,9 +148,7 @@ const PotentialProblemsPdf = {
     // trigger. Kept together on one page, same as directory-pdf.js's
     // per-household entries.
     _entry(p, colors) {
-        const nameLine = p.tag
-            ? `${p.household_name || '(no name on file)'} (${p.tag})`
-            : (p.household_name || '(no name on file)');
+        const nameLine = this._nameWithTag(p.household_name, p.tag);
         const addressLine = p.address_line1
             ? (p.address_line2 ? `${p.address_line1}, ${p.address_line2}` : p.address_line1)
             : '(no address on file)';
@@ -175,13 +173,26 @@ const PotentialProblemsPdf = {
         const stack = [
             { text: addressLine, fontSize: 12, bold: true, color: colors.headingText, margin: [0, 0, 0, 4] },
         ];
-        (p.household_names || [p.household_name]).forEach(name => {
-            stack.push({ text: name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 1] });
+        // household_tags is parallel to household_names (same index = same
+        // household) — each resident's own tag shown next to their name,
+        // since the group as a whole has no single tag (members may differ).
+        const names = p.household_names || [p.household_name];
+        const tags = p.household_tags || [];
+        names.forEach((name, i) => {
+            stack.push({ text: this._nameWithTag(name, tags[i]), fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 1] });
         });
         p.reasons.forEach(r => {
             stack.push({ text: `\u2022 ${r}`, fontSize: 9, color: colors.reasonText, margin: [10, 4, 0, 1] });
         });
         return { unbreakable: true, margin: [0, 0, 0, 12], stack };
+    },
+
+    // Shared name+tag formatting — used by _entry, _groupEntry (per
+    // member), and the no-address-on-file name-only list, so all three
+    // sections show a household's tag the same way.
+    _nameWithTag(name, tag) {
+        const n = name || '(no name on file)';
+        return tag ? `${n} (${tag})` : n;
     },
 
     _monthAbbrev() {

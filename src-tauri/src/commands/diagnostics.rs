@@ -96,6 +96,13 @@ pub struct PotentialProblem {
     pub household_ids: Option<Vec<i64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub household_names: Option<Vec<String>>,
+    /// Present only on a shared-address group entry, parallel to
+    /// household_ids/household_names (same index = same household). Each
+    /// entry is that member's own tag (None if untagged) — the top-level
+    /// `tag` field stays None for a group since members may differ; this
+    /// is how the PDF shows each resident's tag individually instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub household_tags: Option<Vec<Option<String>>>,
     pub address_line1: Option<String>,
     pub address_line2: Option<String>,
     /// The household's tag (Known / Not known / Do Not Contact), if any —
@@ -713,6 +720,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
             household_name: members[0].household_name.clone(),
             household_ids: Some(members.iter().map(|m| m.id).collect()),
             household_names: Some(members.iter().map(|m| m.household_name.clone()).collect()),
+            household_tags: Some(members.iter().map(|m| m.tag_name.clone()).collect()),
             address_line1: members[0].address_line1.clone(),
             address_line2: members[0].address_line2.clone(),
             tag: None, // members may hold different tags — not meaningful to pick one
@@ -739,6 +747,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                     household_name: row.household_name.clone(),
                     household_ids: None,
                     household_names: None,
+                    household_tags: None,
                     address_line1: row.address_line1.clone(),
                     address_line2: row.address_line2.clone(),
                     tag: row.tag_name.clone(),
@@ -810,6 +819,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
                 household_name: row.household_name.clone(),
                 household_ids: None,
                 household_names: None,
+                household_tags: None,
                 address_line1: row.address_line1.clone(),
                 address_line2: row.address_line2.clone(),
                 tag: row.tag_name.clone(),
