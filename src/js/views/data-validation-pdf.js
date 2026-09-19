@@ -10,6 +10,16 @@
  * rendering target from the on-screen modal, not a shared concern).
  */
 
+// Priority order for the "No address on file" section specifically — Stan's
+// call, and deliberately NOT the same order as the main report's TAG_ORDER
+// (below, in download()): a household with no address on file *and* tagged
+// Do Not Contact may have no other way to be reached at all, so that group
+// surfaces first here even though Not Known leads everywhere else in the
+// report. "Not Known" is the canonical label used throughout this report
+// (matches households-view.js's tag casing); Stan's shorthand for it in
+// conversation was "Unknown."
+const NO_ADDRESS_TAG_ORDER = ['Do Not Contact', 'Not Known', 'Known'];
+
 const PotentialProblemsPdf = {
 
     _colors() {
@@ -77,7 +87,18 @@ const PotentialProblemsPdf = {
         });
         if (other.length > 0) sections.push({ label: 'Untagged', items: other });
         if (groups.length > 0) sections.push({ label: 'Shared Address — Geocoordinate Mismatch', items: groups, isGroup: true });
-        if (noAddress.length > 0) sections.push({ label: 'No address on file', items: noAddress, nameOnly: true });
+        // Sorted/grouped by tag within their own section (Stan's call —
+        // Do Not Contact first here, a different priority than the main
+        // TAG_ORDER above: someone with no address on file is most urgent
+        // to track down when they're also flagged Do Not Contact, since
+        // there may be no other way to reach them at all).
+        if (noAddress.length > 0) {
+            sections.push({
+                label: 'No address on file',
+                nameOnly: true,
+                tagGroups: this._groupByTag(noAddress, NO_ADDRESS_TAG_ORDER),
+            });
+        }
 
         const content = [];
 
@@ -105,13 +126,31 @@ const PotentialProblemsPdf = {
                 margin: [0, 12, 0, 6],
                 ...(i > 0 ? { pageBreak: 'before' } : {}),
             });
-            section.items.forEach(p => {
-                content.push(section.nameOnly
-                    ? { text: this._nameWithTag(p.household_name, p.tag), fontSize: 10, color: colors.detailText, margin: [0, 0, 0, 2] }
-                    : section.isGroup
-                        ? this._groupEntry(p, colors)
-                        : this._entry(p, colors));
-            });
+            if (section.tagGroups) {
+                // No-address section: sub-headed by tag (see
+                // NO_ADDRESS_TAG_ORDER) instead of one flat name list.
+                section.tagGroups.forEach((tg, j) => {
+                    content.push({
+                        text: tg.label,
+                        fontSize: 10,
+                        bold: true,
+                        italics: true,
+                        color: colors.headingText,
+                        margin: [0, j > 0 ? 8 : 0, 0, 3],
+                    });
+                    tg.items.forEach(p => {
+                        content.push({ text: p.household_name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 2] });
+                    });
+                });
+            } else {
+                section.items.forEach(p => {
+                    content.push(section.nameOnly
+                        ? { text: this._nameWithTag(p.household_name, p.tag), fontSize: 10, color: colors.detailText, margin: [0, 0, 0, 2] }
+                        : section.isGroup
+                            ? this._groupEntry(p, colors)
+                            : this._entry(p, colors));
+                });
+            }
         });
 
         const docDefinition = {
@@ -187,12 +226,39 @@ const PotentialProblemsPdf = {
         return { unbreakable: true, margin: [0, 0, 0, 12], stack };
     },
 
-    // Shared name+tag formatting — used by _entry, _groupEntry (per
-    // member), and the no-address-on-file name-only list, so all three
-    // sections show a household's tag the same way.
+    // Shared name+tag formatting — used by _entry and _groupEntry (per
+    // member). No longer used by the no-address-on-file list (ad hoc
+    // request — sort/group that list by tag): that list is now sub-headed
+    // by tag (see _groupByTag), so repeating
+    // the tag on every name underneath its own heading would be redundant.
     _nameWithTag(name, tag) {
         const n = name || '(no name on file)';
         return tag ? `${n} (${tag})` : n;
+    },
+
+    // Ad hoc request — sort/group the no-address list by tag. Buckets
+    // `items` by their `tag` field into the given
+    // priority order (case-insensitive match against the stored tag text,
+    // same reasoning as download()'s byTag grouping above), sorting each
+    // bucket's households alphabetically by name for a scannable list.
+    // Anything untagged, or tagged with something outside `tagOrder`,
+    // lands in a trailing "Untagged" bucket rather than being dropped.
+    // Returns an array of { label, items }, omitting empty buckets.
+    _groupByTag(items, tagOrder) {
+        const byTag = new Map(tagOrder.map(t => [t.toLowerCase(), []]));
+        const other = [];
+        items.forEach(p => {
+            const bucket = byTag.get((p.tag || '').toLowerCase());
+            if (bucket) bucket.push(p); else other.push(p);
+        });
+        const sortByName = (a, b) => (a.household_name || '').localeCompare(b.household_name || '');
+        const out = [];
+        tagOrder.forEach(label => {
+            const bucket = byTag.get(label.toLowerCase());
+            if (bucket.length > 0) out.push({ label, items: [...bucket].sort(sortByName) });
+        });
+        if (other.length > 0) out.push({ label: 'Untagged', items: [...other].sort(sortByName) });
+        return out;
     },
 
     _monthAbbrev() {
