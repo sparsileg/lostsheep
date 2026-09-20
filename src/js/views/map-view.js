@@ -101,16 +101,20 @@ registerView('map', {
         this.seedGroupKey = null;
         this.selectedTagId = '';
 
-        // Issue #40 — Road Management overlays. Both layers start
-        // detached; applyRoadSettings() (called from onShow() below, and
-        // from the Road Management modal on toggle) adds/removes them
-        // based on the persisted showRoadsOverlay/showRouteOverlay
-        // settings. Roads redraw on pan/zoom since a bounds-bound query
-        // only covers the viewport at the time it ran.
+        // Issue #40 — Road Management's roads overlay. Starts detached;
+        // applyRoadSettings() (called from onShow() below, and from the
+        // Road Management modal on toggle) adds/removes it based on the
+        // persisted showRoadsOverlay setting. Redraws on pan/zoom since a
+        // bounds-bound query only covers the viewport at the time it ran.
+        //
+        // The route overlay (also #40 originally) is no longer a toggle
+        // (#84) — routeLayer is added to the map unconditionally here and
+        // stays on for the life of this view; drawRouteOverlay() just
+        // draws whatever route is current, or nothing if none has been
+        // generated yet.
         this.roadsLayer = L.layerGroup();
-        this.routeLayer = L.layerGroup();
+        this.routeLayer = L.layerGroup().addTo(this.map);
         this.roadsOverlayEnabled = false;
-        this.routeOverlayEnabled = false;
         this.map.on('moveend zoomend', () => { if (this.roadsOverlayEnabled) loadRoadsOverlay(); });
 
         // Right-click: copy the clicked point's coordinates. Leaflet
@@ -246,18 +250,22 @@ function themeColor(varName, fallback) {
     return val || fallback;
 }
 
-// Issue #40 — reads the two persisted display-only settings and adds/
-// removes the road/route layers accordingly. Called from onShow() so a
-// fresh visit to the map view picks up whatever was toggled in the Road
-// Management modal, and also called directly by that modal's toggle
-// handlers so a redraw happens immediately without waiting for the next
-// onShow().
+// Issue #40, updated for #84 — reads the persisted showRoadsOverlay
+// setting and adds/removes the roads layer accordingly. Called from
+// onShow() so a fresh visit to the map view picks up whatever was
+// toggled in the Road Management modal, and also called directly by that
+// modal's toggle handler so a redraw happens immediately without waiting
+// for the next onShow().
+//
+// The route layer is no longer gated by a setting (#84) — it's added to
+// the map once at init() and stays there; this just redraws whatever
+// route is already generated, if any, so returning to the map view shows
+// it without regenerating the list.
 async function applyRoadSettings() {
     let settings;
     try { settings = await Api.getSettings(); } catch (e) { console.error(e); return; }
 
     MapView.roadsOverlayEnabled = settings.showRoadsOverlay === 'true';
-    MapView.routeOverlayEnabled = settings.showRouteOverlay === 'true';
 
     if (MapView.roadsOverlayEnabled) {
         MapView.roadsLayer.addTo(MapView.map);
@@ -267,16 +275,7 @@ async function applyRoadSettings() {
         MapView.map.removeLayer(MapView.roadsLayer);
     }
 
-    if (MapView.routeOverlayEnabled) {
-        MapView.routeLayer.addTo(MapView.map);
-        // Redraw whatever route is already generated, if any — a toggle
-        // flipped on after generateVisitList() already ran shouldn't
-        // require regenerating the list to see the overlay.
-        if (MapView.lastVisitEntries) await drawRouteOverlay(MapView.lastVisitEntries);
-    } else {
-        MapView.routeLayer.clearLayers();
-        MapView.map.removeLayer(MapView.routeLayer);
-    }
+    if (MapView.lastVisitEntries) await drawRouteOverlay(MapView.lastVisitEntries);
 }
 
 // Viewport-bounded road overlay (issue #40). Queries only the current
@@ -302,9 +301,20 @@ async function loadRoadsOverlay() {
     }
     const color = themeColor('--chart1', '#0d6efd');
     result.edges.forEach(seg => {
-        L.polyline([[seg.lat1, seg.lon1], [seg.lat2, seg.lon2]], { color, weight: 2, opacity: 0.6 })
-            .addTo(MapView.roadsLayer);
+        drawOutlinedRoadSegment([[seg.lat1, seg.lon1], [seg.lat2, seg.lon2]], MapView.roadsLayer, color);
     });
+}
+
+// Ad hoc request — roads were hard to see against busy OSM tile imagery
+// at a thin 2px weight, so each segment now gets a 2px black border on
+// either side. Same two-polyline layering drawRoadStyledPolyline() below
+// uses for the route line: a wider solid black line drawn first, the
+// original theme-colored line on top at its original weight — 2px black
+// + 2px color + 2px black = 6px total. Opacity/weight of the colored
+// line itself are unchanged from before this change.
+function drawOutlinedRoadSegment(latlngs, layerGroup, color) {
+    L.polyline(latlngs, { color: '#000000', weight: 6, opacity: 0.9 }).addTo(layerGroup);
+    L.polyline(latlngs, { color, weight: 2, opacity: 0.6 }).addTo(layerGroup);
 }
 
 // Route overlay (issue #40, updated for #38's road-path geometry). Each
@@ -334,7 +344,7 @@ function drawRoadStyledPolyline(latlngs, layerGroup) {
 
 async function drawRouteOverlay(entries) {
     MapView.routeLayer.clearLayers();
-    if (!MapView.routeOverlayEnabled || !entries || entries.length === 0) return;
+    if (!entries || entries.length === 0) return;
 
     const anyPaths = entries.some(e => e.route_path && e.route_path.length > 1);
 
@@ -705,13 +715,12 @@ async function generateVisitList() {
     MapView.lastVisitStartInfo = startsAtRoute ? startInfo : null;
     MapView.lastVisitRoadsDegraded = roadsDegraded;
 
-    // Issue #40 — redraw the route/snap overlay for this new list. A
-    // no-op internally when the toggle is off.
+    // Issue #40, #84 — draw the route/snap overlay for this new list.
+    // Always shown now; no setting gates it.
     await drawRouteOverlay(entries);
 
     // Issue #43 — frame the map to just this route's households, start/
-    // return legs excluded. Runs regardless of the route-overlay toggle
-    // above (it's about seeing the households, not the road lines).
+    // return legs excluded.
     frameRouteBounds(entries);
 
     // Issue #43 — full-screen modal is gone for this flow. Non-blocking

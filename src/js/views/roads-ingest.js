@@ -1,11 +1,12 @@
-// roads-ingest.js — "Road Management" modal (issues #7, #40). Ingest
+// roads-ingest.js — "Road Management" modal (issues #7, #40, #84). Ingest
 // picks an already-prepared roads-only .pbf (clipped + filtered
 // externally, per #7) and hands it to ingest_road_database, showing
-// progress events as it parses/builds/stores. The two toggles below
-// (#40) just persist a this-machine display preference via
-// Api.saveSettings — map-view.js is what actually reads them and draws
-// the road/route overlays; this modal doesn't touch the Leaflet map
-// directly; it just prompts a redraw if the map view happens to be live.
+// progress events as it parses/builds/stores. The toggle below (#40)
+// just persists a this-machine display preference via Api.saveSettings —
+// map-view.js is what actually reads it and draws the road overlay; this
+// modal doesn't touch the Leaflet map directly; it just prompts a redraw
+// if the map view happens to be live. The route overlay is no longer a
+// toggle at all (#84) — it always draws once a route is generated.
 // Depends on modalShell() and escapeHtml()/showMessage() from
 // backup-restore.js/core.js, which load before this file — same reuse
 // pattern backup-restore.js itself follows. modalShell is now an
@@ -20,7 +21,6 @@ const RoadsIngest = {
         let settings = {};
         try { settings = await Api.getSettings(); } catch (e) { console.error(e); }
         const roadsChecked = settings.showRoadsOverlay === 'true' ? 'checked' : '';
-        const routeChecked = settings.showRouteOverlay === 'true' ? 'checked' : '';
 
         const overlay = modalShell(`
             <h2>Road Management</h2>
@@ -33,8 +33,7 @@ const RoadsIngest = {
             </div>
             <p id="riStage" style="opacity:.75;"></p>
             <hr>
-            <label><input type="checkbox" id="riShowRoads" ${roadsChecked}> Show roads on map</label><br>
-            <label><input type="checkbox" id="riShowRoute" ${routeChecked}> Show route on map (includes snap lines to nearest road)</label>
+            <label><input type="checkbox" id="riShowRoads" ${roadsChecked}> Show roads on map</label>
         `);
 
         let srcPath = null;
@@ -87,11 +86,6 @@ const RoadsIngest = {
         // already be live behind this modal.
         overlay.querySelector('#riShowRoads').addEventListener('change', async (e) => {
             try { await Api.saveSettings({ showRoadsOverlay: e.target.checked ? 'true' : 'false' }); }
-            catch (err) { showMessage(`${err}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
-            if (typeof MapView !== 'undefined' && MapView.applyRoadSettings) MapView.applyRoadSettings();
-        });
-        overlay.querySelector('#riShowRoute').addEventListener('change', async (e) => {
-            try { await Api.saveSettings({ showRouteOverlay: e.target.checked ? 'true' : 'false' }); }
             catch (err) { showMessage(`${err}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
             if (typeof MapView !== 'undefined' && MapView.applyRoadSettings) MapView.applyRoadSettings();
         });

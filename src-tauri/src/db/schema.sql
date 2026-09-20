@@ -254,10 +254,9 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('defaultVisitGroupSize', '10'),
     ('pageSize', '25'),
     ('backupFolder', ''),
-    -- Issue #40: display-only map preferences, not backed up (see
+    -- Issue #40: display-only map preference, not backed up (see
     -- commands::backup's strip_display_only_settings).
-    ('showRoadsOverlay', 'false'),
-    ('showRouteOverlay', 'false');
+    ('showRoadsOverlay', 'false');
 
 -- Offline map-tile caching was dropped (issue #3) — this runs on every
 -- startup, not just a fresh DB, so it also cleans up an existing
@@ -265,6 +264,12 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 -- after the settings table is created above.
 DROP TABLE IF EXISTS cache_regions;
 DELETE FROM settings WHERE key = 'mapOfflineCacheEnabled';
+
+-- Issue #84 — the route-overlay display setting was removed; the route
+-- now always draws once generated, with no toggle to hide it. Same
+-- cleanup pattern as mapOfflineCacheEnabled above, for an existing
+-- install that still has this key stored.
+DELETE FROM settings WHERE key = 'showRouteOverlay';
 
 -- The seeded "Deleted" tag was a manual label that got confused with
 -- actual soft-delete (soft_delete_household moves a row out of
