@@ -61,6 +61,18 @@ const BackupRestore = {
                 const writtenPath = await Api.backupDatabase(dest, p1);
                 showMessage(`Backup written to ${writtenPath} (road graph not included — re-ingest after restore if needed)`, CONSTANTS.MESSAGE_TYPES.INFO, 8000);
                 overlay.remove();
+
+                // Issue #68: sidebar's "Last backup" line is only redrawn
+                // from sidebar.js's own init/backup-reminder paths — a
+                // backup taken here in the same session would otherwise
+                // sit stale until next launch. sidebar.js is a classic
+                // script, so renderLastBackup is a plain window global;
+                // re-fetch settings rather than trust a local timestamp,
+                // since lastBackupAt is what backup_database itself wrote.
+                try {
+                    const fresh = await Api.getSettings();
+                    window.renderLastBackup?.(fresh.lastBackupAt);
+                } catch (e) { console.error('could not refresh last-backup display', e); }
             } catch (e) { showMessage(`Backup failed: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
         });
     },

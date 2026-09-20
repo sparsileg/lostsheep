@@ -9,7 +9,7 @@ mod pdf_parser;
 mod road_graph;
 
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub pool: db::Pool,
@@ -38,6 +38,81 @@ pub struct AppState {
     // that closure today. Cloning the outer Arc is what makes the cache
     // itself movable into that closure the same way.
     pub road_graph_cache: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<road_graph::RoadGraph>>>>,
+    // Issue #68: set by db::open_pool's update_hook on every real write to
+    // any non-bookkeeping table (see the exclusion list there). Polled by
+    // spawn_backup_reminder_thread below, which persists it to the
+    // lastDbChangeAt setting (surviving app restart) and emits a
+    // "backup-reminder" toast if 5 minutes pass with no backup since.
+    pub last_db_change_at: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+}
+
+const BACKUP_REMINDER_POLL: std::time::Duration = std::time::Duration::from_secs(15);
+const BACKUP_REMINDER_THRESHOLD: chrono::Duration = chrono::Duration::minutes(5);
+
+// Issue #68: background reminder loop. Plain OS thread (not async — nothing
+// else in this codebase runs a Tokio runtime), polling every 15s.
+//   - Persists the in-memory dirty timestamp to the lastDbChangeAt setting
+//     so the 5-minute window survives an app restart (main() reseeds
+//     last_db_change_at from this same setting on startup).
+//   - Emits "backup-reminder" once per dirty-timestamp value, only if no
+//     backup has been recorded (lastBackupAt) since that change.
+fn spawn_backup_reminder_thread(
+    app_handle: tauri::AppHandle,
+    pool: db::Pool,
+    last_db_change_at: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+) {
+    std::thread::spawn(move || {
+        let mut last_persisted: Option<chrono::DateTime<chrono::Utc>> = None;
+        let mut toasted_for: Option<chrono::DateTime<chrono::Utc>> = None;
+        loop {
+            std::thread::sleep(BACKUP_REMINDER_POLL);
+
+            let dirty_at = match last_db_change_at.lock() {
+                Ok(guard) => *guard,
+                Err(_) => None,
+            };
+            let Some(dirty_at) = dirty_at else { continue };
+
+            if last_persisted != Some(dirty_at) {
+                if let Ok(conn) = pool.get() {
+                    let iso = dirty_at.to_rfc3339();
+                    let _ = conn.execute(
+                        "INSERT INTO settings (key, value) VALUES ('lastDbChangeAt', ?1) \
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        rusqlite::params![iso],
+                    );
+                }
+                last_persisted = Some(dirty_at);
+            }
+
+            if toasted_for == Some(dirty_at) {
+                continue;
+            }
+
+            let last_backup_at: Option<String> = pool.get().ok().and_then(|conn| {
+                conn.query_row(
+                    "SELECT value FROM settings WHERE key = 'lastBackupAt'",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+            });
+            let backed_up_since_change = last_backup_at
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc) >= dirty_at)
+                .unwrap_or(false);
+            if backed_up_since_change {
+                continue;
+            }
+
+            if chrono::Utc::now() - dirty_at >= BACKUP_REMINDER_THRESHOLD {
+                let _ = app_handle.emit("backup-reminder", ());
+                toasted_for = Some(dirty_at);
+            }
+        }
+    });
 }
 
 fn main() {
@@ -58,7 +133,34 @@ fn main() {
                     std::process::exit(1);
                 });
 
-            let pool = db::open_pool(&db_path, &key_hex).expect("failed to open encrypted database");
+            // Issue #68: shared with db::open_pool's update_hook (fires on
+            // every write, sets this) and spawn_backup_reminder_thread
+            // (polls it below). Seeded from the persisted lastDbChangeAt
+            // setting right after the pool opens, so a change made just
+            // before the app closed still starts its 5-minute countdown
+            // from the right time rather than resetting to "no change".
+            let last_db_change_at: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(None));
+
+            let pool = db::open_pool(&db_path, &key_hex, last_db_change_at.clone())
+                .expect("failed to open encrypted database");
+
+            if let Ok(conn) = pool.get() {
+                let saved: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM settings WHERE key = 'lastDbChangeAt'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if let Some(iso) = saved.filter(|s| !s.is_empty()) {
+                    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&iso) {
+                        if let Ok(mut guard) = last_db_change_at.lock() {
+                            *guard = Some(t.with_timezone(&chrono::Utc));
+                        }
+                    }
+                }
+            }
 
             // Issue #76: prime the write-time log-level filter from
             // whatever's already stored, before any other command (or
@@ -84,6 +186,8 @@ fn main() {
             // list_prune_candidates on launch, shows the user what would
             // be removed and how long ago it was deleted, and only calls
             // prune_old_deleted_and_logs if they confirm.
+            spawn_backup_reminder_thread(app.handle().clone(), pool.clone(), last_db_change_at.clone());
+
             app.manage(AppState {
                 pool,
                 roads_pool,
@@ -91,6 +195,7 @@ fn main() {
                 live_key_hex: key_hex,
                 last_preview: std::sync::Mutex::new(None),
                 road_graph_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                last_db_change_at,
             });
             Ok(())
         })

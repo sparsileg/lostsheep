@@ -258,6 +258,17 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     -- commands::backup's strip_display_only_settings).
     ('showRoadsOverlay', 'false');
 
+-- Issue #68 — backup-reminder timer state. Both start empty ('' means
+-- "never"/"no change recorded yet"), not NULL or a Unix epoch, so the
+-- frontend's "no backup ever taken" check is a plain string-empty test.
+-- lastDbChangeAt is set from db::open_pool's update_hook (via a
+-- background poll — see main.rs) whenever a real data table changes;
+-- lastBackupAt is set by backup::backup_database only after its existing
+-- post-write verification passes.
+INSERT OR IGNORE INTO settings (key, value) VALUES
+    ('lastBackupAt', ''),
+    ('lastDbChangeAt', '');
+
 -- Offline map-tile caching was dropped (issue #3) — this runs on every
 -- startup, not just a fresh DB, so it also cleans up an existing
 -- install's leftover table/setting from before the removal. Must come

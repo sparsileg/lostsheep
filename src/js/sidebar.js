@@ -17,11 +17,54 @@ async function initSidebarChrome() {
     try { settings = await Api.getSettings(); } catch (e) { console.error(e); }
     if (settings.theme) selectTheme(settings.theme, THEME_LABELS[settings.theme] || 'Theme', false);
     applyFontSize(parseInt(settings.fontSize || '16', 10));
+
+    // Issue #68
+    renderLastBackup(settings.lastBackupAt);
+    try {
+        const { listen } = await import('../include/tauri-api/event.js');
+        await listen('backup-reminder', () => {
+            showMessage(
+                'Changes have been made since your last backup — back up as soon as possible.',
+                CONSTANTS.MESSAGE_TYPES.WARNING,
+                10000
+            );
+        });
+    } catch (e) { console.error('could not listen for backup-reminder', e); }
 }
 
 function renderVersion() {
     const el = document.getElementById('sidebarVersionFooter');
     if (el) el.textContent = `v${CONSTANTS.APP_VERSION}`;
+}
+
+// Issue #68 — "Last backup: YYYYMMDD-HHMMSS", inserted directly above the
+// .sidebar-footer div (index.html) so the footer's own border-top stays
+// the separator immediately above the version line, not between the two.
+// lastBackupAt is stored as an RFC3339 UTC timestamp (empty string means
+// "never"); rendered in local time since that's what the user actually
+// experiences as "when". Styled to match sidebarVersionFooter's own
+// inline style (index.html) so the line doesn't wrap.
+function formatBackupDtg(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function renderLastBackup(lastBackupAt) {
+    const footerEl = document.querySelector('.sidebar-footer');
+    if (!footerEl || !footerEl.parentNode) return;
+    let el = document.getElementById('sidebarLastBackupFooter');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'sidebarLastBackupFooter';
+        el.style.fontSize = '0.75em';
+        el.style.opacity = '.6';
+        el.style.padding = '0 16px';
+        footerEl.parentNode.insertBefore(el, footerEl);
+    }
+    const dtg = lastBackupAt ? formatBackupDtg(lastBackupAt) : null;
+    el.textContent = dtg ? `Last backup: ${dtg}` : 'Last backup: never';
 }
 
 function wireThemeDropdownItems() {

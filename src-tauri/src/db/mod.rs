@@ -11,12 +11,39 @@ const ROADS_SCHEMA_SQL: &str = include_str!("roads_schema.sql");
 /// Opens (creating if absent) the encrypted app DB and returns a pooled
 /// connection manager. `key_hex` is the SQLCipher key as a 64-char hex
 /// string (32 raw bytes) — see crypto::random_key_hex / keychain.rs for
-/// where it comes from at app start.
-pub fn open_pool(db_path: &PathBuf, key_hex: &str) -> anyhow::Result<Pool> {
+/// where it comes from at app start. `dirty_flag` is issue #68's
+/// backup-reminder timer: set on every real data-table write via
+/// SQLite's update_hook, cheap in-memory only — SQLite forbids issuing a
+/// new statement on the SAME connection from inside its own update_hook
+/// callback until the triggering statement finishes, so this cannot
+/// write to `settings` itself. A separate background poll (main.rs)
+/// reads this flag, persists it, and does the actual 5-minutes-since-
+/// last-change reminder check. `with_init` runs once per NEW physical
+/// connection the pool opens (up to max_size below), so the hook is
+/// installed on every one of them, not just the first.
+pub fn open_pool(
+    db_path: &PathBuf,
+    key_hex: &str,
+    dirty_flag: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+) -> anyhow::Result<Pool> {
     let key_hex = key_hex.to_string();
     let manager = SqliteConnectionManager::file(db_path).with_init(move |conn| {
         apply_key(conn, &key_hex)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        let flag = dirty_flag.clone();
+        conn.update_hook(Some(move |_action, _db_name: &str, table_name: &str, _rowid| {
+            // logs/settings/schema_meta writes happen on essentially every
+            // command (every command logs; settings itself would recurse
+            // into "a change was made" forever) — excluded so the timer
+            // reflects actual congregation data changing, not the app's
+            // own bookkeeping.
+            if matches!(table_name, "logs" | "settings" | "schema_meta") {
+                return;
+            }
+            if let Ok(mut guard) = flag.lock() {
+                *guard = Some(chrono::Utc::now());
+            }
+        }));
         Ok(())
     });
     let pool = r2d2::Pool::builder().max_size(8).build(manager)?;

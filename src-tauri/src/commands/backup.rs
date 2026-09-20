@@ -92,6 +92,16 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
 
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(&conn, "info", &format!("backup written to {dest_path} ({} bytes)", meta.len()), None);
+
+    // Issue #68: recorded only after the above existence/non-empty checks
+    // pass, so a failed or truncated backup never clears the reminder.
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('lastBackupAt', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(dest_path)
     })();
 
