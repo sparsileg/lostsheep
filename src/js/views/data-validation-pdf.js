@@ -31,13 +31,14 @@ const PotentialProblemsPdf = {
         };
     },
 
-    download(problems, roadsChecked = true) {
+    download(problems, roadsChecked = true, missingCoords = []) {
         // Issue #80: previously guarded on problems alone — an empty/
         // un-ingested roads.db with zero flagged households produced no
         // PDF at all, same silent-degradation gap the on-screen modal
         // had. Still skip when there's genuinely nothing to say: real
-        // checks ran (roadsChecked) and found nothing (empty problems).
-        if ((!problems || problems.length === 0) && roadsChecked) return;
+        // checks ran (roadsChecked) and found nothing (empty problems,
+        // #64 follow-up: and nothing in the new missing-coords list either).
+        if ((!problems || problems.length === 0) && (!missingCoords || missingCoords.length === 0) && roadsChecked) return;
         const colors = this._colors();
         const now = new Date();
 
@@ -99,6 +100,21 @@ const PotentialProblemsPdf = {
                 tagGroups: this._groupByTag(noAddress, NO_ADDRESS_TAG_ORDER),
             });
         }
+        // #64 follow-up (ad hoc, Stan) — same population as the map view's
+        // dashboard "No Coords" card (map_data::get_missing_coords_count):
+        // every household missing either coordinate, "Do Not Contact"
+        // already excluded on the backend, regardless of address-on-file
+        // status. A flat list, not tag-grouped like the sections above —
+        // Stan's ask was name/address/coords, sorted alphabetically, full
+        // stop. Backend already sorts; re-sorted here too, defensively,
+        // same as _groupByTag does for its own lists.
+        if (missingCoords && missingCoords.length > 0) {
+            sections.push({
+                label: 'No geo-coordinates',
+                flatList: true,
+                items: [...missingCoords].sort((a, b) => (a.household_name || '').localeCompare(b.household_name || '')),
+            });
+        }
 
         const content = [];
 
@@ -141,6 +157,10 @@ const PotentialProblemsPdf = {
                     tg.items.forEach(p => {
                         content.push({ text: p.household_name || '(no name on file)', fontSize: 10, color: colors.detailText, margin: [10, 0, 0, 2] });
                     });
+                });
+            } else if (section.flatList) {
+                section.items.forEach(p => {
+                    content.push(this._missingCoordsEntry(p, colors));
                 });
             } else {
                 section.items.forEach(p => {
@@ -199,6 +219,28 @@ const PotentialProblemsPdf = {
             stack.push({ text: `\u2022 ${r}`, fontSize: 9, color: colors.reasonText, margin: [10, 0, 0, 1] });
         });
         return { unbreakable: true, margin: [0, 0, 0, 12], stack };
+    },
+
+    // #64 follow-up — one row of the flat "No geo-coordinates" list: name,
+    // address (or a placeholder when there's none on file either), and
+    // whichever coordinate(s) exist. A household can have one of the pair
+    // present and the other missing — shown as-is, not collapsed to a
+    // single "missing" placeholder, since that's a real, different data
+    // state worth being able to see (e.g. a bad geocode vs. never run).
+    _missingCoordsEntry(p, colors) {
+        const addressLine = p.address_line1
+            ? (p.address_line2 ? `${p.address_line1}, ${p.address_line2}` : p.address_line1)
+            : '(no address on file)';
+        const lat = p.latitude != null ? p.latitude.toFixed(6) : '—';
+        const lon = p.longitude != null ? p.longitude.toFixed(6) : '—';
+        return {
+            margin: [0, 0, 0, 6],
+            text: [
+                { text: `${p.household_name || '(no name on file)'} `, bold: true, color: colors.headingText },
+                { text: `— ${addressLine} `, color: colors.detailText },
+                { text: `(${lat}, ${lon})`, color: colors.reasonText, fontSize: 9 },
+            ],
+        };
     },
 
     // One shared-address group — address line, every resident's name

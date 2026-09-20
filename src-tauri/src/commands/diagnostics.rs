@@ -134,6 +134,28 @@ pub struct PotentialProblem {
 pub struct DiagnosticsReport {
     pub problems: Vec<PotentialProblem>,
     pub roads_checked: bool,
+    pub missing_coords: Vec<MissingCoordsEntry>,
+}
+
+/// #64 follow-up (ad hoc, Stan) — one entry in the "No geo-coordinates"
+/// report section. Same population as the map view's dashboard card
+/// (map_data::get_missing_coords_count): every household missing either
+/// coordinate, "Do Not Contact" excluded — regardless of whether it has
+/// an address on file. Deliberately a separate list from `problems`
+/// above, not folded into its "No address on file"/"No geocoordinates on
+/// file" reasons — those are scoped to households *with* an address (a
+/// no-address household short-circuits past the coordinate check
+/// entirely, via `continue` below), so this is a genuinely wider
+/// population, not a duplicate view of the same one. latitude/longitude
+/// are carried through (rather than assumed both absent) since one of
+/// the pair can be present while the other is missing.
+#[derive(Serialize)]
+pub struct MissingCoordsEntry {
+    pub household_name: String,
+    pub address_line1: Option<String>,
+    pub address_line2: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 /// Debug-trace budget for the road-name/snap check below — only the first
@@ -732,6 +754,27 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
         });
     }
 
+    // #64 follow-up — built from `rows` before the per-household loop
+    // below consumes it. "Do Not Contact" excluded by tag name,
+    // case-insensitively — same text this file already matches
+    // elsewhere (TAG_ORDER/NO_ADDRESS_TAG_ORDER above), not the
+    // system_key column (not selected by this query).
+    let mut missing_coords: Vec<MissingCoordsEntry> = rows
+        .iter()
+        .filter(|r| {
+            (r.lat.is_none() || r.lon.is_none())
+                && !r.tag_name.as_deref().unwrap_or("").eq_ignore_ascii_case("do not contact")
+        })
+        .map(|r| MissingCoordsEntry {
+            household_name: r.household_name.clone(),
+            address_line1: r.address_line1.clone(),
+            address_line2: r.address_line2.clone(),
+            latitude: r.lat,
+            longitude: r.lon,
+        })
+        .collect();
+    missing_coords.sort_by(|a, b| a.household_name.to_lowercase().cmp(&b.household_name.to_lowercase()));
+
     let mut problems = Vec::new();
     let mut debug_captures: usize = 0;
     let total = rows.len();
@@ -831,7 +874,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
 
     problems.extend(group_problems);
 
-    Ok(DiagnosticsReport { problems, roads_checked: roads_available })
+    Ok(DiagnosticsReport { problems, roads_checked: roads_available, missing_coords })
     })
     .await
     .map_err(|e| e.to_string())?

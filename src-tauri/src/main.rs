@@ -125,6 +125,7 @@ fn main() {
             commands::visits::get_household_visits,
             commands::visits::generate_visit_list,
             commands::map_data::get_map_data,
+            commands::map_data::get_missing_coords_count,
             // backup / restore
             commands::backup::backup_database,
             commands::backup::restore_preview,

@@ -368,9 +368,24 @@ async function drawRouteOverlay(entries) {
 // tag tells you something.
 async function loadTagStats() {
     const tags = await Api.listTags().catch(() => []);
-    document.getElementById('dashTagStats').innerHTML = tags
+    const tagCards = tags
         .map(t => `<div class="dash-card"><div class="dash-num">${t.household_count}</div><div>${escapeHtml(t.name)}</div></div>`)
         .join('');
+
+    // #64 — households with no coordinates are silently dropped from the
+    // map and every visit list; this card surfaces the count so the gap
+    // is visible without running Data Validation. Not a tag — it cuts
+    // across the other cards (a Known household can still lack
+    // coordinates) — so it's kept visually distinct (pushed to the right,
+    // red border via .dash-card-alert) rather than presented as a fourth
+    // bucket in that same tag partition. Failure is silent (card just
+    // doesn't render) rather than surfaced as an error — this is a
+    // secondary stat, not worth a message bar entry if it can't load.
+    const missingCoords = await Api.getMissingCoordsCount().catch(() => null);
+    const noCoordsCard = missingCoords === null ? '' :
+        `<div class="dash-card dash-card-alert"><div class="dash-num">${missingCoords}</div><div>No Coords</div></div>`;
+
+    document.getElementById('dashTagStats').innerHTML = tagCards + noCoordsCard;
 }
 
 async function populateMapTagSelect() {

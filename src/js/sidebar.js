@@ -172,7 +172,7 @@ async function showPotentialProblemsModal() {
     }
     cleanup();
 
-    const { problems, roads_checked } = report;
+    const { problems, roads_checked, missing_coords } = report;
 
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -199,12 +199,16 @@ async function showPotentialProblemsModal() {
         ? '<p style="color:#b02a2a;font-weight:bold;">⚠ Road database has no data — street-name checks were skipped for every household this scan. Re-ingest under Road Management to restore them.</p>'
         : '';
 
-    if (!problems.length) {
+    // #64 follow-up — missing_coords is a separate list from problems (see
+    // diagnostics.rs's MissingCoordsEntry doc comment), so "nothing to
+    // report" now means both are empty, not just problems.
+    const missingCoordsCount = (missing_coords || []).length;
+    if (!problems.length && !missingCoordsCount) {
         body.innerHTML = roadsWarning || '<p>No potential problems found.</p>';
         // Still worth a PDF when roads were skipped, even with zero
         // findings — the report itself is the durable record of why
         // fewer/no issues showed up this time.
-        if (!roads_checked) PotentialProblemsPdf.download(problems, roads_checked);
+        if (!roads_checked) PotentialProblemsPdf.download(problems, roads_checked, missing_coords);
         return;
     }
 
@@ -214,8 +218,11 @@ async function showPotentialProblemsModal() {
     // has no way to know the real destination path (webview download
     // behavior, OS/user-config dependent), so the modal states the
     // presumed default rather than a path it can't actually confirm.
-    PotentialProblemsPdf.download(problems, roads_checked);
-    body.innerHTML = roadsWarning + `<p>${problems.length} household(s) flagged. Report saved to your Downloads folder.</p>`;
+    PotentialProblemsPdf.download(problems, roads_checked, missing_coords);
+    const summaryParts = [];
+    if (problems.length) summaryParts.push(`${problems.length} household(s) flagged`);
+    if (missingCoordsCount) summaryParts.push(`${missingCoordsCount} household(s) missing geo-coordinates`);
+    body.innerHTML = roadsWarning + `<p>${summaryParts.join('; ')}. Report saved to your Downloads folder.</p>`;
 }
 
 function updateHamburgerContextualSection() { /* no per-view hamburger sections in v1 */ }
