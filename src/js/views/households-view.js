@@ -200,6 +200,31 @@ async function markKnown(id, targetTag) {
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
 }
 
+// Small in-app confirm dialog. window.confirm() is unreliable inside the
+// Tauri webview (#74 — it can resolve without ever showing a prompt), so
+// anything that must actually block the user gets its own overlay instead
+// of a native dialog. Returns a Promise<boolean>: true = user chose to
+// proceed (discard), false = cancel (backdrop click counts as cancel).
+function confirmDiscard(message) {
+    return new Promise((resolve) => {
+        const confirmOverlay = document.createElement('div');
+        confirmOverlay.className = 'modal-overlay';
+        confirmOverlay.innerHTML = `
+            <div class="modal hh-confirm-modal">
+                <p>${escapeHtml(message)}</p>
+                <div class="modal-buttons">
+                    <button class="btn" id="fConfirmCancel">Cancel</button>
+                    <button class="btn btn-primary" id="fConfirmDiscard">Discard</button>
+                </div>
+            </div>`;
+        document.body.appendChild(confirmOverlay);
+        const finish = (result) => { confirmOverlay.remove(); resolve(result); };
+        document.getElementById('fConfirmDiscard').addEventListener('click', () => finish(true));
+        document.getElementById('fConfirmCancel').addEventListener('click', () => finish(false));
+        confirmOverlay.addEventListener('click', (e) => { if (e.target === confirmOverlay) finish(false); });
+    });
+}
+
 // Household detail modal — mostly read-only, matching the source
 // directory's own layout. Only comments, tags, and visits are editable;
 // name/address/phone corrections happen through re-import + Review, not
@@ -260,8 +285,27 @@ async function openHouseholdModal(id) {
             </div>
         </div>`;
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.getElementById('fClose').addEventListener('click', () => overlay.remove());
+
+    // #74 — dirty-state guard. Baseline is the loaded comment text; the
+    // visit-comment box has no "loaded" value, so any non-empty text there
+    // counts as dirty. Both dismissal paths (outside click, Close) route
+    // through tryCloseModal() instead of removing the overlay directly.
+    // Uses confirmDiscard() (in-app), not window.confirm() — see its
+    // comment for why.
+    let savedComments = h.comments || '';
+    function isModalDirty() {
+        return document.getElementById('fComments').value !== savedComments
+            || document.getElementById('fVisitComments').value.trim() !== '';
+    }
+    async function tryCloseModal() {
+        if (isModalDirty()) {
+            const discard = await confirmDiscard('You have unsaved comments or visit notes. Discard them?');
+            if (!discard) return;
+        }
+        overlay.remove();
+    }
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) tryCloseModal(); });
+    document.getElementById('fClose').addEventListener('click', tryCloseModal);
 
     // Tags: dropdown of existing tags only — no create-new-tag UI exists
     // anywhere now that the Tags management page is gone (see PR notes;
@@ -296,6 +340,7 @@ async function openHouseholdModal(id) {
     document.getElementById('fSaveComments').addEventListener('click', async () => {
         try {
             await Api.updateHouseholdComments(id, document.getElementById('fComments').value || null);
+            savedComments = document.getElementById('fComments').value;
             showMessage('Comments saved.', CONSTANTS.MESSAGE_TYPES.INFO);
         } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
     });
