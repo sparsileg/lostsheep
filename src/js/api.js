@@ -38,6 +38,7 @@ const Api = {
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),
     getMapData: (tagId) => invoke('get_map_data', { tagId }),
+    getMissingCoordsCount: () => invoke('get_missing_coords_count'),
 
     // backup / restore
     backupDatabase: (destPath, passphrase) => invoke('backup_database', { destPath, passphrase }),

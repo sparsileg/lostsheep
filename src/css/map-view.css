@@ -65,6 +65,12 @@
 .dash-card { background: var(--card-bg); padding: 8px 16px; border-radius: 6px; box-shadow: var(--shadow-card); text-align: center; }
 .dash-num { font-size: 1.4em; font-weight: 700; color: var(--primary-color); }
 
+/* #64 — "No Coords" card. Not a tag bucket like the others (it cuts
+   across them), so it's pushed to the right edge of the row rather than
+   sitting inline with the tag cards, and outlined in the theme's error
+   color so it reads as a data-quality flag, not just another stat. */
+.dash-card-alert { margin-left: auto; border: 3px solid var(--error-color); }
+
 /* Leaflet's own zoom-control corner defaults to z-index:1000, which can
    tie or beat our toolbar dropdown depending on stacking context. Pin it
    well below our dropdown's z-index (1500 in base.css) so the tag-filter
