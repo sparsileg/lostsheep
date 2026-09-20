@@ -257,7 +257,6 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     -- Issue #40: display-only map preference, not backed up (see
     -- commands::backup's strip_display_only_settings).
     ('showRoadsOverlay', 'false');
-<<<<<<< HEAD
 
 -- Issue #68 — backup-reminder timer state. Both start empty ('' means
 -- "never"/"no change recorded yet"), not NULL or a Unix epoch, so the
@@ -269,8 +268,6 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 INSERT OR IGNORE INTO settings (key, value) VALUES
     ('lastBackupAt', ''),
     ('lastDbChangeAt', '');
-=======
->>>>>>> origin/main
 
 -- Offline map-tile caching was dropped (issue #3) — this runs on every
 -- startup, not just a fresh DB, so it also cleans up an existing
