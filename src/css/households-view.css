@@ -33,6 +33,8 @@
    Comments inside the inner scroll region while the pinned footer ate
    space below it — two scrollbars in one modal, confusing. #91.) */
 .hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; }
+.hh-confirm-modal { width: 380px; max-width: 90vw; }
+.hh-confirm-modal p { margin: 0 0 14px; }
 .hh-detail-modal h3 { margin: 6px 0; }
 .hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
 .hh-detail-address { margin-top: 10px; font-size: 0.9em; opacity: 0.85; }
