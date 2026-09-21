@@ -21,7 +21,7 @@ serde_json = "1"
 # we don't depend on a system OpenSSL/SQLCipher install on the target OS.
 # "hooks" (issue #68) enables Connection::update_hook, used by
 # db::open_pool to drive the backup-reminder timer.
-rusqlite = { version = "0.31", features = ["bundled-sqlcipher", "chrono", "hooks"] }
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher", "chrono", "hooks", "backup"] }
 r2d2 = "0.8"
 r2d2_sqlite = { version = "0.24", features = ["bundled-sqlcipher"] }
 

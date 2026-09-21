@@ -495,41 +495,46 @@ pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: S
     // no separate check needed on the commit path.
     let (tmp_db, salt, _backup_profile_name) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
-    // Scratch file for the re-keyed database.
-    // Must live on the SAME filesystem as state.db_path — std::fs::rename
-    // fails with EXDEV ("Invalid cross-device link") if the source and
-    // destination are on different mounts, which system temp dir often
-    // is relative to the app data directory. Same-directory placement
-    // guarantees the rename below is a same-filesystem atomic rename,
-    // not a cross-device one. Trades away the tidiness of keeping scratch
-    // files out of the app data dir (a stray file here on a hard crash
-    // is possible again) for a restore that actually works.
-    let rekeyed = TmpFile(state.db_path.with_extension(format!("restoring-{}.tmp", uuid::Uuid::new_v4())));
+    // Scratch file for the re-keyed database — still needed because
+    // SQLCipher's sqlcipher_export (inside rekey_copy) needs a real path
+    // to ATTACH, not an in-memory buffer. No longer required to share a
+    // filesystem with state.db_path (that constraint was only about
+    // std::fs::rename being atomic, which this no longer does — see
+    // below), so this uses the same scratch-temp-dir helper as
+    // everywhere else in this file.
+    let rekeyed = TmpFile(tmp_path("lost-sheep-restore-rekeyed"));
     db::rekey_copy(&tmp_db.0, &key, &rekeyed.0, &state.live_key_hex).map_err(|e| e.to_string())?;
 
-    // Swap on disk.
-    std::fs::rename(&rekeyed.0, &state.db_path).map_err(|e| e.to_string())?;
+    // Issue #87 Fix 1: previously `std::fs::rename(&rekeyed.0,
+    // &state.db_path)` while the live connection pool still held db_path
+    // open. Fine on Linux (rename-over-open-file is POSIX-legal), but
+    // fails on Windows with "Access is denied. (os error 5)" — no
+    // share-delete on the pool's handle there. Replaced with SQLite's
+    // Online Backup API: pages are copied directly from the rekeyed
+    // scratch file into a live connection pulled from the pool, with no
+    // OS-level file swap at all. This is the right fix, not a workaround
+    // (Stan's explicit preference), and it behaves identically on every
+    // platform rather than needing a Windows-specific path. It also means
+    // there's no stale `-wal`/`-shm` sidecar cleanup to do here anymore —
+    // that was only ever needed because the rename swapped the main file
+    // out from under its own WAL sidecars; the backup API writes through
+    // the live connection's own normal, already-consistent WAL machinery.
+    db::restore_via_online_backup(&state.pool, &rekeyed.0, &state.live_key_hex).map_err(|e| e.to_string())?;
 
-    // The live pool runs in WAL mode (db::open_pool), so the PRE-restore
-    // database may have left `-wal`/`-shm` sidecar files sitting next to
-    // db_path. Those belong to the OLD database's content — the rename
-    // above only swaps the main .db file, not its sidecars. Left in
-    // place, SQLite would try to recover those old WAL frames against the
-    // newly-swapped-in file at next startup, which is exactly why a
-    // restore could "complete" on disk yet show no data after restart:
-    // the mismatched WAL recovery silently wins over the restored file's
-    // actual content. Clearing them makes the restored file start clean.
-    for suffix in ["-wal", "-shm"] {
-        if let Some(name) = state.db_path.file_name().and_then(|n| n.to_str()) {
-            let _ = std::fs::remove_file(state.db_path.with_file_name(format!("{name}{suffix}")));
-        }
-    }
-
-    // Issue #26: the connection pool in AppState still holds the
-    // pre-restore file open — renaming over it doesn't close those
-    // handles, so stale reads/writes are possible until the process
-    // reopens the database fresh. AppHandle::restart() exits this
-    // process and relaunches the same binary, closing that window.
+    // Issue #26: previously required because the old rename-based swap
+    // left the pool's other connections holding the pre-restore file
+    // open with no way to know it had changed underneath them.
+    // AppHandle::restart() exits this process and relaunches the same
+    // binary, closing that window.
+    //
+    // The Online Backup API above writes through a live pooled connection
+    // instead of swapping the file, so the pool's other connections likely
+    // already see the restored data via SQLite's ordinary WAL-visibility
+    // rules — this may make the restart unnecessary. NOT verified yet
+    // (Fix 1 is being delivered to test on Windows first, per Stan's
+    // stated verification order, before Linux is re-checked) — restart
+    // stays in place as a safety net until that's confirmed. Drop this
+    // block only after Fix 1 has been confirmed solid without it.
     //
     // Gated to release builds: `cargo tauri dev` runs a separate
     // frontend dev server on 127.0.0.1 and tears it down when it sees

@@ -36,7 +36,8 @@ node_modules/
 # Tauri sidecar binaries (pdftotext, per platform) — large downloaded
 # executables, not source. Each dev fetches and renames these locally
 # per the Tauri sidecar naming convention; see docs/Architecture_Build.md.
-src-tauri/binaries/
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
 
 # where useful things that we don't want public go
 resources/

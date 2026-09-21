@@ -380,3 +380,35 @@ pub fn open_with_key(path: &PathBuf, key_hex: &str) -> anyhow::Result<Connection
     apply_key(&conn, key_hex)?;
     Ok(conn)
 }
+
+/// Issue #87 Fix 1: commits a restore by copying pages directly from the
+/// already-rekeyed scratch file (`rekeyed_path`, same key as the live DB —
+/// see `rekey_copy`/`restore_commit`) into a live connection pulled from
+/// the pool, via SQLite's Online Backup API. Replaces the previous
+/// `std::fs::rename(rekeyed_path, db_path)`, which worked on Linux
+/// (rename-over-open-file is POSIX-legal) but failed on Windows with
+/// "Access is denied. (os error 5)" because the pool's connections still
+/// hold db_path open with no share-delete permission on that handle. This
+/// approach never touches the file at the OS level at all, so there's
+/// nothing for Windows' file-locking rules to block.
+///
+/// Requires the "backup" feature enabled on the rusqlite dependency in
+/// Cargo.toml.
+pub fn restore_via_online_backup(pool: &Pool, rekeyed_path: &PathBuf, key_hex: &str) -> anyhow::Result<()> {
+    let src = Connection::open(rekeyed_path)?;
+    apply_key(&src, key_hex)?;
+    let mut dst = pool.get()?;
+    {
+        let backup = rusqlite::backup::Backup::new(&src, &mut dst)?;
+        // rusqlite panics if pages_per_step isn't positive (-1, the usual
+        // "all pages in one sqlite3_backup_step call" sentinel at the C
+        // API level, isn't accepted here) — i32::MAX stands in for it, so
+        // this still completes in a single internal step. Stan's DBs are
+        // a few MB at documented scale (10,000 households), so one step is
+        // fast and simplest. No progress callback: restore_commit has no
+        // progress UI (unlike import's emit_progress), so there's nothing
+        // to report to.
+        backup.run_to_completion(i32::MAX, std::time::Duration::from_millis(0), None)?;
+    }
+    Ok(())
+}

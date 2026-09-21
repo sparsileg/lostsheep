@@ -1,39 +1,33 @@
 // commands/paths.rs — issue #32: every path-taking command (backup,
 // restore, CSV/PDF import, road .pbf ingest) previously trusted a plain
 // frontend-supplied String with no server-side check at all. Policy
-// (confirmed with Stan): reads are allowed anywhere under the user's
-// home directory; writes are allowed only inside the configured
-// backupFolder setting. This module is the one place that boundary is
-// enforced — every command routes through it rather than five separate
-// copies of the same check.
+// (confirmed with Stan): writes are allowed only inside the configured
+// backupFolder setting, enforced by resolve_write_dest below. This module
+// is the one place that boundary is enforced — every command routes
+// through it rather than five separate copies of the same check.
 //
 // Canonicalize-then-check, not string-prefix-check: `std::fs::canonicalize`
-// resolves `..` and symlinks, so a naive `raw.starts_with(home)` string
-// test (which `~/backups/../../etc/x` would pass) is not used anywhere
-// here.
+// resolves `..` and symlinks, so a naive string-prefix test is not used
+// anywhere here.
+//
+// Issue #87 Fix 2: resolve_read_path used to also require the resolved
+// path fall under dirs::home_dir() — broke pCloudSync on Windows (`P:\`
+// drive, outside home) though the identical setup worked on Linux (pCloud
+// there is a home subfolder). Dropped (Option B, confirmed with Stan):
+// every read caller already routes the raw path through Tauri's native
+// file-picker dialog before it ever reaches here, so the dialog is the
+// real boundary on what a user can hand this function, not a directory
+// check on top of it.
 
 use crate::AppState;
 use std::path::{Path, PathBuf};
 use tauri::State;
 
-fn home_dir() -> Result<PathBuf, String> {
-    dirs::home_dir().ok_or_else(|| "could not determine the user's home directory".to_string())
-}
-
 /// Resolves a read-only path (restore source, CSV/PDF import, road .pbf
-/// ingest) and confirms it falls under the user's home directory. The
-/// file must exist for this to succeed, which is fine — every caller
-/// here is about to open it anyway.
+/// ingest). The file must exist for this to succeed, which is fine —
+/// every caller here is about to open it anyway.
 pub fn resolve_read_path(raw: &str) -> Result<PathBuf, String> {
-    let home = home_dir()?;
-    let home = std::fs::canonicalize(&home)
-        .map_err(|e| format!("could not resolve home directory: {e}"))?;
-    let resolved = std::fs::canonicalize(raw)
-        .map_err(|e| format!("could not open {raw}: {e}"))?;
-    if !resolved.starts_with(&home) {
-        return Err(format!("{raw} is outside the allowed home directory"));
-    }
-    Ok(resolved)
+    std::fs::canonicalize(raw).map_err(|e| format!("could not open {raw}: {e}"))
 }
 
 /// Resolves a backup destination and confirms its parent directory is
