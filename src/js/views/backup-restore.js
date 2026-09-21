@@ -83,6 +83,7 @@ const BackupRestore = {
             <h2>Restore Database</h2>
             <label>Backup file <button class="btn" id="rsPick">Choose file…</button> <span id="rsPickedPath"></span></label>
             <label>Passphrase <input type="password" id="rsPass"></label>
+            <div id="rsError"></div>
             <div class="modal-buttons">
                 <button class="btn btn-primary" id="rsPreview" disabled>Preview changes</button>
                 <button class="btn" id="rsCancel">Cancel</button>
@@ -90,20 +91,34 @@ const BackupRestore = {
             <div id="rsDiffArea"></div>
         `);
         let srcPath = null;
+        const rsError = overlay.querySelector('#rsError');
+        // Issue: an incorrect passphrase (or any other preview failure)
+        // previously showed nothing but the transient toast — easy to
+        // miss over an open modal. This puts the same failure inline,
+        // right next to the field that caused it, and it stays until the
+        // next attempt instead of fading out.
+        const clearRestoreError = () => { rsError.textContent = ''; rsError.className = ''; };
         overlay.querySelector('#rsCancel').addEventListener('click', () => overlay.remove());
+        overlay.querySelector('#rsPass').addEventListener('input', clearRestoreError);
         overlay.querySelector('#rsPick').addEventListener('click', async () => {
             srcPath = await open({ multiple: false, defaultPath: settings.backupFolder || await homeDir(), filters: [{ name: 'Backup', extensions: ['zip'] }] });
             if (srcPath) {
                 overlay.querySelector('#rsPickedPath').textContent = srcPath;
                 overlay.querySelector('#rsPreview').disabled = false;
+                clearRestoreError();
             }
         });
         overlay.querySelector('#rsPreview').addEventListener('click', async () => {
             const pass = overlay.querySelector('#rsPass').value;
             if (!srcPath || !pass) { showMessage('Choose a file and enter the passphrase.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+            clearRestoreError();
             let preview;
             try { preview = await Api.restorePreview(srcPath, pass); }
-            catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+            catch (e) {
+                rsError.textContent = `Could not open backup — check the passphrase and file: ${e}`;
+                rsError.className = 'restore-warning';
+                return;
+            }
             renderDiff(overlay, preview, srcPath, pass, preview.token);
         });
     },

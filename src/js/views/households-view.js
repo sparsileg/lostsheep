@@ -241,6 +241,10 @@ async function openHouseholdModal(id) {
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
         <div class="modal hh-detail-modal">
+            <div class="modal-buttons">
+                <button class="btn" id="fClose">Close</button>
+            </div>
+            <hr>
             <div class="hh-detail-head">
                 <strong>${escapeHtml(h.first_name)} ${escapeHtml(h.last_name)}</strong>
                 ${h.phone_1 ? `<div>${escapeHtml(h.phone_1)}</div>` : ''}
@@ -277,11 +281,6 @@ async function openHouseholdModal(id) {
             <div class="modal-buttons">
                 <button class="btn btn-primary" id="fAddVisit">Save Visit</button>
                 <button class="btn" id="fCancelVisit">Cancel</button>
-            </div>
-
-            <hr>
-            <div class="modal-buttons">
-                <button class="btn" id="fClose">Close</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);

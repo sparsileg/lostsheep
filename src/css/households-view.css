@@ -24,14 +24,16 @@
 .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
 
 /* Household detail modal — mirrors the source directory's own layout,
-   stacked top-to-bottom: name, heads with contact info, minors marker,
-   address/coords, tags, comments, visit history, then the "record a new
-   visit" form and Close button. Everything scrolls together as one block
-   via base.css's generic `.modal { overflow-y: auto }` — no inner split.
-   (Previously the record-visit form/Close button were pinned outside a
-   separately-scrolling content area; on a shorter viewport that hid Save
-   Comments inside the inner scroll region while the pinned footer ate
-   space below it — two scrollbars in one modal, confusing. #91.) */
+   stacked top-to-bottom: Close button, name, heads with contact info,
+   minors marker, address/coords, tags, comments, visit history, then the
+   "record a new visit" form. Everything scrolls together as one block via
+   base.css's generic `.modal { overflow-y: auto }` — no inner split.
+   (Previously the record-visit form and Close button were pinned outside
+   a separately-scrolling content area; on a shorter viewport that hid
+   Save Comments inside the inner scroll region while the pinned footer
+   ate space below it — two scrollbars in one modal, confusing. #91. Close
+   was later moved from the bottom of this flow to the top so it's
+   reachable without scrolling on a long record.) */
 .hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; }
 .hh-confirm-modal { width: 380px; max-width: 90vw; }
 .hh-confirm-modal p { margin: 0 0 14px; }
