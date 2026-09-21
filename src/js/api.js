@@ -68,6 +68,13 @@ const Api = {
     previewPruneImpact: (deletedDays, logDays) => invoke('preview_prune_impact', { deletedDays, logDays }),
     listPruneCandidates: () => invoke('list_prune_candidates'),
     getLogs: (levels, page, pageSize) => invoke('get_logs', { levels, page, pageSize }),
+
+    // profiles (#85)
+    listProfiles: () => invoke('list_profiles'),
+    getActiveProfile: () => invoke('get_active_profile'),
+    createProfile: (name) => invoke('create_profile', { name }),
+    switchProfile: (slug) => invoke('switch_profile', { slug }),
+    restartApp: () => invoke('restart_app'),
 };
 
 window.Api = Api;

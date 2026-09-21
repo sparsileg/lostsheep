@@ -5,6 +5,7 @@ pub mod import;
 pub mod logs;
 pub mod map_data;
 pub mod paths;
+pub mod profiles;
 pub mod roads;
 pub mod settings;
 pub mod tags;

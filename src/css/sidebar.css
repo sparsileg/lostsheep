@@ -161,6 +161,16 @@
     background: var(--card-hover);
 }
 
+/* ── Switch Profile modal rows (#85) — placed here as a first pass since
+   this is a hamburger-menu-triggered flow; may move to its own stylesheet
+   once profile management grows past one list-and-a-button. ──────────── */
+#pmProfileList > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+}
+
 /* ── Mobile drawer / topbar (moves with sidebar chrome — same feature,
    #89) ──────────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {

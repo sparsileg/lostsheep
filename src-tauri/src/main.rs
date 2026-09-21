@@ -6,6 +6,7 @@ mod db;
 mod geo;
 mod keychain;
 mod pdf_parser;
+mod profiles;
 mod road_graph;
 
 use std::path::PathBuf;
@@ -44,6 +45,13 @@ pub struct AppState {
     // lastDbChangeAt setting (surviving app restart) and emits a
     // "backup-reminder" toast if 5 minutes pass with no backup since.
     pub last_db_change_at: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+    // Issue #85: the active profile's display name, if any, for the
+    // window-title fix below — read once from RunEvent::Ready rather than
+    // set directly inside setup(). Setting it inside setup() silently did
+    // nothing: the window's own configured title (tauri.conf.json) is
+    // applied when the window is actually shown, which happens after
+    // setup() returns, and clobbered whatever this code set first.
+    pub active_profile_name: Option<String>,
 }
 
 const BACKUP_REMINDER_POLL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -125,7 +133,16 @@ fn main() {
                 .app_data_dir()
                 .expect("no app data dir resolved");
             std::fs::create_dir_all(&data_dir).expect("could not create app data dir");
-            let db_path = data_dir.join("lost-sheep.db");
+
+            // Issue #85: which pair of database files this launch opens
+            // depends on the active profile in registry.json, if any. No
+            // registry, or no active profile yet, resolves to the exact
+            // same flat paths this app has always used — see
+            // profiles::resolve_data_paths's own doc comment.
+            let registry = profiles::load_registry(&data_dir);
+            let (db_path, roads_db_path, active_profile_name) =
+                profiles::resolve_data_paths(&data_dir, &registry)
+                    .expect("could not resolve profile database paths");
 
             let key_hex = keychain::get_or_create_db_key()
                 .unwrap_or_else(|e| {
@@ -176,7 +193,8 @@ fn main() {
             // Issue #39: road graph lives in its own plain (unencrypted)
             // SQLite file, alongside the main DB. Never touched by
             // restore (#25/#26) — that's the whole point of the split.
-            let roads_db_path = data_dir.join("roads.db");
+            // (roads_db_path itself now comes from profiles::resolve_data_paths
+            // above, per-profile — issue #85.)
             let roads_pool = db::open_roads_pool(&roads_db_path).expect("failed to open roads database");
 
             // #58: retention pruning no longer runs unattended here. An
@@ -196,7 +214,9 @@ fn main() {
                 last_preview: std::sync::Mutex::new(None),
                 road_graph_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 last_db_change_at,
+                active_profile_name,
             });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -253,9 +273,43 @@ fn main() {
             commands::settings::preview_prune_impact,
             commands::settings::list_prune_candidates,
             commands::logs::get_logs,
+            // profiles (#85)
+            commands::profiles::list_profiles,
+            commands::profiles::get_active_profile,
+            commands::profiles::create_profile,
+            commands::profiles::switch_profile,
+            commands::profiles::restart_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, _event| {
+            // Issue #85: window title. Confirmed by debug logging that
+            // set_title() returns Ok(()) at RunEvent::Ready but the title
+            // doesn't actually take — a WebKitGTK/tao timing quirk on this
+            // platform (Ready fires before the window's first Resized/
+            // Moved/Focused events, i.e. before it's genuinely realized on
+            // screen), not a logic bug here. Rather than chase the exact
+            // "right" lifecycle moment across platforms, this checks and
+            // (re)applies on every event-loop tick — negligible cost (an
+            // Option check and a string compare) once nothing needs
+            // fixing, and self-corrects the moment the platform is
+            // actually ready to accept it.
+            //
+            // try_state, not state: the very first tick(s) can fire before
+            // setup() has finished calling app.manage() — state() panics
+            // in that case ("state() called before manage()"), confirmed
+            // by hitting that panic in practice. try_state just skips the
+            // tick and the loop naturally retries on the next one.
+            let Some(state) = app_handle.try_state::<AppState>() else { return; };
+            if let Some(name) = &state.active_profile_name {
+                let desired = format!("Lost Sheep - {name}");
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    if window.title().map(|t| t != desired).unwrap_or(true) {
+                        let _ = window.set_title(&desired);
+                    }
+                }
+            }
+        });
 }
 
 // Issue #69: exercises the household_uid/visit_uid plumbing end to end —
@@ -301,6 +355,7 @@ mod uid_lifecycle_tests {
             last_preview: Mutex::new(None),
             road_graph_cache: Arc::new(Mutex::new(None)),
             last_db_change_at,
+            active_profile_name: None,
         };
         (state, db_path, roads_path)
     }

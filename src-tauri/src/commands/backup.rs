@@ -7,6 +7,14 @@ use tauri::State;
 
 const DB_ENTRY: &str = "lost-sheep.db";
 const SALT_ENTRY: &str = "lost-sheep.salt";
+// Issue #85 Piece 3: stamps which profile made this backup ("" = no active
+// profile / legacy flat layout at backup time). A backup taken before
+// Piece 3 shipped has no such entry at all — extract_backup_zip treats a
+// missing entry as unstamped and skips the profile-mismatch check for it,
+// so backups Stan already took under Piece 1/2 still restore. Only
+// backups taken from here on carry this entry and get blocked on
+// mismatch.
+const PROFILE_ENTRY: &str = "lost-sheep.profile";
 
 /// Deletes its wrapped path on drop — used for the scratch DB files this
 /// module writes to disk (SQLCipher's sqlcipher_export needs a real path,
@@ -78,7 +86,7 @@ pub fn backup_database(state: State<AppState>, dest_path: String, passphrase: St
     // do going forward.
     strip_display_only_settings(&tmp_db.0, &dest_key)?;
 
-    write_backup_zip(&dest_path, &tmp_db.0, &salt)?;
+    write_backup_zip(&dest_path, &tmp_db.0, &salt, state.active_profile_name.as_deref().unwrap_or(""))?;
 
     // Confirm the file actually landed before telling the user it
     // succeeded — this directly addresses backups that appeared to
@@ -131,7 +139,7 @@ fn strip_display_only_settings(path: &std::path::Path, key_hex: &str) -> Result<
     Ok(())
 }
 
-fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str) -> Result<(), String> {
+fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str, profile_name: &str) -> Result<(), String> {
     // Issue #32: no create_dir_all here — resolve_write_dest already
     // requires the configured backupFolder to exist and requires
     // dest_path to sit directly inside it, so there is no legitimate
@@ -150,6 +158,9 @@ fn write_backup_zip(dest_path: &str, tmp_db: &std::path::Path, salt: &str) -> Re
     zip.start_file(SALT_ENTRY, options).map_err(|e| e.to_string())?;
     zip.write_all(salt.as_bytes()).map_err(|e| e.to_string())?;
 
+    zip.start_file(PROFILE_ENTRY, options).map_err(|e| e.to_string())?;
+    zip.write_all(profile_name.as_bytes()).map_err(|e| e.to_string())?;
+
     zip.finish().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -161,17 +172,24 @@ const MAX_DB_ENTRY_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_SALT_ENTRY_BYTES: u64 = 1024;
 
 /// Unpacks a backup zip's DB entry into a scratch file (SQLCipher needs a
-/// real path) and returns it alongside the salt entry's contents.
-fn extract_backup_zip(src_path: &str) -> Result<(TmpFile, String), String> {
+/// real path) and returns it alongside the salt entry's contents and,
+/// where present, the stamped profile entry's contents (issue #85 Piece
+/// 3). `None` means the entry is absent — an unstamped, pre-Piece-3
+/// backup — and callers must skip the profile-mismatch check for it.
+/// `Some("")` means the entry is present but the backup was taken with no
+/// active profile.
+fn extract_backup_zip(src_path: &str) -> Result<(TmpFile, String, Option<String>), String> {
     let file = std::fs::File::open(src_path).map_err(|e| format!("could not open {src_path}: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{src_path} is not a valid backup file: {e}"))?;
 
-    // A genuine backup always has exactly these two entries. Any other
-    // count means the file isn't a Lost Sheep backup — reject by shape
-    // before trusting anything else about it.
-    if archive.len() != 2 {
+    // A genuine backup has exactly these two entries, or these two plus
+    // the profile stamp (issue #85 Piece 3, added after DB+salt-only
+    // backups were already in the wild). Any other count means the file
+    // isn't a Lost Sheep backup — reject by shape before trusting
+    // anything else about it.
+    if archive.len() != 2 && archive.len() != 3 {
         return Err(format!(
-            "backup file has {} entries, expected 2 — not a valid Lost Sheep backup",
+            "backup file has {} entries, expected 2 or 3 — not a valid Lost Sheep backup",
             archive.len()
         ));
     }
@@ -203,9 +221,26 @@ fn extract_backup_zip(src_path: &str) -> Result<(TmpFile, String), String> {
         s
     };
 
+    // Issue #85 Piece 3: absent on any backup taken before this entry
+    // existed — by_name returning Err there is the normal, expected case
+    // for an old backup, not a validation failure, so it maps to None
+    // rather than propagating an error.
+    const MAX_PROFILE_ENTRY_BYTES: u64 = 1024;
+    let profile_name: Option<String> = match archive.by_name(PROFILE_ENTRY) {
+        Ok(mut entry) => {
+            if entry.size() > MAX_PROFILE_ENTRY_BYTES {
+                return Err(format!("backup's {PROFILE_ENTRY} entry is too large — not a valid Lost Sheep backup"));
+            }
+            let mut s = String::new();
+            entry.read_to_string(&mut s).map_err(|e| e.to_string())?;
+            Some(s.trim().to_string())
+        }
+        Err(_) => None,
+    };
+
     let tmp_db = TmpFile(tmp_path("lost-sheep-restore"));
     std::fs::write(&tmp_db.0, &db_bytes).map_err(|e| e.to_string())?;
-    Ok((tmp_db, salt.trim().to_string()))
+    Ok((tmp_db, salt.trim().to_string(), profile_name))
 }
 
 #[derive(Serialize)]
@@ -281,7 +316,25 @@ pub fn restore_preview(state: State<AppState>, src_path: String, passphrase: Str
     let src_path = super::paths::resolve_read_path(&src_path)?.to_string_lossy().to_string();
     let meta = std::fs::metadata(&src_path).map_err(|e| format!("could not read {src_path}: {e}"))?;
     let token = preview_token(&src_path, &meta);
-    let (tmp_db, salt) = extract_backup_zip(&src_path)?;
+    let (tmp_db, salt, backup_profile_name) = extract_backup_zip(&src_path)?;
+
+    // Issue #85 Piece 3: block restoring a backup made under a different
+    // profile into the active one — a stamped backup ("" or a name) must
+    // match state.active_profile_name exactly. An unstamped (pre-Piece-3)
+    // backup has no opinion here and is let through unchanged, so
+    // backups Stan already took keep working.
+    if let Some(backup_name) = &backup_profile_name {
+        let current_name = state.active_profile_name.clone().unwrap_or_default();
+        if backup_name != &current_name {
+            let describe = |n: &str| if n.is_empty() { "(no profile)".to_string() } else { format!("\"{n}\"") };
+            return Err(format!(
+                "this backup was made under profile {}, but the active profile is {} — restore blocked",
+                describe(backup_name),
+                describe(&current_name)
+            ));
+        }
+    }
+
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
     let backup_conn = db::open_with_key(&tmp_db.0, &key).map_err(|e| e.to_string())?;
     let live_conn = state.pool.get().map_err(|e| e.to_string())?;
@@ -437,7 +490,10 @@ pub fn restore_commit(state: State<AppState>, app: tauri::AppHandle, src_path: S
         _ => return Err("restore was not previewed for this exact file — run Preview changes again before committing".to_string()),
     }
 
-    let (tmp_db, salt) = extract_backup_zip(&src_path)?;
+    // Profile mismatch was already enforced in restore_preview, which
+    // must complete successfully before a token exists to reach here —
+    // no separate check needed on the commit path.
+    let (tmp_db, salt, _backup_profile_name) = extract_backup_zip(&src_path)?;
     let key = crypto::derive_key_hex(&passphrase, &salt).map_err(|e| e.to_string())?;
     // Scratch file for the re-keyed database.
     // Must live on the SAME filesystem as state.db_path — std::fs::rename

@@ -51,7 +51,13 @@ const BackupRestore = {
             if (!p1 || p1 !== p2) { showMessage('Passphrases must match and not be empty.', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
             if (p1.length < MIN_PASSPHRASE_LEN) { showMessage(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
-            const dest = await join(settings.backupFolder, `lost-sheep-backup-${backupTimestamp()}.zip`);
+            // Issue #85 Piece 3: filename carries the active profile so
+            // backups from different congregations sort/identify at a
+            // glance in the backup folder. No active profile (legacy
+            // flat layout) keeps the old filename shape unchanged.
+            const activeProfile = await Api.getActiveProfile().catch(() => null);
+            const profilePart = activeProfile ? `-${slugForFilename(activeProfile.name)}` : '';
+            const dest = await join(settings.backupFolder, `lost-sheep-backup${profilePart}-${backupTimestamp()}.zip`);
 
             try {
                 // backup_database returns the path it actually wrote to and
@@ -182,6 +188,14 @@ function modalShell(innerHtml) {
 // (Windows forbids ':' in filenames, and this app targets Windows/
 // macOS/Linux) and no dashes inside the date/time parts, just the one
 // separating the two.
+// Issue #85 Piece 3: best-effort filename-safe slug for a profile's
+// display name — doesn't need to match profiles.rs's slugify() exactly
+// (nothing on the Rust side ever parses this back out of a filename), it
+// just needs to be a sane, collision-avoiding label a person can read.
+function slugForFilename(name) {
+    return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 function backupTimestamp() {
     const iso = new Date().toISOString(); // "2026-09-11T14:32:05.123Z"
     const date = iso.slice(0, 10).replace(/-/g, ''); // "20260911"

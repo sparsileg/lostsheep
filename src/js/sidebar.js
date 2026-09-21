@@ -137,6 +137,7 @@ function handleHamburgerMenuClick(e) {
         case 'settings': openSettingsModal(); break;
         case 'backup': BackupRestore.showBackupModal(); break;
         case 'restore': BackupRestore.showRestoreModal(); break;
+        case 'switch-profile': ProfileManager.showModal(); break;
         case 'roads': RoadsIngest.showModal(); break;
         case 'diagnostics': showPotentialProblemsModal(); break;
         case 'logs': showView('logs'); break;
