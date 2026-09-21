@@ -896,14 +896,24 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
     // Ordering uses the configured route start point when one exists —
     // nearest-neighbor walk over the selected N addresses, recomputing
     // distance_meters as per-leg distance rather than distance-from-seed.
-    // Falls back to today's seed-sorted order when the setting is
-    // unconfigured. Read here (before selection) so the road graph below
-    // can be loaded once and shared by both selection and ordering.
+    // Read here (before selection) so the road graph below can be loaded
+    // once and shared by both selection and ordering.
+    //
+    // Per Stan: when routeStartLat/Lon isn't configured, default to the
+    // clicked (seed) household's own coordinates as the route start,
+    // rather than falling all the way back to seed-anchored straight-line
+    // distance for every leg (today's behavior otherwise never runs road
+    // routing/2-opt ordering at all until Settings is configured once).
+    // seed_household_id == 0 is reserved for map_data::get_map_data's
+    // "show everything" call (see the seed lookup above, and its own
+    // comment) — that path must stay with no route start, or every
+    // full-map load would pay for an A* walk/2-opt pass nobody asked for.
     let route_start: Option<(f64, f64)> = match (
         get_setting("routeStartLat").and_then(|s| s.parse::<f64>().ok()),
         get_setting("routeStartLon").and_then(|s| s.parse::<f64>().ok()),
     ) {
         (Some(lat), Some(lon)) => Some((lat, lon)),
+        _ if params.seed_household_id != 0 => Some(seed),
         _ => None,
     };
 

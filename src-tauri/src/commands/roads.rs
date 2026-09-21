@@ -87,6 +87,82 @@ fn emit_progress(app: &AppHandle, stage: &str) {
     let _ = app.emit("road-ingest-progress", IngestProgress { stage: stage.to_string() });
 }
 
+// Straight-line-only routing investigation: a .pbf clipped without a
+// buffer at its extract boundary can cut the road network into several
+// disconnected pieces even though every individual segment still has
+// valid geometry — invisible on a rendered map overlay (every edge still
+// draws correctly), but fatal to A* routing (visits.rs::astar_distance
+// returns None whenever start/goal fall in different pieces, and every
+// such leg silently falls back to straight-line — see
+// RouteDistanceSource::StraightLineNoSnap). This summary runs at ingest
+// time, on the exact same osm-id adjacency the routing graph will use
+// once written and loaded, so a bad extract is visible immediately in
+// the ingest log instead of only showing up later as "routes look wrong."
+struct ConnectivitySummary {
+    total_nodes: usize,
+    component_count: usize,
+    largest_component_size: usize,
+    // Components below this size are almost certainly clipping
+    // artifacts (a road stub cut at the extract boundary), not a real,
+    // separate road network — counted separately from component_count
+    // so the log line can distinguish "one big network plus boundary
+    // debris" from "genuinely fragmented."
+    small_component_count: usize,
+}
+
+const SMALL_COMPONENT_THRESHOLD: usize = 5;
+
+/// Union-find over the osm node ids actually present in `node_rows`,
+/// unioned by every edge in `edge_rows` (both already guaranteed to
+/// reference resolvable nodes — see the ways-parsing loop above). Cheap
+/// (near-linear with path compression) even at hundreds of thousands of
+/// edges, so this runs unconditionally on every ingest rather than being
+/// gated behind a flag.
+fn summarize_connectivity(
+    node_rows: &[(i64, f64, f64)],
+    edge_rows: &[(i64, i64, f64, Option<String>)],
+) -> ConnectivitySummary {
+    let mut parent: HashMap<i64, i64> = HashMap::with_capacity(node_rows.len());
+    for (osm_id, _, _) in node_rows {
+        parent.insert(*osm_id, *osm_id);
+    }
+
+    fn find(parent: &mut HashMap<i64, i64>, x: i64) -> i64 {
+        let mut root = x;
+        while parent[&root] != root {
+            root = parent[&root];
+        }
+        let mut cur = x;
+        while parent[&cur] != root {
+            let next = parent[&cur];
+            parent.insert(cur, root);
+            cur = next;
+        }
+        root
+    }
+
+    for (from_osm, to_osm, _, _) in edge_rows {
+        let ra = find(&mut parent, *from_osm);
+        let rb = find(&mut parent, *to_osm);
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+
+    let mut sizes: HashMap<i64, usize> = HashMap::new();
+    for (osm_id, _, _) in node_rows {
+        let root = find(&mut parent, *osm_id);
+        *sizes.entry(root).or_insert(0) += 1;
+    }
+
+    ConnectivitySummary {
+        total_nodes: node_rows.len(),
+        component_count: sizes.len(),
+        largest_component_size: sizes.values().copied().max().unwrap_or(0),
+        small_component_count: sizes.values().filter(|&&s| s < SMALL_COMPONENT_THRESHOLD).count(),
+    }
+}
+
 struct ParsedWay {
     node_refs: Vec<i64>,
     // Issue #45: OSM's `name` tag, when present, ends up on every edge
@@ -241,6 +317,9 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
         return Err("could not resolve any road segments — file may be missing node data".to_string());
     }
 
+    emit_progress(&app, "checking connectivity");
+    let connectivity = summarize_connectivity(&node_rows, &edge_rows);
+
     emit_progress(&app, "storing graph");
 
     // Issue #39: road graph lives in its own plain SQLite file now, not
@@ -322,25 +401,36 @@ pub fn ingest_road_database(state: State<AppState>, app: AppHandle, file_path: S
     // instead of serving the old graph indefinitely.
     *state.road_graph_cache.lock().unwrap() = None;
 
+    let largest_pct = if connectivity.total_nodes > 0 {
+        connectivity.largest_component_size as f64 / connectivity.total_nodes as f64 * 100.0
+    } else {
+        0.0
+    };
     let log_conn = state.pool.get().map_err(|e| e.to_string())?;
     super::logs::log(
         &log_conn,
         "info",
         &format!(
-            "road graph ingested: {} nodes, {} edges, {} road names from {file_path}",
+            "road graph ingested: {} nodes, {} edges, {} road names from {file_path} — \
+             connectivity: {} component(s), largest holds {} node(s) ({largest_pct:.1}% of total), \
+             {} small (<{SMALL_COMPONENT_THRESHOLD}-node) component(s)",
             node_rows.len(),
             edge_rows.len(),
-            name_rows.len()
+            name_rows.len(),
+            connectivity.component_count,
+            connectivity.largest_component_size,
+            connectivity.small_component_count,
         ),
         None,
     );
 
     emit_progress(&app, "done");
     Ok(format!(
-        "{} nodes, {} edges, {} road names",
+        "{} nodes, {} edges, {} road names — {} connected component(s), largest covers {largest_pct:.1}% of the network",
         node_rows.len(),
         edge_rows.len(),
-        name_rows.len()
+        name_rows.len(),
+        connectivity.component_count,
     ))
     })();
 

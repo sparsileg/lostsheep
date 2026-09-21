@@ -12,6 +12,7 @@ async function initSidebarChrome() {
     wireThemeDropdownItems();
     wireChromeEvents();
     renderVersion();
+    renderProfileBadge();
 
     let settings = {};
     try { settings = await Api.getSettings(); } catch (e) { console.error(e); }
@@ -35,6 +36,24 @@ async function initSidebarChrome() {
 function renderVersion() {
     const el = document.getElementById('sidebarVersionFooter');
     if (el) el.textContent = `v${CONSTANTS.APP_VERSION}`;
+}
+
+// Issue #85 follow-up: which congregation this launch is showing — the
+// badge itself is styled in sidebar.css. Stays hidden (index.html's
+// inline display:none) on the legacy flat-layout compatibility path,
+// where get_active_profile resolves to null — nothing to badge when
+// profiles were never turned on for this install.
+async function renderProfileBadge() {
+    const el = document.getElementById('sidebarProfileBadge');
+    if (!el) return;
+    let profile = null;
+    try { profile = await Api.getActiveProfile(); } catch (e) { console.error('could not load active profile', e); }
+    if (profile) {
+        el.textContent = profile.name;
+        el.style.display = '';
+    } else {
+        el.style.display = 'none';
+    }
 }
 
 // Issue #68 — "Last backup: YYYYMMDD-HHMMSS", inserted directly above the

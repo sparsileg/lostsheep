@@ -34,6 +34,32 @@
     margin-right: 4px;
 }
 
+/* Issue #85 follow-up: active profile, shown as a badge (not plain text)
+   between the logo and the theme/font controls — this is the one place
+   in the whole app that says which congregation's data you're currently
+   looking at, so it needs to actually stand out, not blend into the rest
+   of the sidebar chrome. Uses --primary-color as a solid fill (inverted
+   from that color's usual role as an accent/border) specifically so it
+   reads as a badge/pill rather than another line of text. Hidden by
+   default (index.html inline style) — sidebar.js only reveals it when an
+   active profile exists, staying invisible on the legacy flat-layout
+   compatibility path where profiles were never turned on. */
+.sidebar-profile-badge {
+    margin: 0 16px 12px;
+    padding: 6px 12px;
+    background: var(--primary-color);
+    color: var(--sidebar-bg);
+    border-radius: 999px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .sidebar-controls {
     padding: 0 16px 16px;
     display: flex;

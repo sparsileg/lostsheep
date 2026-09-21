@@ -31,7 +31,7 @@ const PotentialProblemsPdf = {
         };
     },
 
-    download(problems, roadsChecked = true, missingCoords = []) {
+    async download(problems, roadsChecked = true, missingCoords = []) {
         // Issue #80: previously guarded on problems alone — an empty/
         // un-ingested roads.db with zero flagged households produced no
         // PDF at all, same silent-degradation gap the on-screen modal
@@ -200,7 +200,22 @@ const PotentialProblemsPdf = {
             content,
         };
 
-        pdfMake.createPdf(docDefinition).download(`LostSheep-DataValidation-${this._timestamp(now)}.pdf`);
+        // Issue #85 follow-up: profile name goes right after the
+        // "LostSheep-" prefix (Stan's call) so multiple congregations'
+        // reports sort/identify at a glance next to each other. No active
+        // profile (legacy flat layout) keeps the old filename shape
+        // unchanged.
+        const activeProfile = await Api.getActiveProfile().catch(() => null);
+        const profilePart = activeProfile ? `${this._slugForFilename(activeProfile.name)}-` : '';
+        pdfMake.createPdf(docDefinition).download(`LostSheep-${profilePart}DataValidation-${this._timestamp(now)}.pdf`);
+    },
+
+    // Issue #85 follow-up: best-effort filename-safe slug for a profile's
+    // display name — same approach as backup-restore.js's slugForFilename,
+    // duplicated rather than shared since these are separate classic-
+    // script view files with no shared module to put it in.
+    _slugForFilename(name) {
+        return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     },
 
     // One household entry — name/address, then a bulleted reason per
