@@ -25,7 +25,8 @@ const Api = {
     importPdf: (filePath) => invoke('import_pdf', { filePath }),
     importCsv: (filePath) => invoke('import_csv', { filePath }),
     getReviewQueue: (batchId) => invoke('get_review_queue', { batchId }),
-    resolveReviewItem: (itemId, action, comment) => invoke('resolve_review_item', { itemId, action, comment }),
+    resolveReviewItem: (itemId, action, comment, linkTargetId) =>
+        invoke('resolve_review_item', { itemId, action, comment, linkTargetId }),
     commitImportBatch: (batchId) => invoke('commit_import_batch', { batchId }),
     resolveAllNewRecords: (batchId) => invoke('resolve_all_new_records', { batchId }),
     getPendingImportBatch: () => invoke('get_pending_import_batch'),

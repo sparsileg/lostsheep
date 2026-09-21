@@ -219,8 +219,18 @@ CREATE TABLE IF NOT EXISTS review_queue (
     match_type            TEXT NOT NULL CHECK (match_type IN ('new','changed','removed')),
     incoming_data         TEXT,          -- JSON, null for 'removed'
     existing_household_id INTEGER REFERENCES households(id) ON DELETE SET NULL,
+    -- Issue #70: 'link' added — a 'new' item manually linked by the user
+    -- to a same-batch 'removed' household when auto-matching failed at
+    -- import time. Runs the identical merge machinery as 'merge'/
+    -- 'replace' (tags/comments/visits/household_uid carried forward), and
+    -- is also what the paired 'removed' row's own resolution is set to
+    -- when the link succeeds (resolve_review_item's "link" arm) — one
+    -- value covers both sides rather than adding a second ('linked') just
+    -- for the passive side. An existing database needs this widened via
+    -- a table rebuild (SQLite can't ALTER a CHECK constraint) — see
+    -- db/mod.rs::migrate_review_queue_link_resolution.
     resolution            TEXT NOT NULL DEFAULT 'pending'
-                           CHECK (resolution IN ('pending','replace','merge','add','delete','ignore')),
+                           CHECK (resolution IN ('pending','replace','merge','add','delete','link','ignore')),
     resolution_comment    TEXT,
     resolved_at           TEXT
 );

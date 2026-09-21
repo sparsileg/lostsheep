@@ -64,6 +64,12 @@ pub fn open_pool(
     // database if these migrations haven't added the columns yet.
     migrate_household_uid(&conn)?;
     migrate_visit_uid(&conn)?;
+    // Issue #70: must also run before the schema batch — schema.sql's own
+    // CREATE TABLE IF NOT EXISTS is a no-op on an existing review_queue
+    // table, so a pre-existing database would otherwise keep the old,
+    // narrower CHECK constraint forever and reject 'link' resolutions
+    // with a raw CHECK-constraint error at write time.
+    migrate_review_queue_link_resolution(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     Ok(pool)
 }
@@ -281,6 +287,67 @@ fn migrate_visit_uid(conn: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE deleted_visits ADD COLUMN visit_uid TEXT; \
          CREATE UNIQUE INDEX IF NOT EXISTS idx_visits_visit_uid ON visits(visit_uid);",
     )
+}
+
+/// One-time migration for databases created before 'link' joined
+/// review_queue.resolution's vocabulary (issue #70). SQLite can't ALTER a
+/// CHECK constraint in place, so this rebuilds the table under the
+/// standard SQLite "12-step" pattern: FK enforcement off for this
+/// connection, swap the table inside a transaction, integrity-check,
+/// FK enforcement back on. Detected by inspecting the table's own stored
+/// CREATE TABLE text (sqlite_master.sql) for the literal 'link' — PRAGMA
+/// table_info doesn't expose CHECK constraint contents the way it exposes
+/// columns, so the column-existence probe the other migrations in this
+/// file use doesn't apply here. No-op on a fresh DB (schema.sql's own
+/// CREATE TABLE already includes 'link') and a no-op once migrated.
+fn migrate_review_queue_link_resolution(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='review_queue'",
+        [],
+        |r| r.get(0),
+    )?;
+    if table_exists == 0 {
+        return Ok(()); // fresh DB — schema.sql's CREATE TABLE handles it
+    }
+
+    let create_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='review_queue'",
+        [],
+        |r| r.get(0),
+    )?;
+    if create_sql.contains("'link'") {
+        return Ok(()); // already migrated
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let result = conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE review_queue_new (
+             id                    INTEGER PRIMARY KEY,
+             import_batch_id       INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+             match_type            TEXT NOT NULL CHECK (match_type IN ('new','changed','removed')),
+             incoming_data         TEXT,
+             existing_household_id INTEGER REFERENCES households(id) ON DELETE SET NULL,
+             resolution            TEXT NOT NULL DEFAULT 'pending'
+                                    CHECK (resolution IN ('pending','replace','merge','add','delete','link','ignore')),
+             resolution_comment    TEXT,
+             resolved_at           TEXT
+         );
+         INSERT INTO review_queue_new SELECT * FROM review_queue;
+         DROP TABLE review_queue;
+         ALTER TABLE review_queue_new RENAME TO review_queue;
+         CREATE INDEX IF NOT EXISTS idx_review_queue_batch ON review_queue(import_batch_id);
+         COMMIT;",
+    );
+    // Re-enable FK enforcement regardless of outcome — never leave a
+    // connection with it silently off if the rebuild above failed partway
+    // (the BEGIN/COMMIT block above means it either fully applied or
+    // fully rolled back, but this connection's PRAGMA is a separate,
+    // connection-local setting that doesn't participate in that transaction).
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    result?;
+    conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(())).ok();
+    Ok(())
 }
 
 fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {

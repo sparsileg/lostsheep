@@ -12,3 +12,7 @@
    on it, so it's dimmed and carries an explicit warning instead. */
 .review-stale { opacity: 0.7; }
 .review-stale-warning { color: var(--error-color); font-weight: bold; margin-top: 4px; }
+
+/* Issue #70: dropdown a 'new' item uses to link itself to a same-batch
+   'removed' household when auto-matching failed at import time. */
+.review-link-dropdown { margin-top: 6px; max-width: 320px; }

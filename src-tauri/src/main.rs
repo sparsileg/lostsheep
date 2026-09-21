@@ -422,7 +422,7 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None).unwrap();
+        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None, None).unwrap();
 
         let new_id: i64 = st.pool.get().unwrap().query_row(
             "SELECT id FROM households WHERE address_line1 = '123 New St'", [], |r| r.get(0),
@@ -458,7 +458,7 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), item_id, "delete".to_string(), Some("test".into())).unwrap();
+        import::resolve_review_item(st.clone(), item_id, "delete".to_string(), Some("test".into()), None).unwrap();
 
         let deleted_id: i64 = st.pool.get().unwrap().query_row(
             "SELECT id FROM deleted_households WHERE original_id = ?1", rusqlite::params![hh_id], |r| r.get(0),
@@ -479,6 +479,110 @@ mod uid_lifecycle_tests {
             "SELECT id FROM households WHERE source_key = 'test-key-3'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across review-delete/restore");
+
+        cleanup(&[db_path, roads_path]);
+    }
+
+    // Issue #70: exercises the new "link" action — a 'new' item (auto-
+    // matching failed at import time) manually linked by the user to a
+    // same-batch 'removed' item. Confirms link runs the identical
+    // merge-machinery guarantees (uid/comment/tag/visit carried forward,
+    // old household gone) and that the paired 'removed' review_queue row
+    // is auto-resolved rather than left dangling.
+    #[test]
+    fn link_carries_uid_and_history_forward() {
+        let (state, db_path, roads_path) = build_state();
+        let (hh_id, hh_uid) = insert_test_household(&state.pool, "test-key-4");
+        let (_, visit_uid) = insert_test_visit(&state.pool, hh_id);
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+
+        // Tag and comment on the outgoing household — both must carry
+        // forward through link, same guarantee as replace/merge (#19/#20).
+        let tag_id = {
+            let conn = st.pool.get().unwrap();
+            crate::commands::tags::get_or_create_tag_id(&conn, "LinkTestTag").unwrap()
+        };
+        {
+            let conn = st.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
+                rusqlite::params![hh_id, tag_id],
+            ).unwrap();
+            conn.execute(
+                "UPDATE households SET comments = 'pre-link comment' WHERE id = ?1",
+                rusqlite::params![hh_id],
+            ).unwrap();
+        }
+
+        let incoming = serde_json::json!({
+            "first_name": "Test", "last_name": "Household", "role": "head",
+            "first_name_2": null, "last_name_2": null, "role_2": null,
+            "phone_1": null, "email_1": null, "phone_2": null, "email_2": null,
+            "address_line1": "456 Linked Ave", "address_line2": null, "city": null,
+            "state": null, "zip": null, "latitude": null, "longitude": null,
+            "has_minors": false, "comments": null
+        });
+        let batch_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.last_insert_rowid()
+        };
+        // The 'new' item — auto-matching failed at import time, which is
+        // exactly the scenario #70 covers.
+        let new_item_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) VALUES (?1, 'new', ?2, NULL)",
+                rusqlite::params![batch_id, incoming.to_string()],
+            ).unwrap();
+            conn.last_insert_rowid()
+        };
+        // The paired 'removed' item pointing at the household this test
+        // links against.
+        let removed_item_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO review_queue (import_batch_id, match_type, existing_household_id) VALUES (?1, 'removed', ?2)",
+                rusqlite::params![batch_id, hh_id],
+            ).unwrap();
+            conn.last_insert_rowid()
+        };
+
+        import::resolve_review_item(st.clone(), new_item_id, "link".to_string(), None, Some(hh_id)).unwrap();
+
+        let new_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM households WHERE address_line1 = '456 Linked Ave'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid did not carry forward across link");
+
+        let carried_comment: Option<String> = st.pool.get().unwrap().query_row(
+            "SELECT comments FROM households WHERE id = ?1", rusqlite::params![new_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(carried_comment.as_deref(), Some("pre-link comment"), "comment not carried forward across link");
+
+        let carried_visit_uid: String = st.pool.get().unwrap().query_row(
+            "SELECT visit_uid FROM visits WHERE household_id = ?1", rusqlite::params![new_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(carried_visit_uid, visit_uid, "visit not re-pointed across link");
+
+        let carried_tag_count: i64 = st.pool.get().unwrap().query_row(
+            "SELECT count(*) FROM household_tags WHERE household_id = ?1 AND tag_id = ?2",
+            rusqlite::params![new_id, tag_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(carried_tag_count, 1, "tag not carried forward across link");
+
+        let old_gone: Option<i64> = st.pool.get().unwrap().query_row(
+            "SELECT id FROM households WHERE id = ?1", rusqlite::params![hh_id], |r| r.get(0),
+        ).optional().unwrap();
+        assert!(old_gone.is_none(), "old household still present after link");
+
+        let removed_resolution: String = st.pool.get().unwrap().query_row(
+            "SELECT resolution FROM review_queue WHERE id = ?1", rusqlite::params![removed_item_id], |r| r.get(0),
+        ).unwrap();
+        assert_ne!(removed_resolution, "pending", "paired 'removed' review item was not auto-resolved by link");
 
         cleanup(&[db_path, roads_path]);
     }

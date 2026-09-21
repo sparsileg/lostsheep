@@ -656,7 +656,7 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
     Ok(out)
 }
 
-/// User-driven resolution of one review item: replace|merge|add|delete|ignore.
+/// User-driven resolution of one review item: replace|merge|add|delete|link|ignore.
 ///
 /// Fully transactional (issue #21) — a failure at any point leaves the
 /// review item and every table it touches exactly as they were before the
@@ -672,17 +672,32 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
 /// purpose — making them behave differently for other fields (address,
 /// phone, etc.) is a separate product decision the issue explicitly left
 /// open for discussion and is not implemented here.
+///
+/// Issue #70 (link): a 'new' item never got an auto-match at import time
+/// (source_key miss and no single name match) — existing_household_id is
+/// None on its own review_queue row. "link" lets the user pick a same-
+/// batch 'removed' item by hand and run the identical merge machinery
+/// against it (tags/comments/visits/household_uid all carried forward),
+/// via link_target_id instead of the row's own existing_household_id.
+/// Scoped deliberately to same-batch 'removed' items only — no cross-batch
+/// or all-households search.
 #[tauri::command]
-pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String, comment: Option<String>) -> Result<(), String> {
+pub fn resolve_review_item(
+    state: State<AppState>,
+    item_id: i64,
+    action: String,
+    comment: Option<String>,
+    link_target_id: Option<i64>,
+) -> Result<(), String> {
     let result = (|| -> Result<(), String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let (match_type, incoming_json, existing_id): (String, Option<String>, Option<i64>) = tx
+    let (match_type, incoming_json, existing_id, batch_id): (String, Option<String>, Option<i64>, i64) = tx
         .query_row(
-            "SELECT match_type, incoming_data, existing_household_id FROM review_queue WHERE id = ?1",
+            "SELECT match_type, incoming_data, existing_household_id, import_batch_id FROM review_queue WHERE id = ?1",
             params![item_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
 
@@ -697,7 +712,8 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
     // to anything — so both fail loudly here, before touching any table,
     // and the item stays 'pending' so the user can Ignore it deliberately
     // (Option A). "add" is unaffected: existing_id is expected to be None
-    // there and always has been.
+    // there and always has been. "link" is unaffected too — it never reads
+    // this row's own existing_id (see below), it reads link_target_id.
     if matches!(action.as_str(), "replace" | "merge" | "delete") && existing_id.is_none() {
         return Err(
             "the household this item referred to was already removed or replaced \
@@ -706,8 +722,52 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
         );
     }
 
+    // Issue #70: "link" overrides existing_id with the user-picked target
+    // rather than this row's own (None, for a 'new' item) — everything
+    // below this point (the "add" | "replace" | "merge" | "link" arm) then
+    // runs unmodified against whichever id is bound to existing_id.
+    //
+    // link_removed_item_id is the paired 'removed' review_queue row's OWN
+    // id, captured here — not re-derived later from existing_household_id.
+    // The household DELETE further down (inside the "link" arm, same as
+    // "replace"/"merge") fires ON DELETE SET NULL on
+    // review_queue.existing_household_id for every row that referenced it,
+    // including this 'removed' row itself. Looking it up again after that
+    // delete by "existing_household_id = target" would find nothing —
+    // that column is already NULL by then. Resolving by this row's own id,
+    // captured before the delete, sidesteps the cascade entirely.
+    let mut link_removed_item_id: Option<i64> = None;
+    let existing_id = if action == "link" {
+        if existing_id.is_some() {
+            return Err("link is only valid for a 'new' item".to_string());
+        }
+        let target = link_target_id.ok_or("link requires link_target_id")?;
+        // Confirm the target is still a real, pending 'removed' item in
+        // THIS batch — guards a stale dropdown selection (target already
+        // linked, deleted, or replaced by another action in the meantime).
+        let target_pending: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM review_queue WHERE import_batch_id = ?1 AND match_type = 'removed' \
+                 AND existing_household_id = ?2 AND resolution = 'pending'",
+                params![batch_id, target],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if target_pending.is_none() {
+            return Err(
+                "the selected household is no longer a pending removal in this batch — refresh and try again"
+                    .to_string(),
+            );
+        }
+        link_removed_item_id = target_pending;
+        Some(target)
+    } else {
+        existing_id
+    };
+
     match action.as_str() {
-        "add" | "replace" | "merge" => {
+        "add" | "replace" | "merge" | "link" => {
             let rec: ParsedRecord = serde_json::from_str(
                 incoming_json.as_deref().ok_or("no incoming data for this action")?,
             )
@@ -731,7 +791,7 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
             // below, alongside existing_comments, only for replace/merge
             // against a real existing household.
             let mut preserved_info_note: Option<String> = None;
-            if action == "replace" || action == "merge" {
+            if action == "replace" || action == "merge" || action == "link" {
                 if let Some(old_id) = existing_id {
                     {
                         let mut stmt = tx
@@ -948,6 +1008,31 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
         other => return Err(format!("unknown action '{other}'")),
     }
 
+    // Issue #70: "link" just merged the picked 'removed' household's
+    // tags/comments/visits/household_uid into the new row and deleted that
+    // household (identical to the "merge" branch above, existing_id ==
+    // link_target_id). That household's own 'removed' review_queue row is
+    // still sitting there as 'pending' — resolve it now, in the same
+    // transaction, so it doesn't sit stuck (or get picked up separately
+    // and hit the #62 guard). Resolved by ITS OWN id
+    // (link_removed_item_id, captured before the delete above) rather
+    // than by existing_household_id: the delete already nulled that
+    // column out via ON DELETE SET NULL, so re-deriving it here would
+    // silently match nothing. Resolution value is 'link' (not a separate
+    // 'linked') — same value on both the active and passive side of the
+    // pairing, one addition to the resolution CHECK constraint instead of
+    // two (schema.sql).
+    if action == "link" {
+        if let Some(removed_item_id) = link_removed_item_id {
+            tx.execute(
+                "UPDATE review_queue SET resolution = 'link', resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+                 WHERE id = ?1 AND resolution = 'pending'",
+                params![removed_item_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
     let _ = match_type;
     tx.execute(
         "UPDATE review_queue SET resolution = ?1, resolution_comment = ?2, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3",
@@ -1038,7 +1123,7 @@ pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<
     let mut added = 0i64;
     let mut failed = Vec::new();
     for id in ids {
-        match resolve_review_item(state.clone(), id, "add".to_string(), None) {
+        match resolve_review_item(state.clone(), id, "add".to_string(), None, None) {
             Ok(()) => added += 1,
             Err(e) => failed.push(BulkAddFailure { item_id: id, error: e }),
         }

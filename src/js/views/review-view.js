@@ -36,13 +36,31 @@ async function loadReviewQueue() {
 
     if (!items.length) { list.innerHTML = '<p>Nothing left to review — ready to commit.</p>'; return; }
 
-    list.innerHTML = items.map(item => renderReviewItem(item)).join('');
+    // Issue #70 (link): 'removed' items in this batch are candidates a
+    // 'new' item can be manually linked to, when auto-matching failed at
+    // import time (e.g. name and address both changed together). Scoped
+    // to this batch only, per the issue's own scope decision.
+    const removedItems = items.filter(i => i.match_type === 'removed');
+
+    list.innerHTML = items.map(item => renderReviewItem(item, removedItems)).join('');
     list.querySelectorAll('[data-resolve]').forEach(btn => {
         btn.addEventListener('click', () => resolveItem(btn.dataset.itemId, btn.dataset.resolve));
     });
+    list.querySelectorAll('[data-link-dropdown]').forEach(el => {
+        const itemId = el.dataset.linkDropdown;
+        mountDropdown(el, {
+            items: removedItems.map(r => ({ value: String(r.id), label: r.existing_summary || `household #${r.existing_household_id}` })),
+            staticLabel: 'Link to removed household…',
+            onSelect: (value) => {
+                if (!value) return;
+                const target = removedItems.find(r => String(r.id) === value);
+                if (target) resolveItem(itemId, 'link', target.existing_household_id);
+            },
+        });
+    });
 }
 
-function renderReviewItem(item) {
+function renderReviewItem(item, removedItems) {
     const incoming = item.incoming_data ? JSON.parse(item.incoming_data) : null;
     const incomingHtml = incoming
         ? `${escapeHtml(incoming.first_name)} ${escapeHtml(incoming.last_name)}` +
@@ -90,6 +108,13 @@ function renderReviewItem(item) {
     if (item.match_type === 'removed' && !item.stale) actions = actionBtn(item.id, 'delete', 'Confirm Delete');
     actions += actionBtn(item.id, 'ignore', 'Ignore');
 
+    // Issue #70 (link): only a 'new' item, and only when this batch has at
+    // least one 'removed' item to offer — no dropdown otherwise, to avoid
+    // showing an empty menu.
+    const linkDropdownHtml = (item.match_type === 'new' && removedItems && removedItems.length > 0)
+        ? `<div class="review-link-dropdown" data-link-dropdown="${item.id}"></div>`
+        : '';
+
     return `
         <div class="review-item review-${item.match_type}${item.stale ? ' review-stale' : ''}">
             <span class="review-badge">${item.match_type}</span>
@@ -99,6 +124,7 @@ function renderReviewItem(item) {
                 ${changedHtml}
                 ${commentsNoteHtml}
                 ${staleHtml}
+                ${linkDropdownHtml}
             </div>
             <div class="review-actions">${actions}</div>
         </div>`;
@@ -108,11 +134,11 @@ function actionBtn(id, action, label) {
     return `<button class="btn" data-item-id="${id}" data-resolve="${action}">${label}</button>`;
 }
 
-async function resolveItem(itemId, action) {
+async function resolveItem(itemId, action, linkTargetId) {
     let comment = null;
     if (action === 'delete') comment = prompt('Reason for deletion (optional):') || null;
     try {
-        await Api.resolveReviewItem(Number(itemId), action, comment);
+        await Api.resolveReviewItem(Number(itemId), action, comment, linkTargetId ?? null);
         await loadReviewQueue();
     } catch (e) {
         showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
