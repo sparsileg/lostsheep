@@ -18,7 +18,9 @@ registerView('visits-report', {
                 <label class="vr-date-label">From <input type="text" id="vrDateFrom" placeholder="YYYY-MM-DD"></label>
                 <label class="vr-date-label">To <input type="text" id="vrDateTo" placeholder="YYYY-MM-DD"></label>
                 <button class="btn btn-primary" id="vrRunBtn">Run Report</button>
+                <button class="btn" id="vrExportCsvBtn">Export CSV</button>
                 <div id="vrSortDropdown" style="min-width:220px;"></div>
+                <label class="vr-group-label"><input type="checkbox" id="vrGroupToggle"> Group by household</label>
             </div>
             <div id="vrResultsMeta"></div>
             <table id="vrTable">
@@ -36,6 +38,17 @@ registerView('visits-report', {
             onSelect: (val) => { vrState.sort = val; renderVrRows(); },
         });
         document.getElementById('vrRunBtn').addEventListener('click', runVisitsReport);
+        document.getElementById('vrExportCsvBtn').addEventListener('click', exportVisitsCsv);
+        // Screen-only convenience — the sort control still governs the order
+        // of visits inside each household's block; this only decides how
+        // those blocks are grouped and ordered (always alphabetical). CSV
+        // export deliberately ignores this toggle (Stan's call) and always
+        // exports the flat, sorted list — a spreadsheet's own sort/group can
+        // do this if wanted, and a flat file is easier to re-import or pivot.
+        document.getElementById('vrGroupToggle').addEventListener('change', (e) => {
+            vrState.groupByHousehold = e.target.checked;
+            renderVrRows();
+        });
 
         // Default window: last 90 days through today — a reasonable
         // starting point the user can widen (e.g. back to 1900-01-01) to
@@ -51,7 +64,7 @@ registerView('visits-report', {
 });
 const VisitsReportView = ViewRegistry['visits-report'];
 
-const vrState = { sort: 'desc', rows: [] };
+const vrState = { sort: 'desc', rows: [], groupByHousehold: false };
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 
@@ -85,19 +98,129 @@ async function runVisitsReport() {
     renderVrRows();
 }
 
-function renderVrRows() {
-    const sorted = vrState.rows.slice().sort((a, b) => {
+// Issue #77: pulled out of renderVrRows so the CSV export below sorts the
+// exact same way the on-screen table does — one comparator, not two copies
+// that could drift (#22's own reasoning, applied here).
+function getSortedVrRows() {
+    return vrState.rows.slice().sort((a, b) => {
         if (a.visit_date === b.visit_date) return 0;
         const cmp = a.visit_date < b.visit_date ? -1 : 1;
         return vrState.sort === 'asc' ? cmp : -cmp;
     });
-    document.getElementById('vrResultsMeta').textContent = `${sorted.length} visit${sorted.length === 1 ? '' : 's'}`;
-    document.getElementById('vrTableBody').innerHTML = sorted.length
-        ? sorted.map(r => `
+}
+
+// Ad hoc request — partitions the already-sorted rows into per-household
+// blocks, ordered alphabetically by household name regardless of the
+// asc/desc sort control (Stan's call: grouping is for finding a household
+// and scanning its whole history, not another axis of the date sort).
+// `sorted` is expected to already be in the visit-date order the sort
+// control specifies, so each group's own rows come out in that same order
+// (Map preserves insertion order; sort() below only reorders the groups
+// themselves, never the rows inside one).
+function groupRowsByHousehold(sorted) {
+    const groups = new Map();
+    sorted.forEach(r => {
+        const key = r.household_name || '';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+    });
+    return [...groups.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([name, rows]) => ({ name, rows }));
+}
+
+function renderVrRows() {
+    const sorted = getSortedVrRows();
+    const metaEl = document.getElementById('vrResultsMeta');
+    const bodyEl = document.getElementById('vrTableBody');
+
+    if (!sorted.length) {
+        metaEl.textContent = '0 visits';
+        bodyEl.innerHTML = '<tr><td colspan="3">No visits in this date range.</td></tr>';
+        return;
+    }
+
+    if (!vrState.groupByHousehold) {
+        metaEl.textContent = `${sorted.length} visit${sorted.length === 1 ? '' : 's'}`;
+        bodyEl.innerHTML = sorted.map(r => `
             <tr>
                 <td>${escapeHtml(r.household_name)}</td>
                 <td>${escapeHtml(r.visit_date)}</td>
                 <td>${escapeHtml(r.comments || '')}</td>
-            </tr>`).join('')
-        : '<tr><td colspan="3">No visits in this date range.</td></tr>';
+            </tr>`).join('');
+        return;
+    }
+
+    const groups = groupRowsByHousehold(sorted);
+    metaEl.textContent = `${sorted.length} visit${sorted.length === 1 ? '' : 's'} across ${groups.length} household${groups.length === 1 ? '' : 's'}`;
+    bodyEl.innerHTML = groups.map(g => `
+        <tr class="vr-group-header">
+            <td colspan="3" style="font-weight:bold;">${escapeHtml(g.name)} (${g.rows.length} visit${g.rows.length === 1 ? '' : 's'})</td>
+        </tr>
+        ${g.rows.map(r => `
+            <tr class="vr-group-row">
+                <td></td>
+                <td>${escapeHtml(r.visit_date)}</td>
+                <td>${escapeHtml(r.comments || '')}</td>
+            </tr>`).join('')}
+    `).join('');
+}
+
+// Issue #77: proper RFC 4180 quoting — a value is wrapped in double quotes
+// if it contains a comma, a double quote, or a line break (CR or LF), with
+// any embedded double quote doubled. import_csv's own reader
+// (commands/import.rs) does a naive line.split(',') with no quote handling
+// at all — deliberately not modeling this writer on that reader (see #77's
+// own constraints); a comment with a comma or an embedded newline must
+// still round-trip correctly into a spreadsheet.
+function csvEscape(value) {
+    const s = value == null ? '' : String(value);
+    if (/[",\r\n]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+}
+
+// Column set comes from whatever fields the row objects actually carry
+// (Api.getVisitsReport's own shape), not a hardcoded three columns — so a
+// later backend addition (household id, address, etc.) shows up here too
+// without this file needing a matching edit. Falls back to the three
+// columns the table renders when there are no rows to export at all.
+function vrCsvColumns(rows) {
+    return rows.length ? Object.keys(rows[0]) : ['household_name', 'visit_date', 'comments'];
+}
+
+function downloadCsv(filename, text) {
+    // Leading BOM so Excel opens the file as UTF-8 rather than guessing a
+    // legacy codepage and mangling any accented name.
+    const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Issue #77: exports every row currently matched by the date range, in the
+// exact order shown on screen — same getSortedVrRows() call renderVrRows
+// uses, same Api.getVisitsReport data already on screen, so there's no
+// second query path that could disagree with the table (#22 precedent).
+function exportVisitsCsv() {
+    const rows = getSortedVrRows();
+    if (rows.length === 0) {
+        showMessage('Nothing to export — run a report with at least one visit first.', CONSTANTS.MESSAGE_TYPES.ERROR);
+        return;
+    }
+    const columns = vrCsvColumns(rows);
+    const lines = [columns.map(csvEscape).join(',')];
+    rows.forEach(r => {
+        lines.push(columns.map(c => csvEscape(r[c])).join(','));
+    });
+
+    const dateFrom = document.getElementById('vrDateFrom').value.trim();
+    const dateTo = document.getElementById('vrDateTo').value.trim();
+    downloadCsv(`LostSheep-VisitReport-${dateFrom}_to_${dateTo}.csv`, lines.join('\r\n'));
 }
