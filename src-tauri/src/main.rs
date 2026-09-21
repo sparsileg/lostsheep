@@ -257,3 +257,229 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+// Issue #69: exercises the household_uid/visit_uid plumbing end to end —
+// Replace, soft-delete/restore, and the review-driven delete/restore path
+// (Review Updates' "removed" -> Delete, the one actually reachable from the
+// UI) — against a real, throwaway SQLCipher database rather than the app's
+// own, so this never touches production data. Each test builds its own temp
+// db/roads pair and deletes them (including WAL/SHM sidecars) on the way
+// out. Needs tauri's "test" feature (Cargo.toml, [dev-dependencies]) to
+// obtain a State<AppState> outside of a running app — these command fns all
+// take State by value, so there's no lighter-weight way to call them
+// directly.
+#[cfg(test)]
+mod uid_lifecycle_tests {
+    use super::*;
+    use crate::commands::households;
+    use crate::commands::import;
+    use rusqlite::OptionalExtension;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("lostsheep_test_{}_{}", Uuid::new_v4().simple(), name))
+    }
+
+    fn random_key_hex() -> String {
+        format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+    }
+
+    fn build_state() -> (AppState, PathBuf, PathBuf) {
+        let db_path = temp_path("main.db");
+        let roads_path = temp_path("roads.db");
+        let key_hex = random_key_hex();
+        let last_db_change_at = Arc::new(Mutex::new(None));
+        let pool = db::open_pool(&db_path, &key_hex, last_db_change_at.clone())
+            .expect("open_pool failed");
+        let roads_pool = db::open_roads_pool(&roads_path).expect("open_roads_pool failed");
+        let state = AppState {
+            pool,
+            roads_pool,
+            db_path: db_path.clone(),
+            live_key_hex: key_hex,
+            last_preview: Mutex::new(None),
+            road_graph_cache: Arc::new(Mutex::new(None)),
+            last_db_change_at,
+        };
+        (state, db_path, roads_path)
+    }
+
+    fn cleanup(paths: &[PathBuf]) {
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(format!("{}-wal", p.display()));
+            let _ = std::fs::remove_file(format!("{}-shm", p.display()));
+        }
+    }
+
+    // Inserts one bare-minimum household directly — bypasses the PDF
+    // parser/import diff entirely. This harness tests uid plumbing, not
+    // import parsing.
+    fn insert_test_household(pool: &db::Pool, source_key: &str) -> (i64, String) {
+        let conn = pool.get().unwrap();
+        let uid = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO households (household_uid, first_name, last_name, role, address_key, source_key, source_key_seq, has_minors) \
+             VALUES (?1, 'Test', 'Household', 'head', 'test-addr', ?2, 0, 0)",
+            rusqlite::params![uid, source_key],
+        ).unwrap();
+        (conn.last_insert_rowid(), uid)
+    }
+
+    fn insert_test_visit(pool: &db::Pool, household_id: i64) -> (i64, String) {
+        let conn = pool.get().unwrap();
+        let uid = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO visits (visit_uid, household_id, visit_date, comments) VALUES (?1, ?2, '2026-01-01', 'test visit')",
+            rusqlite::params![uid, household_id],
+        ).unwrap();
+        (conn.last_insert_rowid(), uid)
+    }
+
+    fn get_household_uid(pool: &db::Pool, id: i64) -> String {
+        pool.get().unwrap().query_row(
+            "SELECT household_uid FROM households WHERE id = ?1", rusqlite::params![id], |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn soft_delete_then_restore_preserves_uids() {
+        let (state, db_path, roads_path) = build_state();
+        let (hh_id, hh_uid) = insert_test_household(&state.pool, "test-key-1");
+        let (_, visit_uid) = insert_test_visit(&state.pool, hh_id);
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+
+        households::soft_delete_household(st.clone(), hh_id, Some("test".into())).unwrap();
+
+        {
+            let conn = st.pool.get().unwrap();
+            let gone: Option<i64> = conn.query_row(
+                "SELECT id FROM households WHERE id = ?1", rusqlite::params![hh_id], |r| r.get(0),
+            ).optional().unwrap();
+            assert!(gone.is_none(), "household still present after soft delete");
+        }
+
+        let deleted_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM deleted_households WHERE original_id = ?1", rusqlite::params![hh_id], |r| r.get(0),
+        ).unwrap();
+        let mirrored_uid: Option<String> = st.pool.get().unwrap().query_row(
+            "SELECT household_uid FROM deleted_households WHERE id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(mirrored_uid.as_deref(), Some(hh_uid.as_str()), "household_uid not mirrored on delete");
+
+        let mirrored_visit_uid: Option<String> = st.pool.get().unwrap().query_row(
+            "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(mirrored_visit_uid.as_deref(), Some(visit_uid.as_str()), "visit_uid not mirrored on delete");
+
+        households::restore_deleted_household(st.clone(), deleted_id).unwrap();
+
+        let new_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM households WHERE source_key = 'test-key-1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across delete/restore");
+
+        let restored_visit_uid: String = st.pool.get().unwrap().query_row(
+            "SELECT visit_uid FROM visits WHERE household_id = ?1", rusqlite::params![new_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(restored_visit_uid, visit_uid, "visit_uid changed across delete/restore");
+
+        cleanup(&[db_path, roads_path]);
+    }
+
+    #[test]
+    fn replace_carries_uid_forward() {
+        let (state, db_path, roads_path) = build_state();
+        let (hh_id, hh_uid) = insert_test_household(&state.pool, "test-key-2");
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+
+        let incoming = serde_json::json!({
+            "first_name": "Test", "last_name": "Household", "role": "head",
+            "first_name_2": null, "last_name_2": null, "role_2": null,
+            "phone_1": "555-0000", "email_1": null, "phone_2": null, "email_2": null,
+            "address_line1": "123 New St", "address_line2": null, "city": null,
+            "state": null, "zip": null, "latitude": null, "longitude": null,
+            "has_minors": false, "comments": null
+        });
+        let batch_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.last_insert_rowid()
+        };
+        let item_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) VALUES (?1, 'changed', ?2, ?3)",
+                rusqlite::params![batch_id, incoming.to_string(), hh_id],
+            ).unwrap();
+            conn.last_insert_rowid()
+        };
+
+        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None).unwrap();
+
+        let new_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM households WHERE address_line1 = '123 New St'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across Replace");
+
+        cleanup(&[db_path, roads_path]);
+    }
+
+    #[test]
+    fn review_delete_then_restore_preserves_uids() {
+        let (state, db_path, roads_path) = build_state();
+        let (hh_id, hh_uid) = insert_test_household(&state.pool, "test-key-3");
+        let (_, visit_uid) = insert_test_visit(&state.pool, hh_id);
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+
+        // The path you actually use — Review Updates' "removed" -> Delete —
+        // not households::soft_delete_household directly.
+        let batch_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.last_insert_rowid()
+        };
+        let item_id: i64 = {
+            let conn = st.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO review_queue (import_batch_id, match_type, existing_household_id) VALUES (?1, 'removed', ?2)",
+                rusqlite::params![batch_id, hh_id],
+            ).unwrap();
+            conn.last_insert_rowid()
+        };
+
+        import::resolve_review_item(st.clone(), item_id, "delete".to_string(), Some("test".into())).unwrap();
+
+        let deleted_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM deleted_households WHERE original_id = ?1", rusqlite::params![hh_id], |r| r.get(0),
+        ).unwrap();
+        let mirrored_uid: Option<String> = st.pool.get().unwrap().query_row(
+            "SELECT household_uid FROM deleted_households WHERE id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(mirrored_uid.as_deref(), Some(hh_uid.as_str()), "household_uid not mirrored on review-delete");
+
+        let mirrored_visit_uid: Option<String> = st.pool.get().unwrap().query_row(
+            "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(mirrored_visit_uid.as_deref(), Some(visit_uid.as_str()), "visit_uid not mirrored on review-delete");
+
+        households::restore_deleted_household(st.clone(), deleted_id).unwrap();
+
+        let new_id: i64 = st.pool.get().unwrap().query_row(
+            "SELECT id FROM households WHERE source_key = 'test-key-3'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across review-delete/restore");
+
+        cleanup(&[db_path, roads_path]);
+    }
+}

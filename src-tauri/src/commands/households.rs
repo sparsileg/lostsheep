@@ -2,6 +2,7 @@ use crate::AppState;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use uuid::Uuid;
 
 #[derive(Serialize)]
 pub struct Household {
@@ -228,9 +229,9 @@ pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<Str
 
     let affected = tx
         .execute(
-            "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+            "INSERT INTO deleted_households (original_id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
              address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
-             SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
+             SELECT id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
              latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
             params![id, reason],
         )
@@ -245,18 +246,21 @@ pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<Str
     // dropped before the next tx.execute() call — the E0597 shape noted in
     // issue #21's constraints.
     {
+        // Issue #69: carry visit_uid forward into the mirror too, so a
+        // delete/restore round trip preserves per-visit identity the same
+        // way household_uid is preserved above.
         let mut stmt = tx
-            .prepare("SELECT visit_date, comments FROM visits WHERE household_id = ?1")
+            .prepare("SELECT visit_uid, visit_date, comments FROM visits WHERE household_id = ?1")
             .map_err(|e| e.to_string())?;
-        let visits: Vec<(String, Option<String>)> = stmt
-            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let visits: Vec<(String, String, Option<String>)> = stmt
+            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        for (visit_date, comments) in visits {
+        for (visit_uid, visit_date, comments) in visits {
             tx.execute(
-                "INSERT INTO deleted_visits (deleted_household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
-                params![deleted_id, visit_date, comments],
+                "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
+                params![deleted_id, visit_uid, visit_date, comments],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -356,17 +360,23 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
     // .optional() rather than a bare query_row so a bad id produces the
     // same clean "no deleted household with id {id}" error as before,
     // instead of a raw "query returned no rows" from rusqlite.
-    let source_key: Option<String> = tx
+    let row: Option<(String, Option<String>)> = tx
         .query_row(
-            "SELECT source_key FROM deleted_households WHERE id = ?1",
+            "SELECT source_key, household_uid FROM deleted_households WHERE id = ?1",
             params![id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some(source_key) = source_key else {
+    let Some((source_key, household_uid)) = row else {
         return Err(format!("no deleted household with id {id}"));
     };
+    // Issue #69: carry the uid forward, same as replace/merge does. A row
+    // soft-deleted before household_uid existed has nothing to carry — mint
+    // one now rather than leave the NOT NULL insert below with nothing to
+    // write; landing on a different uid than a pre-migration household
+    // "originally" had is unavoidable, there is no original value to recover.
+    let household_uid = household_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Same expression import.rs's auto_accept_all()/resolve_review_item()
     // already use to assign a fresh seq on a new household — restoring
@@ -386,12 +396,12 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
 
     let affected = tx
         .execute(
-            "INSERT INTO households (first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+            "INSERT INTO households (household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
              address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
-             SELECT first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, ?2, has_minors, comments \
+             SELECT ?2, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, ?3, has_minors, comments \
              FROM deleted_households WHERE id = ?1",
-            params![id, next_seq],
+            params![id, household_uid, next_seq],
         )
         .map_err(|e| e.to_string())?;
     if affected == 0 {
@@ -420,18 +430,24 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
         }
     }
     {
+        // Issue #69/#70: visits.visit_uid is NOT NULL — a deleted_visits row
+        // from before visit_uid existed has none to carry forward, so mint
+        // a fresh one per row here rather than fail the INSERT. Same
+        // reasoning as household_uid's fallback above; no original value
+        // to recover for a pre-migration row.
         let mut stmt = tx
-            .prepare("SELECT visit_date, comments FROM deleted_visits WHERE deleted_household_id = ?1")
+            .prepare("SELECT visit_uid, visit_date, comments FROM deleted_visits WHERE deleted_household_id = ?1")
             .map_err(|e| e.to_string())?;
-        let visits: Vec<(String, Option<String>)> = stmt
-            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let visits: Vec<(Option<String>, String, Option<String>)> = stmt
+            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        for (visit_date, comments) in visits {
+        for (visit_uid, visit_date, comments) in visits {
+            let visit_uid = visit_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
             tx.execute(
-                "INSERT INTO visits (household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
-                params![new_id, visit_date, comments],
+                "INSERT INTO visits (household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
+                params![new_id, visit_uid, visit_date, comments],
             )
             .map_err(|e| e.to_string())?;
         }

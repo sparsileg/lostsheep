@@ -58,3 +58,9 @@ dirs = "5"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# #69 uid-lifecycle harness (uid_lifecycle_tests in main.rs): needs
+# tauri::test::mock_app() to obtain a State<AppState> outside a running app.
+# Dev-only — never pulled into a release build.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

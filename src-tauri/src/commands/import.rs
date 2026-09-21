@@ -888,9 +888,9 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
             if let Some(id) = existing_id {
                 let affected = tx
                     .execute(
-                        "INSERT INTO deleted_households (original_id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
+                        "INSERT INTO deleted_households (original_id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
                          address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
-                         SELECT id, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
+                         SELECT id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
                          latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
                         params![id, comment],
                     )
@@ -902,19 +902,23 @@ pub fn resolve_review_item(state: State<AppState>, item_id: i64, action: String,
 
                 // Mirror visits and tags before the DELETE cascades them
                 // away — same treatment as soft_delete_household (#19).
+                // Issue #69: visit_uid carried into the mirror too, same as
+                // household_uid just above — this is the review-driven
+                // delete path (Review Updates' "removed" -> Delete), not
+                // households::soft_delete_household, and needs the same fix.
                 {
                     let mut stmt = tx
-                        .prepare("SELECT visit_date, comments FROM visits WHERE household_id = ?1")
+                        .prepare("SELECT visit_uid, visit_date, comments FROM visits WHERE household_id = ?1")
                         .map_err(|e| e.to_string())?;
-                    let visits: Vec<(String, Option<String>)> = stmt
-                        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    let visits: Vec<(String, String, Option<String>)> = stmt
+                        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                         .map_err(|e| e.to_string())?
                         .collect::<Result<_, _>>()
                         .map_err(|e| e.to_string())?;
-                    for (visit_date, v_comments) in visits {
+                    for (visit_uid, visit_date, v_comments) in visits {
                         tx.execute(
-                            "INSERT INTO deleted_visits (deleted_household_id, visit_date, comments) VALUES (?1, ?2, ?3)",
-                            params![deleted_id, visit_date, v_comments],
+                            "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
+                            params![deleted_id, visit_uid, visit_date, v_comments],
                         )
                         .map_err(|e| e.to_string())?;
                     }
