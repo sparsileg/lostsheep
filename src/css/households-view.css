@@ -53,3 +53,21 @@
 }
 .hh-visit-date { font-weight: 700; }
 .hh-visit-comments { margin-top: 2px; opacity: 0.9; white-space: pre-wrap; }
+
+/* Paste Visit modal (households-view.js::openPasteVisitModal). Sized like
+   .hh-confirm-modal above, a touch wider to fit the pasted-row textarea
+   and match-list comfortably. */
+.hh-paste-visit-modal { width: 480px; max-width: 92vw; }
+
+/* Household-match list within the Paste Visit modal — same card
+   treatment as .hh-visit-entry above, so a clickable match row reads
+   consistently with the rest of the app instead of sitting flush
+   against its neighbors. */
+.hh-paste-match {
+    cursor: pointer;
+    padding: 8px 10px; margin-bottom: 6px; background: var(--card-bg);
+    border-radius: 4px; border-left: 3px solid var(--primary-color);
+}
+.hh-paste-match:hover { background: var(--color-table-row-hover); }
+.hh-paste-match div:first-child { font-weight: 700; }
+.hh-paste-match div:last-child { font-size: 0.9em; opacity: 0.85; }

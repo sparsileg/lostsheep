@@ -9,6 +9,7 @@ registerView('households', {
                 </div>
                 <div id="hhTagFilterDropdown"></div>
                 <button class="btn" id="hhGenerateDirectoryBtn">Generate Directory PDF</button>
+                <button class="btn" id="hhPasteVisitBtn">Paste Visit</button>
             </div>
             <div id="hhResultsMeta"></div>
             <table id="hhTable">
@@ -46,6 +47,7 @@ registerView('households', {
             },
         });
         document.getElementById('hhGenerateDirectoryBtn').addEventListener('click', generateDirectoryPdf);
+        document.getElementById('hhPasteVisitBtn').addEventListener('click', openPasteVisitModal);
     },
     async onShow() {
         const settings = await Api.getSettings().catch(() => ({}));
@@ -375,4 +377,150 @@ async function refreshVisitHistory(householdId) {
                 <div class="hh-visit-comments">${escapeHtml(v.comments || '')}</div>
             </div>`).join('')
         : '<em>No visits recorded yet.</em>';
+}
+
+// Paste Visit — Stan pastes one row copied straight from a spreadsheet of
+// prior visits (tab-separated: Name, Address, Phone, Frequency, Email,
+// Last Visit, Comments — see formatDirectoryName for the name column's
+// expected "Last, First1[ & First2]" shape). Address/phone/frequency/email
+// are read but deliberately unused: they're for the user's own eyeballing
+// only, and updating household fields from them isn't in scope here —
+// name/address corrections go through re-import + Review, same as
+// openHouseholdModal's own doc comment says. Only name (for search),
+// last-visit date, and comments are used. Multiple pasted rows aren't
+// supported — only the first non-empty line is read — matching how Stan
+// described the feature (one row per paste).
+function nameSearchWords(raw) {
+    // Strips the punctuation formatDirectoryName's own "Last, First1 &
+    // First2" format adds back in, leaving bare words — findHousehold
+    // above searches each one separately and unions the results (OR), so
+    // a name column with a word not present verbatim on the household
+    // record still turns up whatever the other words do match.
+    return (raw || '').replace(/[,&]/g, ' ').split(/\s+/).map(w => w.trim()).filter(Boolean);
+}
+
+// Converts the loose date formats a "Last Visit" spreadsheet column tends
+// to hold into the YYYY-MM-DD record_visit requires. Unparseable input
+// returns null rather than guessing — the confirm screen below always
+// shows an editable date field, defaulting to empty (not today's date)
+// when this returns null, so a bad parse can never silently save the
+// wrong date.
+function parseApproxDate(raw) {
+    const s = (raw || '').trim();
+    if (!s) return null;
+    if (isValidIsoDate(s)) return s;
+    // "YYYY-MM" or "YYYY-M" -> day 01
+    let m = /^(\d{4})-(\d{1,2})$/.exec(s);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-01`;
+    // "M/YYYY" or "MM/YYYY" -> day 01
+    m = /^(\d{1,2})\/(\d{4})$/.exec(s);
+    if (m) return `${m[2]}-${String(m[1]).padStart(2, '0')}-01`;
+    // "Apr 2022", "April 2022", "Apr. 2022" -> day 01
+    const months = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    m = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(s);
+    if (m) {
+        const mo = months[m[1].slice(0, 3).toLowerCase()];
+        if (mo) return `${m[2]}-${String(mo).padStart(2, '0')}-01`;
+    }
+    return null;
+}
+
+async function openPasteVisitModal() {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal hh-paste-visit-modal">
+            <h2>Paste Visit</h2>
+            <p>Paste one spreadsheet row — Name, Address, Phone, Frequency, Email, Last Visit, Comments, tab-separated (copied straight from Excel/Sheets). Only the name, last-visit date, and comments columns are used.</p>
+            <textarea id="pvRaw" rows="4" placeholder="Paste a row here…"></textarea>
+            <div id="pvError"></div>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" id="pvFind">Find Household</button>
+                <button class="btn" id="pvCancel">Cancel</button>
+            </div>
+            <div id="pvMatches"></div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    const pvError = overlay.querySelector('#pvError');
+    const showError = (msg) => { pvError.textContent = msg; pvError.className = 'restore-warning'; };
+    const clearError = () => { pvError.textContent = ''; pvError.className = ''; };
+
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#pvCancel').addEventListener('click', () => overlay.remove());
+
+    async function findHousehold() {
+        clearError();
+        const matchesEl = overlay.querySelector('#pvMatches');
+        matchesEl.innerHTML = '';
+        const raw = overlay.querySelector('#pvRaw').value;
+        const line = raw.split('\n').map(l => l.trim()).find(l => l.length > 0);
+        if (!line) { showError('Paste a row first.'); return; }
+        const cols = line.split('\t');
+        if (cols.length < 7) {
+            showError(`Expected 7 tab-separated columns (name, address, phone, frequency, email, last visit, comments) — got ${cols.length}. Make sure you copied whole spreadsheet cells, not plain text.`);
+            return;
+        }
+        const [nameCol, , , , , dateCol, commentsCol] = cols;
+        const words = nameSearchWords(nameCol);
+        if (words.length === 0) { showError('Could not read a name from the first column.'); return; }
+        const parsedDate = parseApproxDate(dateCol);
+
+        // Each word searched separately and the results unioned (OR), not
+        // search_households' own AND-every-token behavior — a name column
+        // that includes a word not present verbatim on the household record
+        // (a nickname, a middle name, a misspelling) would otherwise return
+        // zero matches even when one of the other words is a clean hit.
+        // Wider net, user picks the right one from the list either way.
+        const byId = new Map();
+        try {
+            for (const word of words) {
+                const result = await Api.searchHouseholds({ query: word, tag_names: [], page: 1, page_size: 20 });
+                for (const h of result.households) byId.set(h.id, h);
+            }
+        } catch (e) { showError(`${e}`); return; }
+        const households = [...byId.values()].sort((a, b) => formatDirectoryName(a).localeCompare(formatDirectoryName(b)));
+
+        if (households.length === 0) {
+            showError(`No household found matching "${nameCol.trim()}". Open the household directly and record the visit from there instead.`);
+            return;
+        }
+
+        matchesEl.innerHTML = `<h3>Select the matching household</h3><div id="pvMatchList"></div>`;
+        const list = matchesEl.querySelector('#pvMatchList');
+        list.innerHTML = households.map(h => `
+            <div class="hh-paste-match" data-match="${h.id}">
+                <div>${escapeHtml(formatDirectoryName(h))}</div>
+                <div>${escapeHtml(h.address_line1 || '')}${h.address_line2 ? ', ' + escapeHtml(h.address_line2) : ''}${h.city ? ', ' + escapeHtml(h.city) : ''}</div>
+            </div>`).join('');
+        list.querySelectorAll('[data-match]').forEach(row => {
+            row.addEventListener('click', () => showVisitConfirm(Number(row.dataset.match), parsedDate, dateCol.trim(), commentsCol.trim()));
+        });
+    }
+
+    function showVisitConfirm(householdId, parsedDate, rawDateText, comments) {
+        const matchesEl = overlay.querySelector('#pvMatches');
+        matchesEl.innerHTML = `
+            <h3>Record Visit</h3>
+            ${parsedDate ? '' : `<div class="restore-warning">Could not read a date from "${escapeHtml(rawDateText)}" — enter it manually.</div>`}
+            <label>Date (YYYY-MM-DD) <input type="text" id="pvVisitDate" value="${escapeHtml(parsedDate || '')}" placeholder="YYYY-MM-DD"></label>
+            <label>Comments <textarea id="pvVisitComments" rows="3">${escapeHtml(comments)}</textarea></label>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" id="pvSaveVisit">Save Visit</button>
+                <button class="btn" id="pvBack">Back</button>
+            </div>`;
+        matchesEl.querySelector('#pvBack').addEventListener('click', findHousehold);
+        matchesEl.querySelector('#pvSaveVisit').addEventListener('click', async () => {
+            const date = matchesEl.querySelector('#pvVisitDate').value.trim();
+            if (!isValidIsoDate(date)) { showMessage('Enter a real date as YYYY-MM-DD (e.g. 2022-04-01).', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+            try {
+                await Api.recordVisit(householdId, date, matchesEl.querySelector('#pvVisitComments').value || null);
+                showMessage('Visit recorded.', CONSTANTS.MESSAGE_TYPES.INFO);
+                overlay.remove();
+                await loadHouseholds();
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        });
+    }
+
+    overlay.querySelector('#pvFind').addEventListener('click', findHousehold);
 }
