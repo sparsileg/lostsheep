@@ -103,17 +103,29 @@ fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>)
         // one per household and already covered by the dedicated tag
         // filter dropdown; Functional_Requirements.md has been amended
         // to record that as the intended mechanism.
+        //
+        // Per Stan: a token also matches if it's found in any of this
+        // household's VISIT comments (visits.comments), not just its own
+        // household-level comments (h.comments, already covered above) —
+        // an EXISTS subquery per token, OR'd alongside the household-field
+        // match rather than folded into the same concatenated string
+        // (visits is a one-to-many child table, so it can't join into a
+        // single household row without either duplicating rows per visit
+        // or aggregating comments across visits; EXISTS avoids both).
         for token in q.split_whitespace() {
             where_clauses.push(
-                "(h.first_name || ' ' || h.last_name || ' ' || coalesce(h.first_name_2,'') || ' ' || coalesce(h.last_name_2,'') || ' ' || \
+                "((h.first_name || ' ' || h.last_name || ' ' || coalesce(h.first_name_2,'') || ' ' || coalesce(h.last_name_2,'') || ' ' || \
                   coalesce(h.address_line1,'') || ' ' || coalesce(h.address_line2,'') || ' ' || \
                   coalesce(h.city,'') || ' ' || coalesce(h.state,'') || ' ' || coalesce(h.zip,'') || ' ' || \
                   coalesce(h.phone_1,'') || ' ' || coalesce(h.phone_2,'') || ' ' || \
                   coalesce(h.email_1,'') || ' ' || coalesce(h.email_2,'') || ' ' || \
                   coalesce(h.comments,'') \
-                 ) LIKE ? ESCAPE '\\'".to_string(),
+                 ) LIKE ? ESCAPE '\\' \
+                 OR EXISTS (SELECT 1 FROM visits v WHERE v.household_id = h.id AND v.comments LIKE ? ESCAPE '\\'))".to_string(),
             );
-            binds.push(Box::new(format!("%{}%", escape_like(token))));
+            let pattern = format!("%{}%", escape_like(token));
+            binds.push(Box::new(pattern.clone()));
+            binds.push(Box::new(pattern));
         }
     }
     for tag in &params.tag_names {
