@@ -207,7 +207,12 @@ async function markKnown(id, targetTag) {
 // anything that must actually block the user gets its own overlay instead
 // of a native dialog. Returns a Promise<boolean>: true = user chose to
 // proceed (discard), false = cancel (backdrop click counts as cancel).
-function confirmDiscard(message) {
+// Generalized from the original confirmDiscard (Discard-labeled only) so
+// the same in-app dialog (see #74 above for why not window.confirm()) can
+// also confirm a visit delete with its own button label. confirmDiscard
+// keeps its original name/signature as a thin wrapper — every existing
+// call site is unaffected.
+function confirmYesNo(message, confirmLabel) {
     return new Promise((resolve) => {
         const confirmOverlay = document.createElement('div');
         confirmOverlay.className = 'modal-overlay';
@@ -216,15 +221,19 @@ function confirmDiscard(message) {
                 <p>${escapeHtml(message)}</p>
                 <div class="modal-buttons">
                     <button class="btn" id="fConfirmCancel">Cancel</button>
-                    <button class="btn btn-primary" id="fConfirmDiscard">Discard</button>
+                    <button class="btn btn-primary" id="fConfirmYes">${escapeHtml(confirmLabel)}</button>
                 </div>
             </div>`;
         document.body.appendChild(confirmOverlay);
         const finish = (result) => { confirmOverlay.remove(); resolve(result); };
-        document.getElementById('fConfirmDiscard').addEventListener('click', () => finish(true));
+        document.getElementById('fConfirmYes').addEventListener('click', () => finish(true));
         document.getElementById('fConfirmCancel').addEventListener('click', () => finish(false));
         confirmOverlay.addEventListener('click', (e) => { if (e.target === confirmOverlay) finish(false); });
     });
+}
+
+function confirmDiscard(message) {
+    return confirmYesNo(message, 'Discard');
 }
 
 // Household detail modal — mostly read-only, matching the source
@@ -363,6 +372,45 @@ async function openHouseholdModal(id) {
     });
 }
 
+// Read-mode row: date/comments plus Edit/Delete icon buttons. Kept as its
+// own function (rather than inlined in the .map() below) since
+// renderVisitEditRow below needs the same v.id to swap this same slot
+// back in on Cancel/Save.
+function renderVisitViewRow(v) {
+    // Icons sit on the date line, not at the far end of the comments line
+    // (Stan's call) — a long unbroken comment can force horizontal scroll
+    // on this row, and icons anchored past the comment text would scroll
+    // out of view with it. The date line never grows past the row width,
+    // so pinning the icons there keeps them visible regardless of what's
+    // in the comments below.
+    return `
+        <div class="hh-visit-entry" data-visit-id="${v.id}">
+            <div class="hh-visit-view-row">
+                <div class="hh-visit-date">${escapeHtml(v.visit_date)}</div>
+                <div class="hh-visit-actions">
+                    <button type="button" class="hh-visit-icon-btn" data-edit-visit="${v.id}" title="Edit visit" aria-label="Edit visit">&#9998;</button>
+                    <button type="button" class="hh-visit-icon-btn" data-delete-visit="${v.id}" title="Delete visit" aria-label="Delete visit">&#128465;</button>
+                </div>
+            </div>
+            <div class="hh-visit-comments">${escapeHtml(v.comments || '')}</div>
+        </div>`;
+}
+
+// Edit-mode row: same date/comments fields as "Record New Visit" below,
+// morphed in place over the read-mode row rather than a separate modal —
+// per Stan's direction, inline is simpler here than another popup layer.
+function renderVisitEditRow(v) {
+    return `
+        <div class="hh-visit-entry hh-visit-entry-editing" data-visit-id="${v.id}">
+            <label>Date (YYYY-MM-DD) <input type="text" class="hh-visit-edit-date" value="${escapeHtml(v.visit_date)}" placeholder="YYYY-MM-DD"></label>
+            <label>Comments <textarea class="hh-visit-edit-comments" rows="2">${escapeHtml(v.comments || '')}</textarea></label>
+            <div class="modal-buttons">
+                <button type="button" class="btn btn-primary" data-save-visit="${v.id}">Save</button>
+                <button type="button" class="btn" data-cancel-visit="${v.id}">Cancel</button>
+            </div>
+        </div>`;
+}
+
 async function refreshVisitHistory(householdId) {
     const el = document.getElementById('hhVisitHistory');
     if (!el) return;
@@ -371,12 +419,83 @@ async function refreshVisitHistory(householdId) {
     catch (e) { el.innerHTML = `<em>Could not load visits: ${escapeHtml(String(e))}</em>`; return; }
 
     el.innerHTML = visits.length
-        ? visits.map(v => `
-            <div class="hh-visit-entry">
-                <div class="hh-visit-date">${escapeHtml(v.visit_date)}</div>
-                <div class="hh-visit-comments">${escapeHtml(v.comments || '')}</div>
-            </div>`).join('')
+        ? visits.map(renderVisitViewRow).join('')
         : '<em>No visits recorded yet.</em>';
+    if (!visits.length) return;
+
+    const byId = new Map(visits.map(v => [v.id, v]));
+
+    el.querySelectorAll('[data-edit-visit]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = Number(btn.dataset.editVisit);
+            const row = el.querySelector(`[data-visit-id="${id}"]`);
+            if (row) row.outerHTML = renderVisitEditRow(byId.get(id));
+            wireEditRow(id);
+        });
+    });
+    el.querySelectorAll('[data-delete-visit]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const id = Number(btn.dataset.deleteVisit);
+            const v = byId.get(id);
+            const confirmed = await confirmYesNo(
+                `Delete the visit on ${v.visit_date}? This cannot be undone.`,
+                'Delete',
+            );
+            if (!confirmed) return;
+            try {
+                await Api.deleteVisit(id);
+                await refreshVisitHistory(householdId);
+                showMessage('Visit deleted.', CONSTANTS.MESSAGE_TYPES.INFO);
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        });
+    });
+
+    // Wired separately (not via a static querySelectorAll pass above)
+    // because Save/Cancel buttons don't exist until an edit row replaces
+    // its view row — see the edit-button handler above.
+    function wireEditRow(id) {
+        const row = el.querySelector(`[data-visit-id="${id}"]`);
+        if (!row) return;
+        row.querySelector('[data-cancel-visit]').addEventListener('click', () => {
+            row.outerHTML = renderVisitViewRow(byId.get(id));
+            rewireRow(id);
+        });
+        row.querySelector('[data-save-visit]').addEventListener('click', async () => {
+            const date = row.querySelector('.hh-visit-edit-date').value.trim();
+            if (!isValidIsoDate(date)) { showMessage('Enter a real date as YYYY-MM-DD (e.g. 2026-03-05).', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+            const comments = row.querySelector('.hh-visit-edit-comments').value || null;
+            try {
+                await Api.updateVisit(id, date, comments);
+                await refreshVisitHistory(householdId);
+                showMessage('Visit updated.', CONSTANTS.MESSAGE_TYPES.INFO);
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        });
+    }
+
+    // Re-wires a single view row's Edit/Delete buttons after Cancel swaps
+    // the edit row back out — the bulk querySelectorAll passes above only
+    // ran once, against the rows rendered at initial load.
+    function rewireRow(id) {
+        const row = el.querySelector(`[data-visit-id="${id}"]`);
+        if (!row) return;
+        row.querySelector('[data-edit-visit]').addEventListener('click', () => {
+            row.outerHTML = renderVisitEditRow(byId.get(id));
+            wireEditRow(id);
+        });
+        row.querySelector('[data-delete-visit]').addEventListener('click', async () => {
+            const v = byId.get(id);
+            const confirmed = await confirmYesNo(
+                `Delete the visit on ${v.visit_date}? This cannot be undone.`,
+                'Delete',
+            );
+            if (!confirmed) return;
+            try {
+                await Api.deleteVisit(id);
+                await refreshVisitHistory(householdId);
+                showMessage('Visit deleted.', CONSTANTS.MESSAGE_TYPES.INFO);
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        });
+    }
 }
 
 // Paste Visit — Stan pastes one row copied straight from a spreadsheet of

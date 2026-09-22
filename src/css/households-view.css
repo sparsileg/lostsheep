@@ -52,7 +52,22 @@
     border-radius: 4px; border-left: 3px solid var(--primary-color);
 }
 .hh-visit-date { font-weight: 700; }
-.hh-visit-comments { margin-top: 2px; opacity: 0.9; white-space: pre-wrap; }
+/* word-break/overflow-wrap: a long unbroken comment (no spaces — a URL,
+   a run-on ID) doesn't wrap under plain pre-wrap and forces horizontal
+   scroll on the whole row, which is what was pushing the delete icon
+   out of view before it moved up onto the date line above. */
+.hh-visit-comments { margin-top: 2px; opacity: 0.9; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+
+/* Edit/Delete controls on each visit-history row. */
+.hh-visit-view-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hh-visit-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.hh-visit-icon-btn {
+    background: transparent; border: none; padding: 2px 4px;
+    font-size: 1em; line-height: 1; cursor: pointer;
+    color: var(--text-secondary);
+}
+.hh-visit-icon-btn:hover { color: var(--text-color); }
+.hh-visit-entry-editing .modal-buttons { margin-top: 8px; }
 
 /* Paste Visit modal (households-view.js::openPasteVisitModal). Sized like
    .hh-confirm-modal above, a touch wider to fit the pasted-row textarea

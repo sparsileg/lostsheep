@@ -35,6 +35,9 @@ const Api = {
     // visits / map
     recordVisit: (householdId, visitDate, comments) =>
         invoke('record_visit', { householdId, visitDate, comments }),
+    updateVisit: (visitId, visitDate, comments) =>
+        invoke('update_visit', { visitId, visitDate, comments }),
+    deleteVisit: (visitId) => invoke('delete_visit', { visitId }),
     getVisitsReport: (dateFrom, dateTo) => invoke('get_visits_report', { dateFrom, dateTo }),
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),

@@ -110,6 +110,51 @@ pub fn get_household_visits(state: State<AppState>, household_id: i64) -> Result
     Ok(rows)
 }
 
+/// Edits an existing visit's date and/or comments. Same normalization
+/// discipline as record_visit — the caller's date string is validated then
+/// re-formatted from the parsed NaiveDate before storage, never stored
+/// as-typed, so get_visits_report's lexicographic BETWEEN comparison
+/// can't be corrupted by a non-zero-padded-but-real date sneaking in via
+/// an edit instead of a fresh record_visit call.
+#[tauri::command]
+pub fn update_visit(
+    state: State<AppState>,
+    visit_id: i64,
+    visit_date: String,
+    comments: Option<String>,
+) -> Result<(), String> {
+    let parsed = parse_iso_date(&visit_date)?;
+    let normalized = parsed.format("%Y-%m-%d").to_string();
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let rows = conn
+        .execute(
+            "UPDATE visits SET visit_date = ?1, comments = ?2 WHERE id = ?3",
+            params![normalized, comments, visit_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err(format!("visit {visit_id} not found"));
+    }
+    super::logs::log(&conn, "info", &format!("visit {visit_id} updated to {normalized}"), None);
+    Ok(())
+}
+
+/// Deletes a single visit by id. No confirmation/undo at this layer —
+/// the frontend's own confirm dialog is the only guard, same pattern as
+/// every other destructive action in this app.
+#[tauri::command]
+pub fn delete_visit(state: State<AppState>, visit_id: i64) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let rows = conn
+        .execute("DELETE FROM visits WHERE id = ?1", params![visit_id])
+        .map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err(format!("visit {visit_id} not found"));
+    }
+    super::logs::log(&conn, "info", &format!("visit {visit_id} deleted"), None);
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct GenerateVisitListParams {
     pub seed_household_id: i64,

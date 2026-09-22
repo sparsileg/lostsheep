@@ -246,6 +246,8 @@ fn main() {
             commands::import::discard_import_batch,
             // visits / map
             commands::visits::record_visit,
+            commands::visits::update_visit,
+            commands::visits::delete_visit,
             commands::visits::get_visits_report,
             commands::visits::get_household_visits,
             commands::visits::generate_visit_list,

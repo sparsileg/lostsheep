@@ -109,10 +109,41 @@ function getSortedVrRows() {
     });
 }
 
+// Parses a stored household name ("First [Middle] Last" for one person,
+// people joined by " & " for multiple) into "Last, First" display form
+// per Stan's spec:
+//   "Constance Lynn Miller"            -> "Miller, Constance Lynn"
+//   "Jerry Cyril & Arooj Cyril"        -> "Cyril, Jerry & Arooj"
+//   "Kelvin Whitmore & Diana Frederick" -> "Whitmore, Kelvin & Frederick, Diana"
+// Last name = final whitespace-separated token of each person's name;
+// everything before it is the first/middle name(s). When every person
+// shares the same last name, it's printed once with first names joined
+// by " & "; otherwise each person gets their own "Last, First".
+function formatHouseholdName(raw) {
+    if (!raw) return raw || '';
+    const people = raw.split('&').map(p => p.trim()).filter(Boolean);
+    const parsed = people.map(p => {
+        const parts = p.split(/\s+/);
+        const last = parts.pop();
+        return { first: parts.join(' '), last };
+    });
+    if (parsed.length === 1) {
+        return `${parsed[0].last}, ${parsed[0].first}`;
+    }
+    const sameLast = parsed.every(p => p.last === parsed[0].last);
+    if (sameLast) {
+        return `${parsed[0].last}, ${parsed.map(p => p.first).join(' & ')}`;
+    }
+    return parsed.map(p => `${p.last}, ${p.first}`).join(' & ');
+}
+
 // Ad hoc request — partitions the already-sorted rows into per-household
-// blocks, ordered alphabetically by household name regardless of the
-// asc/desc sort control (Stan's call: grouping is for finding a household
-// and scanning its whole history, not another axis of the date sort).
+// blocks, ordered by last name (Stan's call: grouping is for finding a
+// household and scanning its whole history, not another axis of the date
+// sort). Grouping key is still the raw household_name (avoids collisions
+// if two different raw names formatted the same); display name and sort
+// order both use the "Last, First" form from formatHouseholdName, since
+// that form already puts the sort-relevant part first.
 // `sorted` is expected to already be in the visit-date order the sort
 // control specifies, so each group's own rows come out in that same order
 // (Map preserves insertion order; sort() below only reorders the groups
@@ -125,8 +156,8 @@ function groupRowsByHousehold(sorted) {
         groups.get(key).push(r);
     });
     return [...groups.entries()]
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([name, rows]) => ({ name, rows }));
+        .map(([name, rows]) => ({ name: formatHouseholdName(name), rows }))
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function renderVrRows() {
