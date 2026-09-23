@@ -566,67 +566,72 @@ mod tests {
     #[test]
     fn handles_glued_name_and_address() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.last_name == "Baugh").unwrap();
-        assert_eq!(r.first_name, "Jacqueline Harlow");
-        assert_eq!(r.address_line1.as_deref(), Some("323 Russelcroft Rd"));
+        let r = result.records.iter().find(|r| r.last_name == "Winslow").unwrap();
+        assert_eq!(r.first_name, "Vivian Skye");
+        assert_eq!(r.address_line1.as_deref(), Some("410 Brookstone Rd"));
     }
 
     #[test]
     fn handles_null_address_sentinel_and_still_finds_coords() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Wes").unwrap();
+        // Matched by last_name, not first_name — "Grant" also appears as a
+        // head on the unrelated Ferris entry, so first_name alone is
+        // ambiguous in this fixture.
+        let r = result.records.iter().find(|r| r.last_name == "Sinclair").unwrap();
         assert!(r.address_line1.is_none());
-        assert_eq!(r.latitude, Some(39.158484));
+        assert_eq!(r.latitude, Some(39.158007));
     }
 
     #[test]
     fn couples_collapse_into_one_record_with_second_head() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Bryant Donald").unwrap();
-        assert_eq!(r.last_name, "Ash");
-        assert_eq!(r.first_name_2.as_deref(), Some("Lauren Emily"));
-        assert_eq!(r.last_name_2.as_deref(), Some("Ash"));
+        let r = result.records.iter().find(|r| r.first_name == "Julian Micah").unwrap();
+        assert_eq!(r.last_name, "Whitcombe");
+        assert_eq!(r.first_name_2.as_deref(), Some("Fiona Grace"));
+        assert_eq!(r.last_name_2.as_deref(), Some("Whitcombe"));
         assert_eq!(r.role_2.as_deref(), Some("head"));
     }
 
     #[test]
     fn single_head_entry_has_no_second_head() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Troy").unwrap();
+        let r = result.records.iter().find(|r| r.first_name == "Miles").unwrap();
         assert!(r.first_name_2.is_none());
         assert!(r.role_2.is_none());
     }
 
     #[test]
     fn separate_entry_at_same_address_stays_its_own_record() {
-        // "Riches, Connor & Tiffany" and "Riches David, Sullivan" both
-        // appear near "Riches" but are genuinely two different directory
+        // "Ferris, Grant & Monique" and "Ferris David, Sullivan" both
+        // appear near "Ferris" but are genuinely two different directory
         // entries — must never be merged into one record. Two distinct
-        // matches with the right shape (Connor has a second head, Sullivan
+        // matches with the right shape (Grant has a second head, Sullivan
         // doesn't) proves they parsed as separate records.
+        // Grant matched by last_name too — "Grant" alone is ambiguous,
+        // it's also the first head of the unrelated Sinclair entry.
         let result = parse_directory_text(SAMPLE);
-        let connor = result.records.iter().find(|r| r.first_name == "Connor").unwrap();
+        let grant = result.records.iter().find(|r| r.first_name == "Grant" && r.last_name == "Ferris").unwrap();
         let sullivan = result.records.iter().find(|r| r.first_name == "Sullivan").unwrap();
-        assert_eq!(connor.last_name, "Riches");
-        assert_eq!(sullivan.last_name, "Riches David");
-        assert!(connor.first_name_2.as_deref() == Some("Tiffany"));
+        assert_eq!(grant.last_name, "Ferris");
+        assert_eq!(sullivan.last_name, "Ferris David");
+        assert!(grant.first_name_2.as_deref() == Some("Monique"));
         assert!(sullivan.first_name_2.is_none());
     }
 
     #[test]
     fn flags_minors_as_a_boolean_not_stored_names() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Bryant Donald").unwrap();
+        let r = result.records.iter().find(|r| r.first_name == "Julian Micah").unwrap();
         assert!(r.has_minors, "expected has_minors to be set");
         // The actual names must never end up in the database anywhere.
-        assert!(!r.comments.as_deref().unwrap_or("").contains("Lucas Bryant"));
+        assert!(!r.comments.as_deref().unwrap_or("").contains("Owen Julian"));
     }
 
     #[test]
     fn handles_multiword_lowercase_surname() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.last_name == "Sanchez de Lozada Bulley").unwrap();
-        assert_eq!(r.first_name, "Sydney McKayla");
+        let r = result.records.iter().find(|r| r.last_name == "De La Cruz Montenegro").unwrap();
+        assert_eq!(r.first_name, "Adriana Fernanda");
     }
 
     #[test]
@@ -660,13 +665,13 @@ mod tests {
         // strip it — which also nuked legitimate short city/state/zip
         // lines shared by unrelated households (very common in a real
         // directory). These three fixture records all share the exact
-        // same "Winchester VA 22602" line on purpose.
+        // same "Somewhere UT 22602" line on purpose.
         let result = parse_directory_text(SAMPLE);
         for name in ["Nina", "Peter", "Dana"] {
             let r = result.records.iter().find(|r| r.first_name == name)
                 .unwrap_or_else(|| panic!("{name} missing entirely — record was dropped"));
-            assert_eq!(r.city.as_deref(), Some("Winchester"), "{name}: city wrongly stripped");
-            assert_eq!(r.state.as_deref(), Some("VA"), "{name}: state wrongly stripped");
+            assert_eq!(r.city.as_deref(), Some("Somewhere"), "{name}: city wrongly stripped");
+            assert_eq!(r.state.as_deref(), Some("UT"), "{name}: state wrongly stripped");
         }
     }
 }
