@@ -237,7 +237,6 @@ fn main() {
             commands::tags::bulk_tag_search_results,
             // import
             commands::import::import_pdf,
-            commands::import::import_csv,
             commands::import::get_review_queue,
             commands::import::resolve_review_item,
             commands::import::commit_import_batch,

@@ -5,23 +5,21 @@ registerView('import', {
     init() {
         document.getElementById('importRoot').innerHTML = `
             <h1>Import Directory</h1>
-            <p>Choose a congregational directory PDF (or CSV) to compare against the current database.</p>
+            <p>Choose a congregational directory PDF to compare against the current database.</p>
+            <p>Export the PDF directory with "Show for Heads of Household", "Full Address", and "Show Latitude/Longitude" checked.</p>
             <div class="import-actions">
                 <button class="btn btn-primary" id="pickPdfBtn">Choose PDF…</button>
-                <button class="btn" id="pickCsvBtn">Choose CSV…</button>
             </div>
             <div id="importProgress" style="display:none;"></div>
             <div id="importSummary"></div>
         `;
-        document.getElementById('pickPdfBtn').addEventListener('click', () => runImport('pdf'));
-        document.getElementById('pickCsvBtn').addEventListener('click', () => runImport('csv'));
+        document.getElementById('pickPdfBtn').addEventListener('click', () => runImport());
     },
     onShow() {},
 });
 
-async function runImport(kind) {
-    const filters = kind === 'pdf' ? [{ name: 'PDF', extensions: ['pdf'] }] : [{ name: 'CSV', extensions: ['csv'] }];
-    const filePath = await open({ multiple: false, filters });
+async function runImport() {
+    const filePath = await open({ multiple: false, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
     if (!filePath) return;
 
     const progressEl = document.getElementById('importProgress');
@@ -52,7 +50,7 @@ async function runImport(kind) {
     }
 
     try {
-        const summary = kind === 'pdf' ? await Api.importPdf(filePath) : await Api.importCsv(filePath);
+        const summary = await Api.importPdf(filePath);
         // Guarantee the progress indicator was visible for a moment even
         // if the whole import completed near-instantly.
         const elapsed = Date.now() - startedAt;
