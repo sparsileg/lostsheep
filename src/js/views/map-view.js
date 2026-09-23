@@ -611,6 +611,36 @@ function formatEntryAddress(e) {
     return [e.address_line1, e.address_line2].filter(Boolean).join(', ') || '(no address on file)';
 }
 
+// Issue #89 — fetches visit history for every household on a generated
+// route and attaches it to each entry, so the Copy Text and PDF exports
+// can show visit dates/comments per stop. A stop can carry more than one
+// household_id (a shared address) — visits from all of them are merged
+// into one list per entry, newest first, each tagged with the household's
+// name only when the entry has more than one household (visitsMultiHousehold),
+// so a single-household stop's lines don't carry a redundant name prefix.
+// Uses Api.getHouseholdVisits, the same command the household detail modal
+// already calls (commands/visits.rs::get_household_visits) — no backend
+// change needed. Household ids are deduped across the whole route before
+// fetching, so a shared address's households are each only fetched once
+// even though generate_visit_list groups by address per entry.
+async function attachVisitHistory(entries) {
+    const uniqueIds = [...new Set(entries.flatMap(e => e.household_ids))];
+    const visitsById = {};
+    await Promise.all(uniqueIds.map(async (id) => {
+        try { visitsById[id] = await Api.getHouseholdVisits(id); }
+        catch (e) { console.error('attachVisitHistory: getHouseholdVisits failed', e); visitsById[id] = []; }
+    }));
+    entries.forEach(e => {
+        const combined = [];
+        e.household_ids.forEach((id, i) => {
+            (visitsById[id] || []).forEach(v => combined.push({ date: v.visit_date, comments: v.comments, name: e.names[i] || '' }));
+        });
+        combined.sort((a, b) => b.date.localeCompare(a.date));
+        e.visits = combined;
+        e.visitsMultiHousehold = e.household_ids.length > 1;
+    });
+}
+
 // Configured route start point — label + coords straight from Settings
 // (routeStartLabel/Lat/Lon). No geocoding: the label the user already
 // typed in Settings is the address, used verbatim for both the "Starting
@@ -729,6 +759,10 @@ async function generateVisitList() {
         });
     } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
+    // Issue #89 — attach each stop's visit history before building the
+    // Copy Text string / PDF, both of which read entry.visits.
+    await attachVisitHistory(entries);
+
     // Previous run's badges need to go back to the default pin before this
     // run's results get their own — otherwise a badge from a household
     // that isn't part of the new list sticks around looking like it still
@@ -814,10 +848,16 @@ function buildVisitListText(entries, returnLeg, startInfo, roadsDegraded) {
     const lines = [];
     if (roadsDegraded) lines.push('⚠ Road database has no usable data for this route — distances below are straight-line, not road distance. Re-ingest under Road Management.');
     if (startInfo) lines.push(`Starting at ${startInfo.label}`);
-    entries.forEach(e => {
+    entries.forEach((e, idx) => {
         const cityLine = [e.city, e.state].filter(Boolean).join(' ') + (e.zip ? ' ' + e.zip : '');
         const phones = e.phones.length ? ` — ${e.phones.join(', ')}` : '';
-        lines.push(`${formatEntryAddress(e)}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`);
+        // Issue #89 — numbered to match the PDF/preview-panel stop
+        // numbering, and followed by this stop's visit history (if any).
+        lines.push(`${idx + 1}. ${formatEntryAddress(e)}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones}`);
+        (e.visits || []).forEach(v => {
+            const who = e.visitsMultiHousehold && v.name ? `${v.name} — ` : '';
+            lines.push(`   - ${v.date}: ${who}${v.comments || '(no comments)'}`);
+        });
     });
     if (returnLeg) lines.push(`↩ Back to ${returnLeg.label} (${metersToMiles(returnLeg.meters).toFixed(2)} mi)`);
     return lines.join('\n');
@@ -842,14 +882,33 @@ function downloadVisitListPdf() {
         const distLabel = e.distance_context === 'route'
             ? (idx === 0 ? 'from start point' : 'from previous stop')
             : 'from seed';
-        return {
-            margin: [0, 0, 0, 6],
+        const mainLine = {
             text: [
                 { text: `${idx + 1}. `, bold: true },
                 `${formatEntryAddress(e)}${cityLine.trim() ? ', ' + cityLine.trim() : ''} — ${e.names.join(', ')}${phones} `,
                 { text: `(${metersToMiles(e.distance_meters).toFixed(2)} mi ${distLabel})`, color: faint, fontSize: 8 },
             ],
         };
+        // Issue #89 — visit history under the stop, compact: same 8pt
+        // fontSize the distance annotation above already uses, tight
+        // 1pt top margin. Base defaultStyle fontSize (10) is untouched —
+        // this is added content, not a shrink of the existing line.
+        if (e.visits && e.visits.length) {
+            return {
+                margin: [0, 0, 0, 6],
+                stack: [
+                    mainLine,
+                    ...e.visits.map(v => ({
+                        text: `${v.date}: ${e.visitsMultiHousehold && v.name ? v.name + ' — ' : ''}${v.comments || '(no comments)'}`,
+                        fontSize: 8,
+                        color: faint,
+                        margin: [12, 1, 0, 0],
+                    })),
+                ],
+            };
+        }
+        mainLine.margin = [0, 0, 0, 6];
+        return mainLine;
     });
     if (returnLeg) {
         body.push({
