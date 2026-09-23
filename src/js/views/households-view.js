@@ -21,15 +21,22 @@ registerView('households', {
         state.page = 1;
         const hhSearchInput = document.getElementById('hhSearchInput');
         const hhSearchClearBtn = document.getElementById('hhSearchClearBtn');
-        const syncClearBtnVisibility = () => {
-            hhSearchClearBtn.classList.toggle('hh-search-clear-visible', hhSearchInput.value.length > 0);
-        };
-        syncClearBtnVisibility();
+        // Shared search string (SharedSearch, defined near the top of
+        // map-view.js) — Stan's ask: typing "Walker" here and switching to
+        // the Dashboard should show "Walker" there too, and back. Seed
+        // this input from whatever's already there (e.g. typed on the
+        // Dashboard first) rather than always starting blank.
+        hhSearchInput.value = window.SharedSearch.query;
+        syncHhSearchClearBtnVisibility();
+        hhSearchInput.addEventListener('input', () => {
+            window.SharedSearch.query = hhSearchInput.value;
+            syncHhSearchClearBtnVisibility();
+        });
         hhSearchInput.addEventListener('input', debounce(() => { state.page = 1; loadHouseholds(); }, 300));
-        hhSearchInput.addEventListener('input', syncClearBtnVisibility);
         hhSearchClearBtn.addEventListener('click', () => {
             hhSearchInput.value = '';
-            syncClearBtnVisibility();
+            window.SharedSearch.query = '';
+            syncHhSearchClearBtnVisibility();
             hhSearchInput.focus();
             state.page = 1;
             loadHouseholds();
@@ -53,11 +60,31 @@ registerView('households', {
         const settings = await Api.getSettings().catch(() => ({}));
         state.pageSize = parseInt(settings.pageSize || '25', 10) || 25;
         await refreshTagFilterOptions();
+        // Re-sync from SharedSearch every time this view is shown — the
+        // Dashboard's own search box may have changed it since init() ran.
+        const hhSearchInput = document.getElementById('hhSearchInput');
+        if (hhSearchInput) hhSearchInput.value = window.SharedSearch.query;
+        syncHhSearchClearBtnVisibility();
         await loadHouseholds();
     },
 });
 
+// Cross-view shared search string (see map-view.js's own copy of this
+// guard) — whichever of households-view.js/map-view.js loads first wins
+// the actual creation; the other's identical guard then finds it already
+// there and leaves it alone, so load order between the two files doesn't
+// matter.
+window.SharedSearch = window.SharedSearch || { query: '' };
+
 const state = { page: 1, pageSize: 25, tagFilter: null, lastResult: null };
+
+// Pulled out of init()'s closure so onShow() can also call it without
+// duplicating the DOM lookups.
+function syncHhSearchClearBtnVisibility() {
+    const input = document.getElementById('hhSearchInput');
+    const btn = document.getElementById('hhSearchClearBtn');
+    if (input && btn) btn.classList.toggle('hh-search-clear-visible', input.value.length > 0);
+}
 
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -279,9 +306,11 @@ async function openHouseholdModal(id) {
             <div id="modalTags">${renderTagChips(h.tags, { onRemove: true })}</div>
             <div id="modalTagDropdown" class="inline-dropdown"></div>
 
-            <h3>Comments</h3>
+            <div class="hh-comments-header">
+                <h3>Comments</h3>
+                <button class="btn" id="fSaveComments">Save Comments</button>
+            </div>
             <textarea id="fComments" rows="3">${escapeHtml(h.comments || '')}</textarea>
-            <button class="btn" id="fSaveComments">Save Comments</button>
 
             <h3>Visit History</h3>
             <div id="hhVisitHistory" class="hh-visit-history"><em>Loading…</em></div>

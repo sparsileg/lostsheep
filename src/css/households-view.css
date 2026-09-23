@@ -38,6 +38,8 @@
 .hh-confirm-modal { width: 380px; max-width: 90vw; }
 .hh-confirm-modal p { margin: 0 0 14px; }
 .hh-detail-modal h3 { margin: 6px 0; }
+.hh-comments-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hh-comments-header h3 { margin: 6px 0; }
 .hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
 .hh-detail-address { margin-top: 10px; font-size: 0.9em; opacity: 0.85; }
 .hh-latlon { opacity: 0.65; font-size: 0.85em; margin-top: 2px; }

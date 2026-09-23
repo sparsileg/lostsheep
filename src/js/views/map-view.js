@@ -167,16 +167,22 @@ registerView('map', {
         // re-querying a whole table — adjust if it still feels laggy.
         const mapIconSearchInput = document.getElementById('mapIconSearchInput');
         const mapIconSearchClearBtn = document.getElementById('mapIconSearchClearBtn');
-        const syncMapSearchClearBtnVisibility = () => {
-            mapIconSearchClearBtn.classList.toggle('map-search-clear-visible', mapIconSearchInput.value.length > 0);
-        };
+        // Shared search string (SharedSearch — see the guard near the
+        // bottom of this file) — Stan's ask: a search typed in Households
+        // shows up here too, and vice versa. Seed from whatever's already
+        // there rather than always starting blank.
+        mapIconSearchInput.value = window.SharedSearch.query;
         syncMapSearchClearBtnVisibility();
+        mapIconSearchInput.addEventListener('input', () => {
+            window.SharedSearch.query = mapIconSearchInput.value;
+            syncMapSearchClearBtnVisibility();
+        });
         mapIconSearchInput.addEventListener('input', debounce((e) => {
             applyIconSearch(e.target.value);
         }, 200));
-        mapIconSearchInput.addEventListener('input', syncMapSearchClearBtnVisibility);
         mapIconSearchClearBtn.addEventListener('click', () => {
             mapIconSearchInput.value = '';
+            window.SharedSearch.query = '';
             syncMapSearchClearBtnVisibility();
             mapIconSearchInput.focus();
             applyIconSearch('');
@@ -187,6 +193,14 @@ registerView('map', {
         await populateMapTagSelect();
         await loadTagStats();
         setTimeout(resizeMapEl, 50);
+        // Re-sync from SharedSearch every time this view is shown — the
+        // Households view's own search box may have changed it since
+        // init() ran. loadMapData() below calls reapplySearchOverlay(),
+        // which reads this same input's current value, so setting it
+        // here is enough to have the highlight follow along.
+        const mapIconSearchInput = document.getElementById('mapIconSearchInput');
+        if (mapIconSearchInput) mapIconSearchInput.value = window.SharedSearch.query;
+        syncMapSearchClearBtnVisibility();
         await loadMapData();
         // loadMapData() just rebuilt every marker fresh (badges reset to
         // default) — a leftover route from before this view was left
@@ -199,6 +213,20 @@ registerView('map', {
 });
 const MapView = ViewRegistry.map; // convenient alias for handlers below
 MapView.applyRoadSettings = applyRoadSettings;
+
+// Cross-view shared search string (see households-view.js's own copy of
+// this guard for why it's duplicated rather than defined once — whichever
+// file loads first creates it, the other's identical guard just finds it
+// already there).
+window.SharedSearch = window.SharedSearch || { query: '' };
+
+// Pulled out of init()'s closure so onShow() can also call it without
+// duplicating the DOM lookups.
+function syncMapSearchClearBtnVisibility() {
+    const input = document.getElementById('mapIconSearchInput');
+    const btn = document.getElementById('mapIconSearchClearBtn');
+    if (input && btn) btn.classList.toggle('map-search-clear-visible', input.value.length > 0);
+}
 
 // Sizes #mapEl from its own actual on-screen position, not a guessed
 // vh-minus-padding constant (#15 follow-up — the old calc(100vh - 40px)
