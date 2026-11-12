@@ -49,8 +49,27 @@ Two changes. Both are additive; neither breaks existing rows.
 
 ```sql
 ALTER TABLE visits ADD COLUMN outcome TEXT NOT NULL DEFAULT 'contacted'
-    CHECK (outcome IN ('contacted','no_answer','not_home','refused','moved','other'));
+    CHECK (outcome IN ('contacted','no_answer','not_home','refused','moved',
+                       'deceased','sent','other'));
+ALTER TABLE visits ADD COLUMN method TEXT NOT NULL DEFAULT 'visit'
+    CHECK (method IN ('visit','phone','card'));
+ALTER TABLE visits ADD COLUMN invited INTEGER NOT NULL DEFAULT 0;  -- invitation extended (activity, meeting, dinner…)
 ```
+
+`deceased` was added for clerk referrals (`Record_Referral_Design.md` §3.1):
+choosing `moved` or `deceased` offers to create a referral.
+
+`method` records how the contact was made. `invited` is a flag on top of
+it, not a fourth method, because an invitation is a *purpose*: it can be
+given at the door, by phone, or on a card. `sent` is the only outcome a
+`card` can have (the outcome selector is hidden for cards).
+
+**What counts as contact (settled):** a row counts as contact, and resets the
+contact-plan clock (§2.3), only when `outcome = 'contacted'` **and**
+`method IN ('visit','phone')`. Cards, not-home and no-answer attempts are
+logged and appear in history, but do not reset the clock. An invitation
+counts when it was given in person or by phone, since that row is
+already a contacted visit or call.
 
 Six values, deliberately few. The distinction that matters most is
 `contacted` versus everything else: it separates "we reached this family" from
@@ -59,9 +78,10 @@ fruitless doorstep attempts as three visits and marks the household as
 well-covered.
 
 `moved` and `refused` earn their place because they change what should happen
-next — `moved` should surface at the next import as a likely removal, and
-`refused` is a candidate for the "Do not contact" category. Whether the app acts
-on either automatically is a separate decision; recording them costs nothing.
+next. `refused` is a candidate for the "Do not contact" category. `moved` (and
+`deceased`) are **only recorded** on the visit. What the next import acts on
+is the clerk referral the user creates from it (`Record_Referral_Design.md`
+§3.3). A mistaken `moved` outcome therefore never deletes anything on its own.
 
 The `DEFAULT 'contacted'` matters for migration. Existing rows predate the
 column and there is no way to know what they were, so they must default to
@@ -70,13 +90,10 @@ only option was "record a visit", and it is the conservative direction for the
 gap analysis (it will not manufacture apparent neglect that did not exist).
 Rows created before the migration should be distinguishable — see §6.
 
-**Open question for discussion:** should `no_answer` count toward recency at
-all? Two reasonable positions. (a) It should: you went, that is effort spent, and
-a household you have tried three times should not keep rising to the top of the
-list forever. (b) It should not: the goal is contact, and an attempt that failed
-has not achieved it. The proposal below makes this a *setting* rather than a
-hardcoded choice, because congregations will differ and it is cheap to make
-configurable.
+**Settled:** `no_answer` / `not_home` do **not** count toward recency by
+default. The goal is contact, and a failed attempt hasn't achieved it. The
+"Count attempts as visits" checkbox in §3.1 remains for the occasional
+question "where have I at least *been*?", default off.
 
 ### 2.2 A derived last-visit view
 
@@ -88,7 +105,8 @@ SELECT h.id AS household_id,
        COUNT(v.id)                                        AS visit_count,
        SUM(CASE WHEN v.outcome = 'contacted' THEN 1 ELSE 0 END) AS contact_count,
        MAX(v.visit_date)                                   AS last_visit_date,
-       MAX(CASE WHEN v.outcome = 'contacted' THEN v.visit_date END) AS last_contact_date
+       MAX(CASE WHEN v.outcome = 'contacted' AND v.method IN ('visit','phone')
+                THEN v.visit_date END)                     AS last_contact_date
 FROM households h
 LEFT JOIN visits v ON v.household_id = h.id
 GROUP BY h.id;
@@ -104,6 +122,57 @@ delete, and restore, and G6 is already a live example of what happens when two
 representations of the same fact are updated independently. At the documented
 ceiling of 10,000 households with an index on `visits(household_id)` — which
 `schema.sql` already has — the aggregate is not a performance concern.
+
+### 2.3 `households.contact_plan`: how often we intend to reach out
+
+```sql
+ALTER TABLE households ADD COLUMN contact_plan TEXT
+    CHECK (contact_plan IS NULL OR contact_plan IN ('monthly','quarterly','as_needed'));
+```
+
+Plus the same nullable column on `deleted_households`, so soft-delete and
+restore carry it, and carried forward by Replace / Merge / Link like
+`comments` is.
+
+**Why this exists.** Some households warrant extra effort: more visits, more
+invitations. The obvious way to mark them is an "Active" / "Less active"
+label, and that is a judgment about a person that can hurt if they ever see
+it. A contact plan records **our commitment** ("we reach out monthly")
+rather than **their status**. It still identifies the extra-effort group,
+because that group is simply everyone on Monthly. Moving a household from
+Monthly to Quarterly when they start attending removes no label from
+anyone. The same principle is why "Not known" works: it describes what
+*we* know, not what *they* are.
+
+| Plan        | Due when `last_contact_date` is older than |
+| ----------- | ------------------------------------------ |
+| `monthly`   | 30 days                                    |
+| `quarterly` | 91 days                                    |
+| `as_needed` | never (for now)                            |
+| NULL        | no plan; never due by plan                 |
+
+Decisions:
+
+- **No plan for existing Known households at rollout.** The focus for the
+  next year or so is the Not known group. Plans are assigned as households
+  move from Not known to Known (§5, Recording a visit). They can also be set
+  manually on any household at any time.
+- **`as_needed` never comes due** for now. Revisit once there's enough
+  history to know whether a yearly check-in is wanted.
+- **"Not known" is not a plan.** A household with no contact yet is already
+  surfaced by Needs Attention as never-visited, so a "Get acquainted" plan
+  would only duplicate the tag.
+- **Do not contact stays a separate system tag.** It is the member's wish,
+  not our plan, and routing already depends on it (`do_not_contact`
+  system key).
+- **No review/approval tracking.** The user shares plans with ward council
+  informally (§3.5). The app holds only the current plan.
+
+**Where it is shown.** On screen freely: the user is the sole user of the
+app. In exports, **only** the Contact Plans PDF (§3.5). It never appears on
+the route PDF / Copy Text, the clerk referral PDF, or the directory and
+data-validation PDFs. Those go to other audiences (the doorstep, the clerk)
+who don't need it.
 
 ---
 
@@ -129,6 +198,7 @@ Columns:
 | Household    | `Lastname, First & First`       | Same format as the Households view and the directory PDF                         |
 | Address      | Street, city                    | Enough to recognise                                                              |
 | Tag          | Current category                | Chip, same rendering as elsewhere                                                |
+| Plan         | Contact plan, or blank          | §2.3; "due" marker when past the plan's interval                                 |
 | Last visit   | Date, or **Never**              | "Never" set in the accent colour — it is the answer the report exists to surface |
 | Days since   | Integer, or blank               | Sortable; the working column                                                     |
 | Last outcome | Chip: contacted / no answer / … | Reveals the household visited three times with no answer                         |
@@ -150,7 +220,8 @@ Controls, one row above the table:
   doors and must never surface one of those.
 - **Not visited in** filters to households past the threshold. Never-visited
   households always appear regardless of the threshold; they cannot be "recent"
-  by any definition. Options: 30 / 60 / 90 / 180 / 365 days, and "Any".
+  by any definition. Options: 30 / 60 / 90 / 180 / 365 days, "Due per contact
+  plan" (§2.3), and "Any".
 - **Count attempts as visits** is the §2.1 open question, exposed. Off means
   recency is measured from `last_contact_date`; on, from `last_visit_date`. The
   default should be off — the goal is contact — but it is one checkbox and it
@@ -206,7 +277,51 @@ counts, which look like coverage and are not (G7).
 ### 3.4 Household Visit History — exists, keep
 
 Already implemented in the household detail modal via `get_household_visits`.
-Add the outcome chip to each entry. Nothing else needs to change.
+Add the outcome chip (and method / invited markers) to each entry. Nothing
+else needs to change.
+
+### 3.5 Contact Plans: list and ward council PDF
+
+**Question answered:** who are we committed to reaching, and how often?
+
+A table of every household with a non-NULL `contact_plan`, grouped Monthly /
+Quarterly / As needed, sorted by last name within each group. Columns:
+household, address, plan, last contact date, due marker. Inline plan change
+from the row (same `mountDropdown`).
+
+**Export PDF** produces the list the user takes to ward council for
+informal discussion:
+
+```
+Contact Plans                                     Confidential — ward council
+<Unit name>                                                 Prepared 2026-11-11
+
+MONTHLY (6)
+  Household               Last contact    Adjustment
+  Smith, John & Mary      2026-10-28      ____________
+  ...
+
+QUARTERLY (9) ...
+AS NEEDED (14) ...
+
+DO NOT CONTACT — at the member's request (3)
+  Household
+  Jones, Alice
+```
+
+- **Contents are deliberately minimal**: name, plan, last contact date. **No
+  household comments, no visit comments, no addresses.** Notes are where
+  sensitive details live (health, family circumstances, what was said at the
+  door). The council needs the plan, not the notes. Anything else worth
+  raising is said in the meeting.
+- **The blank Adjustment column** is for marking changes by hand during the
+  meeting. The user updates the app afterward, so the app remains the one
+  place the plan lives.
+- **Do not contact** is listed so no one on the council assigns a visit there
+  by mistake, and it is framed as the member's request.
+- "Confidential — ward council" header and a prepared-on date, because a
+  printed list can travel further than the meeting.
+- Filename: `LostSheep-Contact-Plans-<YYYYMMDD>.pdf`.
 
 ---
 
@@ -256,7 +371,7 @@ Households, Visit Report, Deleted Records.
 Replace **Visit Report** with **Reports**, a single view containing a tab strip:
 
 ```
-[ Needs Attention ]  [ Visit Log ]  [ Coverage ]
+[ Needs Attention ]  [ Visit Log ]  [ Coverage ]  [ Contact Plans ]
 ```
 
 Rationale for a tab strip over three sidebar entries: they share a tag filter and
@@ -289,16 +404,39 @@ Structural notes, following existing conventions in this codebase:
 
 ### Recording a visit
 
-One change to the existing modal: an outcome selector next to the date.
+The existing modal gains method, outcome and an invitation checkbox:
 
 ```
 Date (YYYY-MM-DD)  [ 2026-09-04        ]
-Outcome            [ Contacted ▾       ]
+Method             [ Visit ▾           ]     Visit / Phone / Card
+Outcome            [ Contacted ▾       ]     hidden when Method = Card
+                   [ ] Invitation extended
 Comments           [                   ]
 ```
 
-Default `Contacted`, since it is the common case and the current implicit
-meaning. A `mountDropdown`, not a native select.
+Defaults `Visit` / `Contacted`, the common case and the current implicit
+meaning. `mountDropdown`s, not native selects.
+
+**Follow-up prompts after saving:**
+
+- **Not known → Known.** When the saved row counts as contact (§2.1) and the
+  household is tagged *Not known*, one small dialog follows:
+
+  ```
+  You've made contact with the Smith household.
+  [x] Mark as Known
+  Contact plan  [ None ▾ ]        None / Monthly / Quarterly / As needed
+                       [ Skip ]  [ Save ]
+  ```
+
+  "Mark as Known" is pre-checked. It is a prompt rather than an automatic
+  switch, because the user occasionally reaches someone without really
+  getting to know them. Marking Known by hand (the existing toggle in
+  `households-view.js`) stays, for people known from church but never visited.
+  This closes G6 for the common case without making the tag a derived value:
+  the tag still drives imports, map groups and PDF ordering unchanged.
+- **Moved / Deceased** offers "Create a clerk referral?" with the kind
+  pre-filled and the visit linked (`Record_Referral_Design.md` §3.1).
 
 ---
 
@@ -313,15 +451,29 @@ no Last Outcome or Attempts columns and no attempts toggle. This closes G2 and
 G3 — the two gaps that matter most — needs no migration, and is useful the day it
 ships. Includes the "Use as seed" link (§4) and option A annotation.
 
-**Stage 2 — the outcome column.** The `ALTER TABLE`, the migration, the outcome
-selector in the visit modal, and the columns that depend on it. This is the
-stage that needs the `schema_meta.schema_version` mechanism to be used for the
-first time; establish that pattern carefully, since every future migration will
-copy it. Consider recording the migration date so pre-migration rows — which were
-defaulted, not observed — can be identified later.
+*Implemented (branch `feat/needs-attention-report`):* `get_needs_attention`
+in `commands/visits.rs` with unit tests; `src/js/views/needs-attention.js`;
+the Reports tab strip in `visits-report-view.js` (sidebar entry renamed
+"Reports", view key unchanged). The seed button is labelled "Visit around
+here" to match the map popup, and it carries the report's tag filter to
+the map. Option A was already delivered by #89, which prints each stop's
+visit history on the route PDF and Copy Text. Not in Stage 1: Export PDF
+(Stage 3) and the outcome-dependent columns (Stage 2).
 
-**Stage 3 — Coverage Summary and PDF export.** Both are small once stages 1 and
-2 exist.
+**Stage 2 — outcome, method, contact plan.** The `visits` columns (§2.1) and
+`households.contact_plan` (§2.3), with their migrations (the existing
+`migrate_*` pattern in `db/mod.rs` has since become the established
+convention); the method / outcome / invitation controls in the visit modal;
+the Not known → Known prompt with plan selection; the moved/deceased
+referral prompt (if `Record_Referral_Design.md` Stage 1 has shipped); the
+Plan column and the columns that depend on outcome. Consider recording the
+migration date so pre-migration rows — which were defaulted, not observed —
+can be identified later.
+
+**Stage 3 — Coverage Summary, Contact Plans tab, and PDF exports.** Includes
+the ward council PDF (§3.5) and the "Due per contact plan" filter. All small
+once stages 1 and 2 exist. Add a test that the route, clerk, directory and
+data-validation PDFs never include `contact_plan`.
 
 **Stage 4 — visit-aware routing (option B).** Behaviour change to an existing
 feature; ship separately so it can be evaluated on its own.
@@ -335,13 +487,18 @@ issue (G9) should also be settled before Stage 2, since both change what a
 
 ---
 
-## 7. Questions to settle before Stage 1
+## 7. Decisions (settled 2026-11-11)
 
-1. Does `no_answer` count toward recency? Proposed: user setting, default no.
-2. Is Needs Attention the default view of the Reports section? Proposed: yes.
-3. Does the existing Visit Log survive as a tab, or is it replaced? Proposed:
-   survives — it answers a different question.
-4. Does "Not known" remain a meaningful category once recency is modelled, or
-   does it become redundant with `visit_count = 0`? This is worth deciding early
-   because it affects whether G6 needs a separate fix at all.
-5. Is `moved` acted on automatically at the next import, or only recorded?
+1. **`no_answer` / `not_home` do not count toward recency.** Default off,
+   with the §3.1 checkbox to include them. Cards don't count either (§2.1).
+2. **Needs Attention is the default tab** of Reports.
+3. **Visit Log survives** as a tab; it answers a different question.
+4. **"Not known" stays** as a manually-held tag. It is no longer kept in sync
+   purely by hand: the post-visit prompt (§5) offers the switch to Known at
+   the moment of first contact, and assigns a contact plan at the same time.
+5. **`moved` is only recorded** on the visit. The next import acts on the
+   clerk referral the user creates from it, not on the visit outcome
+   (`Record_Referral_Design.md`).
+6. **Contact plans** (§2.3): Monthly / Quarterly / As needed; As needed never
+   comes due for now; no plans assigned to existing Known households at
+   rollout; no council review/approval tracking.

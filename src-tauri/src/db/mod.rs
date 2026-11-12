@@ -64,6 +64,7 @@ pub fn open_pool(
     // database if these migrations haven't added the columns yet.
     migrate_household_uid(&conn)?;
     migrate_visit_uid(&conn)?;
+    backfill_null_visit_uids(&conn)?;
     // Issue #70: must also run before the schema batch — schema.sql's own
     // CREATE TABLE IF NOT EXISTS is a no-op on an existing review_queue
     // table, so a pre-existing database would otherwise keep the old,
@@ -289,6 +290,35 @@ fn migrate_visit_uid(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// Repairs visits stored with a NULL visit_uid. record_visit used to omit
+/// visit_uid from its INSERT; on a database whose column was added by
+/// migrate_visit_uid (nullable — ALTER TABLE can't add NOT NULL without a
+/// default) that silently stored NULL for every visit recorded since.
+/// The unique index permits any number of NULLs, so nothing flagged it.
+/// Runs on every open; after the first repair it finds no rows and is a
+/// single indexed lookup. A fresh database's NOT NULL column can never
+/// hold NULL, so this is a no-op there.
+fn backfill_null_visit_uids(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='visits'",
+        [],
+        |r| r.get(0),
+    )?;
+    if table_exists == 0 {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT id FROM visits WHERE visit_uid IS NULL")?;
+    let ids: Vec<i64> = stmt.query_map([], |r| r.get(0))?.filter_map(Result::ok).collect();
+    drop(stmt);
+    for id in ids {
+        conn.execute(
+            "UPDATE visits SET visit_uid = ?1 WHERE id = ?2",
+            rusqlite::params![Uuid::new_v4().to_string(), id],
+        )?;
+    }
+    Ok(())
+}
+
 /// One-time migration for databases created before 'link' joined
 /// review_queue.resolution's vocabulary (issue #70). SQLite can't ALTER a
 /// CHECK constraint in place, so this rebuilds the table under the
@@ -411,4 +441,41 @@ pub fn restore_via_online_backup(pool: &Pool, rekeyed_path: &PathBuf, key_hex: &
         backup.run_to_completion(i32::MAX, std::time::Duration::from_millis(0), None)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod visit_uid_backfill_tests {
+    use super::*;
+
+    /// Shape of a database whose visit_uid column was added by
+    /// migrate_visit_uid: nullable, with NULLs left by the old record_visit.
+    #[test]
+    fn backfills_null_uids_and_leaves_existing_ones() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE visits (id INTEGER PRIMARY KEY, household_id INTEGER, visit_date TEXT, visit_uid TEXT); \
+             CREATE UNIQUE INDEX idx_visits_visit_uid ON visits(visit_uid); \
+             INSERT INTO visits (household_id, visit_date, visit_uid) VALUES \
+                (1, '2026-01-01', 'keep-me'), (1, '2026-02-01', NULL), (2, '2026-03-01', NULL);",
+        )
+        .unwrap();
+
+        backfill_null_visit_uids(&c).unwrap();
+
+        let nulls: i64 = c.query_row("SELECT count(*) FROM visits WHERE visit_uid IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(nulls, 0);
+        let kept: String = c.query_row("SELECT visit_uid FROM visits WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, "keep-me");
+        let distinct: i64 = c.query_row("SELECT count(DISTINCT visit_uid) FROM visits", [], |r| r.get(0)).unwrap();
+        assert_eq!(distinct, 3);
+
+        // Second run is a no-op.
+        backfill_null_visit_uids(&c).unwrap();
+    }
+
+    #[test]
+    fn no_visits_table_is_a_no_op() {
+        let c = Connection::open_in_memory().unwrap();
+        backfill_null_visit_uids(&c).unwrap();
+    }
 }
