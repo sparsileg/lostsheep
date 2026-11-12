@@ -31,7 +31,12 @@ pub fn record_visit(
     let normalized = parsed.format("%Y-%m-%d").to_string();
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let visit_id = insert_visit(&conn, household_id, &normalized, comments.as_deref())?;
-    super::logs::log(&conn, "info", &format!("visit recorded for household {household_id} on {normalized}"), None);
+    super::logs::log(
+        &conn,
+        "info",
+        &format!("visit recorded for household {household_id} on {normalized}"),
+        None,
+    );
     Ok(visit_id)
 }
 
@@ -66,7 +71,11 @@ pub struct VisitRecord {
 }
 
 #[tauri::command]
-pub fn get_visits_report(state: State<AppState>, date_from: String, date_to: String) -> Result<Vec<VisitRecord>, String> {
+pub fn get_visits_report(
+    state: State<AppState>,
+    date_from: String,
+    date_to: String,
+) -> Result<Vec<VisitRecord>, String> {
     // A malformed range used to just return an empty table — indistinguishable
     // from "no visits in this period" (#35). Reject it explicitly instead.
     // Normalizing both bounds also means a non-zero-padded but otherwise valid
@@ -111,14 +120,21 @@ pub struct HouseholdVisit {
 }
 
 #[tauri::command]
-pub fn get_household_visits(state: State<AppState>, household_id: i64) -> Result<Vec<HouseholdVisit>, String> {
+pub fn get_household_visits(
+    state: State<AppState>,
+    household_id: i64,
+) -> Result<Vec<HouseholdVisit>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, visit_date, comments FROM visits WHERE household_id = ?1 ORDER BY visit_date DESC, id DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![household_id], |row| {
-            Ok(HouseholdVisit { id: row.get(0)?, visit_date: row.get(1)?, comments: row.get(2)? })
+            Ok(HouseholdVisit {
+                id: row.get(0)?,
+                visit_date: row.get(1)?,
+                comments: row.get(2)?,
+            })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
@@ -266,7 +282,12 @@ pub fn get_needs_attention(
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     // Local date, not UTC: visit dates are entered as the user's own
     // calendar date, so "days since" must count from the user's today.
-    needs_attention_query(&conn, tag_id, threshold_days, chrono::Local::now().date_naive())
+    needs_attention_query(
+        &conn,
+        tag_id,
+        threshold_days,
+        chrono::Local::now().date_naive(),
+    )
 }
 
 /// Edits an existing visit's date and/or comments. Same normalization
@@ -294,7 +315,12 @@ pub fn update_visit(
     if rows == 0 {
         return Err(format!("visit {visit_id} not found"));
     }
-    super::logs::log(&conn, "info", &format!("visit {visit_id} updated to {normalized}"), None);
+    super::logs::log(
+        &conn,
+        "info",
+        &format!("visit {visit_id} updated to {normalized}"),
+        None,
+    );
     Ok(())
 }
 
@@ -406,25 +432,53 @@ pub fn fetch_grouped_households(
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
 
     struct Row {
-        id: i64, address_key: String, address_line1: Option<String>, address_line2: Option<String>,
-        city: Option<String>, state: Option<String>, zip: Option<String>,
-        lat: f64, lon: f64, name: String, phones: Vec<String>,
+        id: i64,
+        address_key: String,
+        address_line1: Option<String>,
+        address_line2: Option<String>,
+        city: Option<String>,
+        state: Option<String>,
+        zip: Option<String>,
+        lat: f64,
+        lon: f64,
+        name: String,
+        phones: Vec<String>,
     }
     fn map_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
         let name = match r.get::<_, Option<String>>(11)? {
-            Some(first2) => format!("{} {} & {} {}", r.get::<_, String>(9)?, r.get::<_, String>(10)?, first2, r.get::<_, Option<String>>(12)?.unwrap_or_default()),
+            Some(first2) => format!(
+                "{} {} & {} {}",
+                r.get::<_, String>(9)?,
+                r.get::<_, String>(10)?,
+                first2,
+                r.get::<_, Option<String>>(12)?.unwrap_or_default()
+            ),
             None => format!("{} {}", r.get::<_, String>(9)?, r.get::<_, String>(10)?),
         };
-        let phones: Vec<String> = [r.get::<_, Option<String>>(13)?, r.get::<_, Option<String>>(14)?]
-            .into_iter().flatten().collect();
+        let phones: Vec<String> = [
+            r.get::<_, Option<String>>(13)?,
+            r.get::<_, Option<String>>(14)?,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         Ok(Row {
-            id: r.get(0)?, address_key: r.get(1)?, address_line1: r.get(2)?, address_line2: r.get(3)?,
-            city: r.get(4)?, state: r.get(5)?, zip: r.get(6)?,
-            lat: r.get(7)?, lon: r.get(8)?, name, phones,
+            id: r.get(0)?,
+            address_key: r.get(1)?,
+            address_line1: r.get(2)?,
+            address_line2: r.get(3)?,
+            city: r.get(4)?,
+            state: r.get(5)?,
+            zip: r.get(6)?,
+            lat: r.get(7)?,
+            lon: r.get(8)?,
+            name,
+            phones,
         })
     }
     let rows: Vec<Row> = if let Some(tag_id) = tag_id {
-        stmt.query_map(rusqlite::params![tag_id], map_row).map_err(|e| e.to_string())?
+        stmt.query_map(rusqlite::params![tag_id], map_row)
+            .map_err(|e| e.to_string())?
     } else {
         stmt.query_map([], map_row).map_err(|e| e.to_string())?
     }
@@ -520,7 +574,13 @@ const METERS_PER_DEGREE_LAT: f64 = 111_320.0;
 /// call is correct; if a caller ever needs two different tolerances
 /// against the same graph in one invocation, this cache would need
 /// splitting by tolerance too.
-fn snap_to_graph(graph: &RoadGraph, lat: f64, lon: f64, tolerance_m: f64, cache: &mut SnapCache) -> Option<(i64, f64)> {
+fn snap_to_graph(
+    graph: &RoadGraph,
+    lat: f64,
+    lon: f64,
+    tolerance_m: f64,
+    cache: &mut SnapCache,
+) -> Option<(i64, f64)> {
     let key = snap_cache_key(lat, lon);
     if let Some(cached) = cache.get(&key) {
         return *cached;
@@ -539,11 +599,15 @@ fn snap_to_graph(graph: &RoadGraph, lat: f64, lon: f64, tolerance_m: f64, cache:
     let mut best: Option<(i64, f64)> = None;
     for row in (center_row - lat_rings)..=(center_row + lat_rings) {
         for col in (center_col - lon_rings)..=(center_col + lon_rings) {
-            let Some(ids) = graph.grid.get(&(row, col)) else { continue };
+            let Some(ids) = graph.grid.get(&(row, col)) else {
+                continue;
+            };
             for &id in ids {
-                let Some(&(nlat, nlon)) = graph.coords.get(&id) else { continue };
+                let Some(&(nlat, nlon)) = graph.coords.get(&id) else {
+                    continue;
+                };
                 let d = crate::geo::haversine_meters(lat, lon, nlat, nlon);
-                if d <= tolerance_m && best.map_or(true, |(_, bd)| d < bd) {
+                if d <= tolerance_m && best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((id, d));
                 }
             }
@@ -595,7 +659,11 @@ struct AStarScratch {
 
 impl AStarScratch {
     fn new() -> Self {
-        Self { best_cost: HashMap::new(), came_from: HashMap::new(), open: BinaryHeap::new() }
+        Self {
+            best_cost: HashMap::new(),
+            came_from: HashMap::new(),
+            open: BinaryHeap::new(),
+        }
     }
 }
 
@@ -604,7 +672,12 @@ impl AStarScratch {
 /// true road distance, since road distance is always >= straight-line).
 /// None if the goal is unreachable from start within the loaded graph
 /// (e.g. two disconnected road-network islands in the ingested extract).
-fn astar_distance(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScratch) -> Option<f64> {
+fn astar_distance(
+    graph: &RoadGraph,
+    start: i64,
+    goal: i64,
+    scratch: &mut AStarScratch,
+) -> Option<f64> {
     if start == goal {
         return Some(0.0);
     }
@@ -613,7 +686,11 @@ fn astar_distance(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarS
     scratch.best_cost.clear();
     scratch.open.clear();
     scratch.best_cost.insert(start, 0.0);
-    scratch.open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
+    scratch.open.push(AStarFrontierNode {
+        cost: 0.0,
+        est_total: 0.0,
+        node: start,
+    });
 
     while let Some(AStarFrontierNode { cost, node, .. }) = scratch.open.pop() {
         if node == goal {
@@ -629,12 +706,17 @@ fn astar_distance(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarS
         if let Some(neighbors) = graph.adjacency.get(&node) {
             for &(next, edge_dist, _) in neighbors {
                 let new_cost = cost + edge_dist;
-                let is_better = scratch.best_cost.get(&next).map_or(true, |&c| new_cost < c);
+                let is_better = scratch.best_cost.get(&next).is_none_or(|&c| new_cost < c);
                 if is_better {
                     scratch.best_cost.insert(next, new_cost);
                     if let Some(&(nlat, nlon)) = graph.coords.get(&next) {
-                        let h = crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
-                        scratch.open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
+                        let h =
+                            crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
+                        scratch.open.push(AStarFrontierNode {
+                            cost: new_cost,
+                            est_total: new_cost + h,
+                            node: next,
+                        });
                     }
                 }
             }
@@ -647,7 +729,12 @@ fn astar_distance(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarS
 /// path via a predecessor map — only called once per chosen stop (not
 /// once per candidate evaluated), since the scan loop above only needs
 /// the distance, not the geometry, to pick a winner.
-fn astar_path(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScratch) -> Option<(f64, Vec<i64>)> {
+fn astar_path(
+    graph: &RoadGraph,
+    start: i64,
+    goal: i64,
+    scratch: &mut AStarScratch,
+) -> Option<(f64, Vec<i64>)> {
     if start == goal {
         return Some((0.0, vec![start]));
     }
@@ -657,7 +744,11 @@ fn astar_path(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScrat
     scratch.came_from.clear();
     scratch.open.clear();
     scratch.best_cost.insert(start, 0.0);
-    scratch.open.push(AStarFrontierNode { cost: 0.0, est_total: 0.0, node: start });
+    scratch.open.push(AStarFrontierNode {
+        cost: 0.0,
+        est_total: 0.0,
+        node: start,
+    });
 
     while let Some(AStarFrontierNode { cost, node, .. }) = scratch.open.pop() {
         if node == goal {
@@ -678,13 +769,18 @@ fn astar_path(graph: &RoadGraph, start: i64, goal: i64, scratch: &mut AStarScrat
         if let Some(neighbors) = graph.adjacency.get(&node) {
             for &(next, edge_dist, _) in neighbors {
                 let new_cost = cost + edge_dist;
-                let is_better = scratch.best_cost.get(&next).map_or(true, |&c| new_cost < c);
+                let is_better = scratch.best_cost.get(&next).is_none_or(|&c| new_cost < c);
                 if is_better {
                     scratch.best_cost.insert(next, new_cost);
                     scratch.came_from.insert(next, node);
                     if let Some(&(nlat, nlon)) = graph.coords.get(&next) {
-                        let h = crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
-                        scratch.open.push(AStarFrontierNode { cost: new_cost, est_total: new_cost + h, node: next });
+                        let h =
+                            crate::geo::haversine_meters(nlat, nlon, goal_coord.0, goal_coord.1);
+                        scratch.open.push(AStarFrontierNode {
+                            cost: new_cost,
+                            est_total: new_cost + h,
+                            node: next,
+                        });
                     }
                 }
             }
@@ -735,13 +831,22 @@ fn route_leg_distance(
         );
     };
 
-    let from_snap = snap_to_graph(graph, from_lat, from_lon, super::roads::SNAP_TOLERANCE_M, cache);
+    let from_snap = snap_to_graph(
+        graph,
+        from_lat,
+        from_lon,
+        super::roads::SNAP_TOLERANCE_M,
+        cache,
+    );
     let to_snap = snap_to_graph(graph, to_lat, to_lon, super::roads::SNAP_TOLERANCE_M, cache);
 
     match (from_snap, to_snap) {
         (Some((from_node, from_snap_dist)), Some((to_node, to_snap_dist))) => {
             match astar_distance(graph, from_node, to_node, scratch) {
-                Some(road_dist) => (from_snap_dist + road_dist + to_snap_dist, RouteDistanceSource::Road),
+                Some(road_dist) => (
+                    from_snap_dist + road_dist + to_snap_dist,
+                    RouteDistanceSource::Road,
+                ),
                 None => (
                     crate::geo::haversine_meters(from_lat, from_lon, to_lat, to_lon),
                     RouteDistanceSource::StraightLineNoSnap,
@@ -760,6 +865,7 @@ fn route_leg_distance(
 /// candidate. `source` is whatever route_leg_distance already returned
 /// for this same (from, to) pair; re-snapping here is cheap and avoids
 /// threading extra state through the scan loop just to skip it.
+#[allow(clippy::too_many_arguments)]
 fn route_leg_path(
     graph: Option<&RoadGraph>,
     from_lat: f64,
@@ -772,8 +878,14 @@ fn route_leg_path(
 ) -> Vec<RoutePathPoint> {
     let straight = || {
         vec![
-            RoutePathPoint { lat: from_lat, lon: from_lon },
-            RoutePathPoint { lat: to_lat, lon: to_lon },
+            RoutePathPoint {
+                lat: from_lat,
+                lon: from_lon,
+            },
+            RoutePathPoint {
+                lat: to_lat,
+                lon: to_lon,
+            },
         ]
     };
 
@@ -781,9 +893,17 @@ fn route_leg_path(
     if !is_road {
         return straight();
     }
-    let Some(graph) = graph else { return straight() };
+    let Some(graph) = graph else {
+        return straight();
+    };
 
-    let from_snap = snap_to_graph(graph, from_lat, from_lon, super::roads::SNAP_TOLERANCE_M, cache);
+    let from_snap = snap_to_graph(
+        graph,
+        from_lat,
+        from_lon,
+        super::roads::SNAP_TOLERANCE_M,
+        cache,
+    );
     let to_snap = snap_to_graph(graph, to_lat, to_lon, super::roads::SNAP_TOLERANCE_M, cache);
     let (Some((from_node, _)), Some((to_node, _))) = (from_snap, to_snap) else {
         return straight();
@@ -793,13 +913,19 @@ fn route_leg_path(
     };
 
     let mut points = Vec::with_capacity(node_path.len() + 2);
-    points.push(RoutePathPoint { lat: from_lat, lon: from_lon });
+    points.push(RoutePathPoint {
+        lat: from_lat,
+        lon: from_lon,
+    });
     for id in &node_path {
         if let Some(&(lat, lon)) = graph.coords.get(id) {
             points.push(RoutePathPoint { lat, lon });
         }
     }
-    points.push(RoutePathPoint { lat: to_lat, lon: to_lon });
+    points.push(RoutePathPoint {
+        lat: to_lat,
+        lon: to_lon,
+    });
     points
 }
 
@@ -863,7 +989,11 @@ fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64
         for i in 0..perm.len() {
             let node = perm[i];
             let prev = if i == 0 { None } else { Some(perm[i - 1]) };
-            let next = if i == perm.len() - 1 { None } else { Some(perm[i + 1]) };
+            let next = if i == perm.len() - 1 {
+                None
+            } else {
+                Some(perm[i + 1])
+            };
 
             // Cost of closing the gap left by removing `node` from position i.
             let removed_cost = edge_cost(prev, Some(node)) + edge_cost(Some(node), next);
@@ -880,7 +1010,11 @@ fn or_opt_pass(perm: &mut Vec<usize>, dist_start: &[f64], dist_matrix: &[Vec<f64
             let mut best_pos: Option<usize> = None;
             for k in 0..=without.len() {
                 let ins_prev = if k == 0 { None } else { Some(without[k - 1]) };
-                let ins_next = if k == without.len() { None } else { Some(without[k]) };
+                let ins_next = if k == without.len() {
+                    None
+                } else {
+                    Some(without[k])
+                };
                 let insert_cost = edge_cost(ins_prev, Some(node)) + edge_cost(Some(node), ins_next)
                     - edge_cost(ins_prev, ins_next);
                 let total_delta = remove_delta + insert_cost;
@@ -951,14 +1085,25 @@ fn two_opt_improve(
     scratch: &mut AStarScratch,
 ) -> (Vec<VisitListEntry>, TwoOptTiming) {
     let n = stops.len();
-    if n < 2 || n > TWO_OPT_MAX_STOPS {
+    if !(2..=TWO_OPT_MAX_STOPS).contains(&n) {
         return (stops, TwoOptTiming::default());
     }
 
     let t_dist_start = std::time::Instant::now();
     let mut dist_start: Vec<f64> = Vec::with_capacity(n);
     for e in &stops {
-        dist_start.push(route_leg_distance(graph, start_lat, start_lon, e.latitude, e.longitude, cache, scratch).0);
+        dist_start.push(
+            route_leg_distance(
+                graph,
+                start_lat,
+                start_lon,
+                e.latitude,
+                e.longitude,
+                cache,
+                scratch,
+            )
+            .0,
+        );
     }
     let dist_start_ms = t_dist_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -966,7 +1111,16 @@ fn two_opt_improve(
     let mut dist_matrix = vec![vec![0.0_f64; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let d = route_leg_distance(graph, stops[i].latitude, stops[i].longitude, stops[j].latitude, stops[j].longitude, cache, scratch).0;
+            let d = route_leg_distance(
+                graph,
+                stops[i].latitude,
+                stops[i].longitude,
+                stops[j].latitude,
+                stops[j].longitude,
+                cache,
+                scratch,
+            )
+            .0;
             dist_matrix[i][j] = d;
             dist_matrix[j][i] = d;
         }
@@ -997,8 +1151,10 @@ fn two_opt_improve(
                 // configured start point (dist_start), not free — matches
                 // or_opt_pass()'s edge_cost so both passes agree on what a
                 // tour costs and neither can undo the other's fix.
-                let old_cost = leg_dist(prev, perm[i]) + next.map_or(dist_start[perm[j]], |nx| dist_matrix[perm[j]][nx]);
-                let new_cost = leg_dist(prev, perm[j]) + next.map_or(dist_start[perm[i]], |nx| dist_matrix[perm[i]][nx]);
+                let old_cost = leg_dist(prev, perm[i])
+                    + next.map_or(dist_start[perm[j]], |nx| dist_matrix[perm[j]][nx]);
+                let new_cost = leg_dist(prev, perm[j])
+                    + next.map_or(dist_start[perm[i]], |nx| dist_matrix[perm[i]][nx]);
                 if new_cost + 1e-9 < old_cost {
                     perm[i..=j].reverse();
                     improved = true;
@@ -1022,8 +1178,25 @@ fn two_opt_improve(
     let mut result: Vec<VisitListEntry> = perm.into_iter().map(|i| stops[i].clone()).collect();
     let mut cur = (start_lat, start_lon);
     for entry in result.iter_mut() {
-        let (d, source) = route_leg_distance(graph, cur.0, cur.1, entry.latitude, entry.longitude, cache, scratch);
-        let path = route_leg_path(graph, cur.0, cur.1, entry.latitude, entry.longitude, &source, cache, scratch);
+        let (d, source) = route_leg_distance(
+            graph,
+            cur.0,
+            cur.1,
+            entry.latitude,
+            entry.longitude,
+            cache,
+            scratch,
+        );
+        let path = route_leg_path(
+            graph,
+            cur.0,
+            cur.1,
+            entry.latitude,
+            entry.longitude,
+            &source,
+            cache,
+            scratch,
+        );
         entry.distance_meters = d;
         entry.distance_context = "route".to_string();
         entry.route_distance_source = Some(source.as_str().to_string());
@@ -1032,7 +1205,15 @@ fn two_opt_improve(
     }
     let finalize_ms = t_finalize.elapsed().as_secs_f64() * 1000.0;
 
-    (result, TwoOptTiming { dist_start_ms, dist_matrix_ms, search_ms, finalize_ms })
+    (
+        result,
+        TwoOptTiming {
+            dist_start_ms,
+            dist_matrix_ms,
+            search_ms,
+            finalize_ms,
+        },
+    )
 }
 
 // How much bigger the haversine-sorted shortlist is than the final N,
@@ -1046,7 +1227,10 @@ const ROAD_SELECTION_SHORTLIST_MULTIPLIER: usize = 3;
 /// raw rows — matches the "all records sharing an address are included
 /// together" rule.
 #[tauri::command]
-pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListParams) -> Result<Vec<VisitListEntry>, String> {
+pub fn generate_visit_list(
+    state: State<AppState>,
+    params: GenerateVisitListParams,
+) -> Result<Vec<VisitListEntry>, String> {
     // Issue #66 diagnostic: total wall time plus a per-phase breakdown,
     // logged once at the end via commands::logs::log (DEBUG level, Log
     // Viewer). Grid-indexed snapping (this issue's earlier patch) sped
@@ -1064,7 +1248,12 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         .query_row(
             "SELECT latitude, longitude FROM households WHERE id = ?1",
             rusqlite::params![params.seed_household_id],
-            |r| Ok((r.get::<_, Option<f64>>(0)?.unwrap_or(0.0), r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))),
+            |r| {
+                Ok((
+                    r.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
+                    r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                ))
+            },
         )
         .unwrap_or((0.0, 0.0));
 
@@ -1160,7 +1349,9 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
     let mut selection_ms = 0.0;
     if use_road_selection {
         let t_selection = std::time::Instant::now();
-        let shortlist_len = want.saturating_mul(ROAD_SELECTION_SHORTLIST_MULTIPLIER).min(entries.len());
+        let shortlist_len = want
+            .saturating_mul(ROAD_SELECTION_SHORTLIST_MULTIPLIER)
+            .min(entries.len());
         // Road distance from the seed decides *which* N addresses make
         // the list — distance_meters/distance_context on the kept entries
         // stay the haversine "seed" values already set above, matching
@@ -1169,14 +1360,26 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         // below when one is configured, same as before.
         let mut ranked: Vec<(usize, f64)> = Vec::with_capacity(shortlist_len);
         for (i, e) in entries[..shortlist_len].iter().enumerate() {
-            let d = route_leg_distance(graph.as_deref(), seed.0, seed.1, e.latitude, e.longitude, &mut snap_cache, &mut astar_scratch).0;
+            let d = route_leg_distance(
+                graph.as_deref(),
+                seed.0,
+                seed.1,
+                e.latitude,
+                e.longitude,
+                &mut snap_cache,
+                &mut astar_scratch,
+            )
+            .0;
             ranked.push((i, d));
         }
         ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
         ranked.truncate(want);
         let mut keep_indexes: Vec<usize> = ranked.into_iter().map(|(i, _)| i).collect();
         keep_indexes.sort_unstable();
-        entries = keep_indexes.into_iter().map(|i| entries[i].clone()).collect();
+        entries = keep_indexes
+            .into_iter()
+            .map(|i| entries[i].clone())
+            .collect();
         selection_ms = t_selection.elapsed().as_secs_f64() * 1000.0;
     } else {
         entries.truncate(want);
@@ -1194,7 +1397,15 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             let mut best_dist = f64::MAX;
             let mut best_source = RouteDistanceSource::StraightLineNoGraph;
             for (i, e) in remaining.iter().enumerate() {
-                let (d, source) = route_leg_distance(graph.as_deref(), cur.0, cur.1, e.latitude, e.longitude, &mut snap_cache, &mut astar_scratch);
+                let (d, source) = route_leg_distance(
+                    graph.as_deref(),
+                    cur.0,
+                    cur.1,
+                    e.latitude,
+                    e.longitude,
+                    &mut snap_cache,
+                    &mut astar_scratch,
+                );
                 if d < best_dist {
                     best_dist = d;
                     best_idx = i;
@@ -1202,7 +1413,16 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
                 }
             }
             let mut next = remaining.remove(best_idx);
-            let path = route_leg_path(graph.as_deref(), cur.0, cur.1, next.latitude, next.longitude, &best_source, &mut snap_cache, &mut astar_scratch);
+            let path = route_leg_path(
+                graph.as_deref(),
+                cur.0,
+                cur.1,
+                next.latitude,
+                next.longitude,
+                &best_source,
+                &mut snap_cache,
+                &mut astar_scratch,
+            );
             next.distance_meters = best_dist;
             next.distance_context = "route".to_string();
             next.route_distance_source = Some(best_source.as_str().to_string());
@@ -1215,7 +1435,14 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
         // this walk already loaded. Nearest-neighbor above only ever
         // decides "closest unvisited stop next"; this cleans up the
         // worst of that heuristic's mistakes afterward.
-        let (improved, timing) = two_opt_improve(graph.as_deref(), start_lat, start_lon, ordered, &mut snap_cache, &mut astar_scratch);
+        let (improved, timing) = two_opt_improve(
+            graph.as_deref(),
+            start_lat,
+            start_lon,
+            ordered,
+            &mut snap_cache,
+            &mut astar_scratch,
+        );
         entries = improved;
         two_opt_timing = Some(timing);
     }
@@ -1238,8 +1465,16 @@ pub fn generate_visit_list(state: State<AppState>, params: GenerateVisitListPara
             t.dist_start_ms, t.dist_matrix_ms, t.search_ms, t.finalize_ms
         ));
     }
-    timing_msg.push_str(&format!(" total={:.1}ms", t_total.elapsed().as_secs_f64() * 1000.0));
-    super::logs::log(&conn, "debug", &timing_msg, Some("visits::generate_visit_list#66"));
+    timing_msg.push_str(&format!(
+        " total={:.1}ms",
+        t_total.elapsed().as_secs_f64() * 1000.0
+    ));
+    super::logs::log(
+        &conn,
+        "debug",
+        &timing_msg,
+        Some("visits::generate_visit_list#66"),
+    );
 
     let _dedupe_guard: HashSet<String> = HashSet::new(); // reserved: cross-group id collision guard if needed later
     Ok(entries)
@@ -1257,7 +1492,11 @@ mod needs_attention_tests {
     }
 
     fn household(c: &Connection, first: &str, last: &str, coords: bool) -> i64 {
-        let (lat, lon) = if coords { (Some(39.1), Some(-78.1)) } else { (None, None) };
+        let (lat, lon) = if coords {
+            (Some(39.1), Some(-78.1))
+        } else {
+            (None, None)
+        };
         c.execute(
             "INSERT INTO households (household_uid, first_name, last_name, role, address_key, source_key, latitude, longitude) \
              VALUES (?1, ?2, ?3, 'head', ?4, ?4, ?5, ?6)",
@@ -1277,10 +1516,17 @@ mod needs_attention_tests {
 
     fn tag(c: &Connection, hh: i64, name_norm: &str) -> i64 {
         let tag_id: i64 = c
-            .query_row("SELECT id FROM tags WHERE name_norm = ?1", params![name_norm], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM tags WHERE name_norm = ?1",
+                params![name_norm],
+                |r| r.get(0),
+            )
             .unwrap();
-        c.execute("INSERT INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![hh, tag_id])
-            .unwrap();
+        c.execute(
+            "INSERT INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
+            params![hh, tag_id],
+        )
+        .unwrap();
         tag_id
     }
 
@@ -1335,7 +1581,13 @@ mod needs_attention_tests {
         visit(&c, a, "2026-11-10");
         let r = needs_attention_query(&c, None, None, today()).unwrap();
         assert_eq!(ids(&r), vec![a, b]);
-        assert!(!r.rows.iter().find(|x| x.household_id == b).unwrap().has_coords);
+        assert!(
+            !r.rows
+                .iter()
+                .find(|x| x.household_id == b)
+                .unwrap()
+                .has_coords
+        );
     }
 
     #[test]
@@ -1371,7 +1623,12 @@ mod needs_attention_tests {
         let a = insert_visit(&c, hh, "2026-11-11", Some("first")).unwrap();
         let b = insert_visit(&c, hh, "2026-11-11", None).unwrap();
         let uid = |id: i64| -> String {
-            c.query_row("SELECT visit_uid FROM visits WHERE id = ?1", params![id], |r| r.get(0)).unwrap()
+            c.query_row(
+                "SELECT visit_uid FROM visits WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(uid(a).len(), 36);
         assert_ne!(uid(a), uid(b));

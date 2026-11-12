@@ -1,6 +1,6 @@
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -31,19 +31,21 @@ pub fn open_pool(
         apply_key(conn, &key_hex)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         let flag = dirty_flag.clone();
-        conn.update_hook(Some(move |_action, _db_name: &str, table_name: &str, _rowid| {
-            // logs/settings/schema_meta writes happen on essentially every
-            // command (every command logs; settings itself would recurse
-            // into "a change was made" forever) — excluded so the timer
-            // reflects actual congregation data changing, not the app's
-            // own bookkeeping.
-            if matches!(table_name, "logs" | "settings" | "schema_meta") {
-                return;
-            }
-            if let Ok(mut guard) = flag.lock() {
-                *guard = Some(chrono::Utc::now());
-            }
-        }));
+        conn.update_hook(Some(
+            move |_action, _db_name: &str, table_name: &str, _rowid| {
+                // logs/settings/schema_meta writes happen on essentially every
+                // command (every command logs; settings itself would recurse
+                // into "a change was made" forever) — excluded so the timer
+                // reflects actual congregation data changing, not the app's
+                // own bookkeeping.
+                if matches!(table_name, "logs" | "settings" | "schema_meta") {
+                    return;
+                }
+                if let Ok(mut guard) = flag.lock() {
+                    *guard = Some(chrono::Utc::now());
+                }
+            },
+        ));
         Ok(())
     });
     let pool = r2d2::Pool::builder().max_size(8).build(manager)?;
@@ -164,13 +166,16 @@ fn migrate_source_key_seq(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(()); // already migrated
     }
 
-    conn.execute_batch("ALTER TABLE households ADD COLUMN source_key_seq INTEGER NOT NULL DEFAULT 0;")?;
+    conn.execute_batch(
+        "ALTER TABLE households ADD COLUMN source_key_seq INTEGER NOT NULL DEFAULT 0;",
+    )?;
 
     // Assign sequential seq per duplicate source_key group. Done in Rust
     // rather than a single SQL window-function statement — simpler to
     // reason about correctness here, and this runs at most once per
     // install, never on a hot path.
-    let mut rows_stmt = conn.prepare("SELECT id, source_key FROM households ORDER BY source_key, id")?;
+    let mut rows_stmt =
+        conn.prepare("SELECT id, source_key FROM households ORDER BY source_key, id")?;
     let all_rows: Vec<(i64, String)> = rows_stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .filter_map(Result::ok)
@@ -184,7 +189,10 @@ fn migrate_source_key_seq(conn: &Connection) -> rusqlite::Result<()> {
         if *seq != 0 {
             // Only rows past the first in a group actually need writing —
             // the column's own DEFAULT 0 already covers the first.
-            conn.execute("UPDATE households SET source_key_seq = ?1 WHERE id = ?2", rusqlite::params![*seq, id])?;
+            conn.execute(
+                "UPDATE households SET source_key_seq = ?1 WHERE id = ?2",
+                rusqlite::params![*seq, id],
+            )?;
         }
     }
 
@@ -226,11 +234,17 @@ fn migrate_household_uid(conn: &Connection) -> rusqlite::Result<()> {
     // uses above — simpler to reason about than a bulk SQL expression,
     // and this runs at most once per install, never on a hot path.
     let mut ids_stmt = conn.prepare("SELECT id FROM households")?;
-    let ids: Vec<i64> = ids_stmt.query_map([], |r| r.get(0))?.filter_map(Result::ok).collect();
+    let ids: Vec<i64> = ids_stmt
+        .query_map([], |r| r.get(0))?
+        .filter_map(Result::ok)
+        .collect();
     drop(ids_stmt);
     for id in ids {
         let uid = Uuid::new_v4().to_string();
-        conn.execute("UPDATE households SET household_uid = ?1 WHERE id = ?2", rusqlite::params![uid, id])?;
+        conn.execute(
+            "UPDATE households SET household_uid = ?1 WHERE id = ?2",
+            rusqlite::params![uid, id],
+        )?;
     }
 
     // deleted_households: nullable mirror columns, no backfill possible —
@@ -275,11 +289,17 @@ fn migrate_visit_uid(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("ALTER TABLE visits ADD COLUMN visit_uid TEXT;")?;
 
     let mut ids_stmt = conn.prepare("SELECT id FROM visits")?;
-    let ids: Vec<i64> = ids_stmt.query_map([], |r| r.get(0))?.filter_map(Result::ok).collect();
+    let ids: Vec<i64> = ids_stmt
+        .query_map([], |r| r.get(0))?
+        .filter_map(Result::ok)
+        .collect();
     drop(ids_stmt);
     for id in ids {
         let uid = Uuid::new_v4().to_string();
-        conn.execute("UPDATE visits SET visit_uid = ?1 WHERE id = ?2", rusqlite::params![uid, id])?;
+        conn.execute(
+            "UPDATE visits SET visit_uid = ?1 WHERE id = ?2",
+            rusqlite::params![uid, id],
+        )?;
     }
 
     // deleted_visits: nullable mirror column, no backfill possible — same
@@ -308,7 +328,10 @@ fn backfill_null_visit_uids(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
     let mut stmt = conn.prepare("SELECT id FROM visits WHERE visit_uid IS NULL")?;
-    let ids: Vec<i64> = stmt.query_map([], |r| r.get(0))?.filter_map(Result::ok).collect();
+    let ids: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))?
+        .filter_map(Result::ok)
+        .collect();
     drop(stmt);
     for id in ids {
         conn.execute(
@@ -376,12 +399,13 @@ fn migrate_review_queue_link_resolution(conn: &Connection) -> rusqlite::Result<(
     // connection-local setting that doesn't participate in that transaction).
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     result?;
-    conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(())).ok();
+    conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+        .ok();
     Ok(())
 }
 
 fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {
-    conn.pragma_update(None, "key", &format!("x'{}'", key_hex))?;
+    conn.pragma_update(None, "key", format!("x'{}'", key_hex))?;
     // Cheap sanity read — throws SQLITE_NOTADB if the key is wrong, which
     // callers surface to the user as "could not unlock database".
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
@@ -391,7 +415,12 @@ fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {
 /// Re-keys a *copy* of the live DB with a brand-new key derived from a
 /// user passphrase, producing a self-contained portable backup file that
 /// does not depend on this machine's OS keychain. Used by commands::backup.
-pub fn rekey_copy(src_path: &PathBuf, src_key_hex: &str, dest_path: &PathBuf, dest_key_hex: &str) -> anyhow::Result<()> {
+pub fn rekey_copy(
+    src_path: &Path,
+    src_key_hex: &str,
+    dest_path: &Path,
+    dest_key_hex: &str,
+) -> anyhow::Result<()> {
     let conn = Connection::open(src_path)?;
     apply_key(&conn, src_key_hex)?;
     conn.execute(
@@ -424,7 +453,11 @@ pub fn open_with_key(path: &PathBuf, key_hex: &str) -> anyhow::Result<Connection
 ///
 /// Requires the "backup" feature enabled on the rusqlite dependency in
 /// Cargo.toml.
-pub fn restore_via_online_backup(pool: &Pool, rekeyed_path: &PathBuf, key_hex: &str) -> anyhow::Result<()> {
+pub fn restore_via_online_backup(
+    pool: &Pool,
+    rekeyed_path: &PathBuf,
+    key_hex: &str,
+) -> anyhow::Result<()> {
     let src = Connection::open(rekeyed_path)?;
     apply_key(&src, key_hex)?;
     let mut dst = pool.get()?;
@@ -462,11 +495,25 @@ mod visit_uid_backfill_tests {
 
         backfill_null_visit_uids(&c).unwrap();
 
-        let nulls: i64 = c.query_row("SELECT count(*) FROM visits WHERE visit_uid IS NULL", [], |r| r.get(0)).unwrap();
+        let nulls: i64 = c
+            .query_row(
+                "SELECT count(*) FROM visits WHERE visit_uid IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(nulls, 0);
-        let kept: String = c.query_row("SELECT visit_uid FROM visits WHERE id = 1", [], |r| r.get(0)).unwrap();
+        let kept: String = c
+            .query_row("SELECT visit_uid FROM visits WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(kept, "keep-me");
-        let distinct: i64 = c.query_row("SELECT count(DISTINCT visit_uid) FROM visits", [], |r| r.get(0)).unwrap();
+        let distinct: i64 = c
+            .query_row("SELECT count(DISTINCT visit_uid) FROM visits", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(distinct, 3);
 
         // Second run is a no-op.

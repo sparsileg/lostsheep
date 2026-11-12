@@ -2,7 +2,10 @@ use crate::AppState;
 use tauri::State;
 
 #[tauri::command]
-pub fn get_map_data(state: State<AppState>, tag_id: Option<i64>) -> Result<Vec<super::visits::VisitListEntry>, String> {
+pub fn get_map_data(
+    state: State<AppState>,
+    tag_id: Option<i64>,
+) -> Result<Vec<super::visits::VisitListEntry>, String> {
     // #31: previously borrowed generate_visit_list wholesale via an
     // unreachable seed (id 0) and count:100000, which meant every
     // Dashboard load and tag-dropdown change ran the full nearest-

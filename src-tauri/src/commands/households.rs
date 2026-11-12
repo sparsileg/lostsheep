@@ -43,7 +43,10 @@ pub struct SearchResult {
     pub total: i64,
 }
 
-fn row_to_household(conn: &rusqlite::Connection, row: &rusqlite::Row) -> rusqlite::Result<Household> {
+fn row_to_household(
+    conn: &rusqlite::Connection,
+    row: &rusqlite::Row,
+) -> rusqlite::Result<Household> {
     let id: i64 = row.get("id")?;
     let mut stmt = conn
         .prepare_cached("SELECT t.name FROM tags t JOIN household_tags ht ON ht.tag_id = t.id WHERE ht.household_id = ?1 ORDER BY t.name")?;
@@ -85,7 +88,9 @@ fn row_to_household(conn: &rusqlite::Connection, row: &rusqlite::Row) -> rusqlit
 // ESCAPE '\' in the query makes a literal % or _ in the search box match
 // literally instead of acting as a wildcard.
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
@@ -147,7 +152,10 @@ fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>)
 /// row_to_household's tag subquery per row also makes it far cheaper at
 /// 10k rows, where that would otherwise be 10k extra queries just to
 /// read an id.
-pub(crate) fn matching_household_ids(conn: &rusqlite::Connection, params: &SearchParams) -> Result<Vec<i64>, String> {
+pub(crate) fn matching_household_ids(
+    conn: &rusqlite::Connection,
+    params: &SearchParams,
+) -> Result<Vec<i64>, String> {
     let (where_sql, binds) = build_where(params);
     let sql = format!("SELECT h.id FROM households h WHERE {}", where_sql);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -165,7 +173,10 @@ pub(crate) fn matching_household_ids(conn: &rusqlite::Connection, params: &Searc
 /// households via matching_household_ids/build_where above, not this
 /// function directly — that path needs every match, not one capped page.
 #[tauri::command]
-pub fn search_households(state: State<AppState>, params: SearchParams) -> Result<SearchResult, String> {
+pub fn search_households(
+    state: State<AppState>,
+    params: SearchParams,
+) -> Result<SearchResult, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
 
     let (where_sql, mut binds) = build_where(&params);
@@ -183,7 +194,11 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
     // and (page - 1) * page_size in u32 could overflow for a page above
     // ~8.6 million, either panicking (debug) or wrapping to a silently
     // wrong offset (release) (#33).
-    let max_page = if total > 0 { (total - 1) / page_size + 1 } else { 1 };
+    let max_page = if total > 0 {
+        (total - 1) / page_size + 1
+    } else {
+        1
+    };
     let page = (params.page.max(1) as i64).min(max_page);
     let offset = (page - 1) * page_size;
 
@@ -197,7 +212,9 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
     binds.push(Box::new(page_size));
     binds.push(Box::new(offset));
     let households = list_stmt
-        .query_map(rusqlite::params_from_iter(binds.iter()), |row| row_to_household(&conn, row))
+        .query_map(rusqlite::params_from_iter(binds.iter()), |row| {
+            row_to_household(&conn, row)
+        })
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .collect();
@@ -208,9 +225,11 @@ pub fn search_households(state: State<AppState>, params: SearchParams) -> Result
 #[tauri::command]
 pub fn get_household(state: State<AppState>, id: i64) -> Result<Household, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
-    conn.query_row("SELECT * FROM households WHERE id = ?1", params![id], |row| {
-        row_to_household(&conn, row)
-    })
+    conn.query_row(
+        "SELECT * FROM households WHERE id = ?1",
+        params![id],
+        |row| row_to_household(&conn, row),
+    )
     .map_err(|e| e.to_string())
 }
 
@@ -219,14 +238,23 @@ pub fn get_household(state: State<AppState>, id: i64) -> Result<Household, Strin
 /// not edited by hand here). Comments are the one free-text field users
 /// add to directly.
 #[tauri::command]
-pub fn update_household_comments(state: State<AppState>, id: i64, comments: Option<String>) -> Result<(), String> {
+pub fn update_household_comments(
+    state: State<AppState>,
+    id: i64,
+    comments: Option<String>,
+) -> Result<(), String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE households SET comments = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
         params![comments, id],
     )
     .map_err(|e| e.to_string())?;
-    crate::commands::logs::log(&conn, "info", &format!("household {id} comments updated"), None);
+    crate::commands::logs::log(
+        &conn,
+        "info",
+        &format!("household {id} comments updated"),
+        None,
+    );
     Ok(())
 }
 
@@ -235,7 +263,11 @@ pub fn update_household_comments(state: State<AppState>, id: i64, comments: Opti
 /// before the DELETE cascades those away (issue #19) — restore_deleted_household
 /// below reverses all three.
 #[tauri::command]
-pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<String>) -> Result<(), String> {
+pub fn soft_delete_household(
+    state: State<AppState>,
+    id: i64,
+    reason: Option<String>,
+) -> Result<(), String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -295,14 +327,18 @@ pub fn soft_delete_household(state: State<AppState>, id: i64, reason: Option<Str
         }
     }
 
-    tx.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM households WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
     crate::commands::logs::log(&tx, "info", &format!("household {id} soft-deleted"), None);
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn normalize_tag(s: &str) -> String {
-    s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Serialize)]
@@ -465,8 +501,14 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
         }
     }
 
-    tx.execute("DELETE FROM deleted_households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-    crate::commands::logs::log(&tx, "info", &format!("deleted_households {id} restored to households"), None);
+    tx.execute("DELETE FROM deleted_households WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    crate::commands::logs::log(
+        &tx,
+        "info",
+        &format!("deleted_households {id} restored to households"),
+        None,
+    );
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }

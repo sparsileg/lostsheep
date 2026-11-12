@@ -79,7 +79,12 @@ pub struct LogEntry {
 }
 
 #[tauri::command]
-pub fn get_logs(state: State<AppState>, levels: Vec<String>, page: u32, page_size: u32) -> Result<Vec<LogEntry>, String> {
+pub fn get_logs(
+    state: State<AppState>,
+    levels: Vec<String>,
+    page: u32,
+    page_size: u32,
+) -> Result<Vec<LogEntry>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let page_size: i64 = (page_size.clamp(1, 1000)) as i64;
     let offset: i64 = (page.max(1) as i64 - 1) * page_size;
@@ -97,7 +102,11 @@ pub fn get_logs(state: State<AppState>, levels: Vec<String>, page: u32, page_siz
     let where_clause = if levels.is_empty() {
         String::new()
     } else {
-        let placeholders: Vec<String> = levels.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let placeholders: Vec<String> = levels
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
         for lvl in &levels {
             binds.push(Box::new(lvl.clone()));
         }
@@ -117,7 +126,13 @@ pub fn get_logs(state: State<AppState>, levels: Vec<String>, page: u32, page_siz
     let param_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
     let rows = stmt
         .query_map(param_refs.as_slice(), |r| {
-            Ok(LogEntry { id: r.get(0)?, level: r.get(1)?, message: r.get(2)?, context: r.get(3)?, created_at: r.get(4)? })
+            Ok(LogEntry {
+                id: r.get(0)?,
+                level: r.get(1)?,
+                message: r.get(2)?,
+                context: r.get(3)?,
+                created_at: r.get(4)?,
+            })
         })
         .map_err(|e| e.to_string())?;
     let out: Vec<LogEntry> = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;

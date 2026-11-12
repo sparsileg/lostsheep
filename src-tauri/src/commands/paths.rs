@@ -39,8 +39,14 @@ pub fn resolve_read_path(raw: &str) -> Result<PathBuf, String> {
 pub fn resolve_write_dest(state: &State<AppState>, raw: &str) -> Result<PathBuf, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let folder: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'backupFolder'", [], |r| r.get(0))
-        .map_err(|_| "backup folder is not set — set it in Settings before backing up".to_string())?;
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'backupFolder'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|_| {
+            "backup folder is not set — set it in Settings before backing up".to_string()
+        })?;
     if folder.trim().is_empty() {
         return Err("backup folder is not set — set it in Settings before backing up".to_string());
     }

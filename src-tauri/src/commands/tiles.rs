@@ -18,11 +18,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 fn tile_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("tile-cache"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("tile-cache"))
 }
 
 fn tile_path(cache_dir: &std::path::Path, z: u32, x: u32, y: u32) -> PathBuf {
-    cache_dir.join(z.to_string()).join(x.to_string()).join(format!("{y}.png"))
+    cache_dir
+        .join(z.to_string())
+        .join(x.to_string())
+        .join(format!("{y}.png"))
 }
 
 fn last_updated_path(cache_dir: &std::path::Path) -> PathBuf {
@@ -45,7 +52,13 @@ pub fn get_cached_tile(app: AppHandle, z: u32, x: u32, y: u32) -> Result<Option<
 /// label never has to scan the whole cache directory to find the most
 /// recently written tile.
 #[tauri::command]
-pub fn save_cached_tile(app: AppHandle, z: u32, x: u32, y: u32, bytes: Vec<u8>) -> Result<(), String> {
+pub fn save_cached_tile(
+    app: AppHandle,
+    z: u32,
+    x: u32,
+    y: u32,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
     let cache_dir = tile_cache_dir(&app)?;
     let path = tile_path(&cache_dir, z, x, y);
     if let Some(parent) = path.parent() {
@@ -53,7 +66,10 @@ pub fn save_cached_tile(app: AppHandle, z: u32, x: u32, y: u32, bytes: Vec<u8>) 
     }
     fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
     let mut f = fs::File::create(last_updated_path(&cache_dir)).map_err(|e| e.to_string())?;
     write!(f, "{now}").map_err(|e| e.to_string())?;
     Ok(())

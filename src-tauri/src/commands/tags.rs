@@ -4,7 +4,11 @@ use serde::Serialize;
 use tauri::State;
 
 fn norm(s: &str) -> String {
-    s.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Serialize)]
@@ -29,21 +33,33 @@ pub fn list_tags(state: State<AppState>) -> Result<Vec<Tag>, String> {
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(Tag { id: row.get(0)?, name: row.get(1)?, household_count: row.get(2)?, system_key: row.get(3)? })
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                household_count: row.get(2)?,
+                system_key: row.get(3)?,
+            })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
 }
-pub(crate) fn get_or_create_tag_id(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<i64> {
+pub(crate) fn get_or_create_tag_id(
+    conn: &rusqlite::Connection,
+    name: &str,
+) -> rusqlite::Result<i64> {
     let name = name.trim();
     let name_norm = norm(name);
     conn.execute(
         "INSERT INTO tags (name, name_norm) VALUES (?1, ?2) ON CONFLICT(name_norm) DO NOTHING",
         params![name, name_norm],
     )?;
-    conn.query_row("SELECT id FROM tags WHERE name_norm = ?1", params![name_norm], |r| r.get(0))
+    conn.query_row(
+        "SELECT id FROM tags WHERE name_norm = ?1",
+        params![name_norm],
+        |r| r.get(0),
+    )
 }
 
 #[tauri::command]
@@ -69,7 +85,11 @@ pub fn rename_tag(state: State<AppState>, id: i64, new_name: String) -> Result<(
 /// households affected — tags-modal.js's TagDeleteModal.confirm() already
 /// expects this shape (`const affected = await DBManager.deleteTag(...)`).
 #[tauri::command]
-pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64>) -> Result<i64, String> {
+pub fn delete_tag(
+    state: State<AppState>,
+    id: i64,
+    substitute_tag_id: Option<i64>,
+) -> Result<i64, String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -78,21 +98,31 @@ pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64
     // rather than let generate_visit_list's exclusion silently stop
     // matching anything (#23).
     let system_key: Option<String> = tx
-        .query_row("SELECT system_key FROM tags WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT system_key FROM tags WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     if system_key.is_some() {
         return Err("this tag is required by the app and cannot be deleted".to_string());
     }
 
     let affected: i64 = tx
-        .query_row("SELECT count(*) FROM household_tags WHERE tag_id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM household_tags WHERE tag_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
     if affected > 0 {
         match substitute_tag_id {
             Some(sub_id) => {
                 if sub_id == id {
-                    return Err("substitute tag must be different from the tag being deleted".to_string());
+                    return Err(
+                        "substitute tag must be different from the tag being deleted".to_string(),
+                    );
                 }
                 // OR IGNORE: a household that already carries the
                 // substitute tag would otherwise hit household_tags'
@@ -103,7 +133,8 @@ pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64
                     params![sub_id, id],
                 )
                 .map_err(|e| e.to_string())?;
-                tx.execute("DELETE FROM household_tags WHERE tag_id = ?1", params![id]).map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM household_tags WHERE tag_id = ?1", params![id])
+                    .map_err(|e| e.to_string())?;
             }
             None => {
                 return Err(format!(
@@ -113,7 +144,8 @@ pub fn delete_tag(state: State<AppState>, id: i64, substitute_tag_id: Option<i64
         }
     }
 
-    tx.execute("DELETE FROM tags WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM tags WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(affected)
 }
@@ -153,7 +185,11 @@ pub fn tag_households(
 
     if !allow_system_tag_change {
         let target_is_system: bool = tx
-            .query_row("SELECT system_key IS NOT NULL FROM tags WHERE id = ?1", params![tag_id], |r| r.get(0))
+            .query_row(
+                "SELECT system_key IS NOT NULL FROM tags WHERE id = ?1",
+                params![tag_id],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
         if target_is_system {
             return Err("this tag can only be set from a household's own edit screen".to_string());
@@ -177,7 +213,11 @@ pub fn tag_households(
                 continue;
             }
         }
-        tx.execute("DELETE FROM household_tags WHERE household_id = ?1", params![hid]).map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM household_tags WHERE household_id = ?1",
+            params![hid],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
             params![hid, tag_id],
@@ -192,11 +232,18 @@ pub fn tag_households(
         &format!("tagged {tagged} household(s) with \"{tag_name}\" ({skipped_system} skipped — Do not contact)"),
         None,
     );
-    Ok(TagResult { tagged, skipped_system })
+    Ok(TagResult {
+        tagged,
+        skipped_system,
+    })
 }
 
 #[tauri::command]
-pub fn untag_household(state: State<AppState>, household_id: i64, tag_id: i64) -> Result<(), String> {
+pub fn untag_household(
+    state: State<AppState>,
+    household_id: i64,
+    tag_id: i64,
+) -> Result<(), String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM household_tags WHERE household_id = ?1 AND tag_id = ?2",

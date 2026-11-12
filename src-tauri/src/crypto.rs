@@ -33,11 +33,15 @@ pub fn derive_key_hex(passphrase: &str, salt_hex: &str) -> anyhow::Result<String
 
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes.as_ref().iter().map(|b| format!("{:02x}", b)).collect()
+        bytes
+            .as_ref()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
     pub fn decode(s: &str) -> anyhow::Result<Vec<u8>> {
         let bytes = s.as_bytes();
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err(anyhow::anyhow!("hex string has odd length"));
         }
         if !bytes.iter().all(|b| b.is_ascii_hexdigit()) {

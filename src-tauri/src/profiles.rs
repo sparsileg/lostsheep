@@ -77,7 +77,10 @@ pub fn slugify(name: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
             last_was_dash = false;
-        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !last_was_dash && !out.is_empty() {
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_')
+            && !last_was_dash
+            && !out.is_empty()
+        {
             out.push('-');
             last_was_dash = true;
         }
@@ -108,13 +111,21 @@ pub fn resolve_data_paths(
     if let Some(active_slug) = &registry.active {
         if let Some(profile) = registry.profiles.iter().find(|p| &p.slug == active_slug) {
             let dir = profile_dir(data_dir, &profile.slug)?;
-            return Ok((dir.join("lost-sheep.db"), dir.join("roads.db"), Some(profile.name.clone())));
+            return Ok((
+                dir.join("lost-sheep.db"),
+                dir.join("roads.db"),
+                Some(profile.name.clone()),
+            ));
         }
         // active points at a slug no longer in profiles (registry hand-
         // edited or corrupted) — fall through to the compatibility path
         // rather than fail to start.
     }
-    Ok((data_dir.join("lost-sheep.db"), data_dir.join("roads.db"), None))
+    Ok((
+        data_dir.join("lost-sheep.db"),
+        data_dir.join("roads.db"),
+        None,
+    ))
 }
 
 #[cfg(test)]
@@ -131,7 +142,10 @@ mod tests {
 
     #[test]
     fn resolve_paths_falls_back_when_no_active_profile() {
-        let data_dir = std::env::temp_dir().join(format!("lostsheep_profiles_test_{}", uuid::Uuid::new_v4().simple()));
+        let data_dir = std::env::temp_dir().join(format!(
+            "lostsheep_profiles_test_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         let registry = Registry::default();
         let (db, roads, name) = resolve_data_paths(&data_dir, &registry).unwrap();
         assert_eq!(db, data_dir.join("lost-sheep.db"));
@@ -141,7 +155,10 @@ mod tests {
 
     #[test]
     fn resolve_paths_uses_active_profile_directory() {
-        let data_dir = std::env::temp_dir().join(format!("lostsheep_profiles_test_{}", uuid::Uuid::new_v4().simple()));
+        let data_dir = std::env::temp_dir().join(format!(
+            "lostsheep_profiles_test_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         let registry = Registry {
             profiles: vec![Profile {
                 slug: "winchester".to_string(),
@@ -151,8 +168,20 @@ mod tests {
             active: Some("winchester".to_string()),
         };
         let (db, roads, name) = resolve_data_paths(&data_dir, &registry).unwrap();
-        assert_eq!(db, data_dir.join("profiles").join("winchester").join("lost-sheep.db"));
-        assert_eq!(roads, data_dir.join("profiles").join("winchester").join("roads.db"));
+        assert_eq!(
+            db,
+            data_dir
+                .join("profiles")
+                .join("winchester")
+                .join("lost-sheep.db")
+        );
+        assert_eq!(
+            roads,
+            data_dir
+                .join("profiles")
+                .join("winchester")
+                .join("roads.db")
+        );
         assert_eq!(name.as_deref(), Some("Winchester"));
         std::fs::remove_dir_all(&data_dir).ok();
     }
