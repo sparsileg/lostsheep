@@ -7,7 +7,7 @@
 /* Reports tab strip (Needs Attention / Visit Log) */
 .rp-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-color); margin-bottom: 12px; }
 .rp-tab {
-    background: transparent; color: var(--text-secondary); border: none;
+    background: transparent; color: var(--color-text-muted); border: none;
     border-bottom: 3px solid transparent; padding: 8px 14px; cursor: pointer; font: inherit;
 }
 .rp-tab:hover { color: var(--text-color); }

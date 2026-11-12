@@ -316,6 +316,16 @@ for Clerk with "mark reported" and Copy Text, and Cancel. Manual
 confirmation only. Useful immediately, because it replaces whatever the user
 is tracking in their head or in comments today.
 
+*Implemented (v1.4.0, unreleased):* `commands/referrals.rs`,
+`referrals-view.js`, `referrals-pdf.js`. The Clerk Referrals view has To
+report / Awaiting clerk / Closed tabs, with Edit, Mark reported, Confirm,
+Cancel and Reopen per row. Reopen was added for closing one by mistake.
+"Report to clerk…" is in the household detail modal, which also lists
+the household's referrals, and in the map popup, with a household picker
+when a marker groups several entries. The PDF header uses the profile
+name as the unit name. The PDF's follow-up section waits for Stage 2's
+overdue computation.
+
 **Stage 2: import confirmation.** §3.3: annotate review items, confirm
 on resolution, pre-fill `deletion_reason`, and the overdue computation and
 tab. Add the post-import summary line. This stage closes the loop.

@@ -26,6 +26,8 @@ h2, h3 { color: var(--text-color); }
 
 .btn { border: var(--btn-border); background: var(--color-btn-bg); color: var(--color-btn-text); padding: 6px 14px; border-radius: 4px; cursor: pointer; }
 .btn:hover { background: var(--color-btn-hover-bg); color: var(--color-btn-hover-text); }
+.btn-small { padding: 3px 9px; font-size: 0.85em; }
+.btn:disabled { opacity: 0.5; cursor: default; }
 .btn-primary { border: var(--btn-primary-border); background: var(--color-btn-primary-bg); color: var(--color-btn-primary-text); }
 .btn-primary:hover { background: var(--color-btn-primary-hover-bg); color: var(--color-btn-primary-hover-text); }
 .btn-danger { border: 2px solid var(--error-color); color: var(--error-color); background: transparent; }

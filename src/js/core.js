@@ -1,7 +1,7 @@
 // core.js — app boot, view router, tiny shared utilities.
 const CONSTANTS = {
     APP_VERSION: '1.4.0',
-    VIEWS: ['import', 'review', 'households', 'visits-report', 'deleted-records', 'map', 'logs'],
+    VIEWS: ['import', 'review', 'households', 'visits-report', 'referrals', 'deleted-records', 'map', 'logs'],
     MESSAGE_TYPES: { INFO: 'info', ERROR: 'error', WARNING: 'warning' },
 };
 
@@ -90,6 +90,7 @@ const Core = {
             { view: 'review', label: 'Review Updates' },
             { view: 'households', label: 'Households' },
             { view: 'visits-report', label: 'Reports' },
+            { view: 'referrals', label: 'Clerk Referrals' },
             { view: 'deleted-records', label: 'Deleted Records' },
         ];
         const list = document.getElementById('sidebarNavList');

@@ -1,0 +1,32 @@
+/* Clerk Referrals view (referrals-view.js). The tab strip reuses the
+   Reports view's .rp-tabs/.rp-tab from visits-report-view.css. */
+.ref-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); margin-bottom: 8px; }
+.ref-toolbar .rp-tabs { border-bottom: none; margin-bottom: 0; }
+.ref-export { display: flex; gap: 8px; padding-bottom: 6px; }
+.ref-help { color: var(--color-text-muted); margin: 4px 0 10px; }
+.ref-table td { vertical-align: top; }
+.ref-ref { font-weight: 700; white-space: nowrap; }
+.ref-date { white-space: nowrap; }
+.ref-actions { white-space: nowrap; }
+.ref-actions .btn { margin: 0 4px 4px 0; }
+.ref-dim { color: var(--color-text-muted); font-size: 0.9em; }
+.ref-detail { font-size: 0.9em; margin-top: 2px; }
+
+/* Status is a word, not only a colour. */
+.ref-status { font-weight: 600; }
+.ref-status-to_report { color: var(--warning-color); }
+.ref-status-reported { color: var(--primary-color); }
+.ref-status-confirmed { color: var(--success-color); }
+.ref-status-cancelled { color: var(--color-text-muted); }
+
+/* Report to clerk modal */
+.ref-modal { width: 460px; }
+.ref-modal label { display: block; margin: 10px 0 0; font-weight: 600; }
+.ref-modal input, .ref-modal select, .ref-modal textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; font-weight: normal; }
+.ref-modal-who { margin: 4px 0; }
+
+/* Household detail modal section */
+.hh-referrals .ref-hh-row { margin-bottom: 4px; }
+.hh-referrals .ref-closed { opacity: 0.7; }
+.hh-referrals .btn { margin-top: 6px; }
+.ref-modal .ref-dropdown { margin-top: 4px; }

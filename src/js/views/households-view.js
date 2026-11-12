@@ -322,6 +322,9 @@ async function openHouseholdModal(id) {
                 <button class="btn btn-primary" id="fAddVisit">Save Visit</button>
                 <button class="btn" id="fCancelVisit">Cancel</button>
             </div>
+
+            <h3>Clerk Referrals</h3>
+            <div id="hhReferrals" class="hh-referrals"><em>Loading…</em></div>
         </div>`;
     document.body.appendChild(overlay);
 
@@ -385,6 +388,7 @@ async function openHouseholdModal(id) {
     });
 
     await refreshVisitHistory(id);
+    renderHouseholdReferrals(document.getElementById('hhReferrals'), h);
     document.getElementById('fCancelVisit').addEventListener('click', () => {
         document.getElementById('fVisitDate').value = new Date().toISOString().slice(0, 10);
         document.getElementById('fVisitComments').value = '';

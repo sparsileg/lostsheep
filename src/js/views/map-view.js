@@ -464,13 +464,20 @@ async function loadMapData() {
         MapView.markersByAddressKey[g.address_key] = marker;
         MapView.markerBaseState[g.address_key] = { type: 'default' };
         marker.bindPopup(`<strong>${escapeHtml(formatEntryAddress(g))}</strong><br>${g.names.map(escapeHtml).join('<br>')}
-            <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>`);
+            <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>
+            <button class="btn" data-report-clerk="${escapeHtml(g.address_key)}">Report to clerk…</button>`);
         marker.on('popupopen', () => {
             document.querySelector(`[data-select-seed="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
                 MapView.seedGroupKey = g.address_key;
                 MapView.seedHouseholdId = g.household_ids[0];
                 marker.closePopup();
                 generateVisitList();
+            });
+            document.querySelector(`[data-report-clerk="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
+                marker.closePopup();
+                openReferralModal({
+                    households: g.household_ids.map((id, i) => ({ id, name: g.names[i] })),
+                });
             });
         });
         bounds.push([g.latitude, g.longitude]);

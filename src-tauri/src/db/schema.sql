@@ -299,6 +299,36 @@ DELETE FROM settings WHERE key = 'showRouteOverlay';
 -- cleaned up automatically via ON DELETE CASCADE.
 DELETE FROM tags WHERE name = 'Deleted';
 
+-- Clerk referrals (docs/Record_Referral_Design.md): a record change the
+-- ward clerk has to make (move, death, wrong contact info, removal
+-- request), tracked from "found out" through "reported" to "confirmed".
+-- Keyed by household_uid with NO foreign key: the household is expected
+-- to disappear (removed on import, soft-deleted, eventually pruned), and
+-- the referral must outlive it. The snapshot columns keep the list and
+-- the clerk PDF readable after that. A new table needs no migrate_*
+-- function: this batch runs on every open.
+CREATE TABLE IF NOT EXISTS referrals (
+    id               INTEGER PRIMARY KEY,
+    household_uid    TEXT NOT NULL,
+    snapshot_name    TEXT NOT NULL,
+    snapshot_address TEXT,
+    kind             TEXT NOT NULL CHECK (kind IN (
+                         'moved_known', 'moved_unknown', 'deceased',
+                         'contact_info', 'remove_records', 'other')),
+    details          TEXT,
+    new_address      TEXT,           -- moved_known only
+    learned_on       TEXT NOT NULL,  -- ISO date
+    visit_uid        TEXT,           -- the visit that surfaced it, if any (no FK)
+    status           TEXT NOT NULL DEFAULT 'to_report' CHECK (status IN (
+                         'to_report', 'reported', 'confirmed', 'cancelled')),
+    reported_on      TEXT,           -- ISO date it was sent to the clerk
+    resolved_on      TEXT,           -- ISO date confirmed or cancelled
+    resolution_note  TEXT,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_household_uid ON referrals(household_uid);
+CREATE INDEX IF NOT EXISTS idx_referrals_status        ON referrals(status);
+
 CREATE TABLE IF NOT EXISTS logs (
     id         INTEGER PRIMARY KEY,
     level      TEXT NOT NULL CHECK (level IN ('error','warning','info','debug')),

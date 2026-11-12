@@ -256,6 +256,13 @@ fn main() {
             commands::visits::generate_visit_list,
             commands::map_data::get_map_data,
             commands::map_data::get_missing_coords_count,
+            // clerk referrals
+            commands::referrals::list_referrals,
+            commands::referrals::create_referral,
+            commands::referrals::update_referral,
+            commands::referrals::mark_referrals_reported,
+            commands::referrals::close_referral,
+            commands::referrals::reopen_referral,
             // backup / restore
             commands::backup::backup_database,
             commands::backup::restore_preview,
