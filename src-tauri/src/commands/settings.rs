@@ -19,7 +19,9 @@ pub const ALLOWED_RETENTION_DAYS: [i64; 5] = [1, 7, 30, 180, 365];
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM settings")
+        .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?
@@ -31,7 +33,10 @@ pub fn get_settings(state: State<AppState>) -> Result<HashMap<String, String>, S
 fn validate_retention(values: &HashMap<String, String>) -> Result<(), String> {
     for key in ["deletedRetentionDays", "logRetentionDays"] {
         if let Some(raw) = values.get(key) {
-            let n: i64 = raw.trim().parse().map_err(|_| format!("{key} must be a number"))?;
+            let n: i64 = raw
+                .trim()
+                .parse()
+                .map_err(|_| format!("{key} must be a number"))?;
             if !ALLOWED_RETENTION_DAYS.contains(&n) {
                 return Err(format!("{key} must be one of 1, 7, 30, 180, or 365 days"));
             }
@@ -47,7 +52,10 @@ fn validate_retention(values: &HashMap<String, String>) -> Result<(), String> {
 /// place values ever get written, so this is the only place it needs to
 /// live.
 fn validate_route_start(values: &HashMap<String, String>) -> Result<(), String> {
-    let label = values.get("routeStartLabel").map(|s| s.trim()).unwrap_or("");
+    let label = values
+        .get("routeStartLabel")
+        .map(|s| s.trim())
+        .unwrap_or("");
     let lat_raw = values.get("routeStartLat").map(|s| s.trim()).unwrap_or("");
     let lon_raw = values.get("routeStartLon").map(|s| s.trim()).unwrap_or("");
 
@@ -60,11 +68,18 @@ fn validate_route_start(values: &HashMap<String, String>) -> Result<(), String> 
         return Ok(());
     }
     if filled_count != 3 {
-        return Err("Route start point needs a label and both coordinates, or leave all three blank".to_string());
+        return Err(
+            "Route start point needs a label and both coordinates, or leave all three blank"
+                .to_string(),
+        );
     }
 
-    let lat: f64 = lat_raw.parse().map_err(|_| "Route start latitude must be a number".to_string())?;
-    let lon: f64 = lon_raw.parse().map_err(|_| "Route start longitude must be a number".to_string())?;
+    let lat: f64 = lat_raw
+        .parse()
+        .map_err(|_| "Route start latitude must be a number".to_string())?;
+    let lon: f64 = lon_raw
+        .parse()
+        .map_err(|_| "Route start longitude must be a number".to_string())?;
     if !(-90.0..=90.0).contains(&lat) {
         return Err("Route start latitude must be between -90 and 90".to_string());
     }
@@ -75,7 +90,10 @@ fn validate_route_start(values: &HashMap<String, String>) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) -> Result<(), String> {
+pub fn save_settings(
+    state: State<AppState>,
+    values: HashMap<String, String>,
+) -> Result<(), String> {
     validate_route_start(&values)?;
     validate_retention(&values)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
@@ -88,7 +106,12 @@ pub fn save_settings(state: State<AppState>, values: HashMap<String, String>) ->
         )
         .map_err(|e| e.to_string())?;
     }
-    super::logs::log(&conn, "info", &format!("settings saved: {}", keys.join(", ")), None);
+    super::logs::log(
+        &conn,
+        "info",
+        &format!("settings saved: {}", keys.join(", ")),
+        None,
+    );
     // Issue #76: a logLevel change takes effect immediately, not just on
     // next launch — cheap to always call, refresh_min_level_cache() is a
     // single indexed lookup, not a hot-path cost.
@@ -108,8 +131,14 @@ pub struct PruneImpact {
 /// the confirmation the person sees reflects the choice they're about to
 /// make, not the retention that's currently in effect (#28).
 #[tauri::command]
-pub fn preview_prune_impact(state: State<AppState>, deleted_days: i64, log_days: i64) -> Result<PruneImpact, String> {
-    if !ALLOWED_RETENTION_DAYS.contains(&deleted_days) || !ALLOWED_RETENTION_DAYS.contains(&log_days) {
+pub fn preview_prune_impact(
+    state: State<AppState>,
+    deleted_days: i64,
+    log_days: i64,
+) -> Result<PruneImpact, String> {
+    if !ALLOWED_RETENTION_DAYS.contains(&deleted_days)
+        || !ALLOWED_RETENTION_DAYS.contains(&log_days)
+    {
         return Err("retention values must be one of 1, 7, 30, 180, or 365 days".to_string());
     }
     let conn = state.pool.get().map_err(|e| e.to_string())?;
@@ -129,7 +158,10 @@ pub fn preview_prune_impact(state: State<AppState>, deleted_days: i64, log_days:
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(PruneImpact { deleted_households, logs })
+    Ok(PruneImpact {
+        deleted_households,
+        logs,
+    })
 }
 
 #[derive(Serialize)]
@@ -150,7 +182,9 @@ pub struct PruneResult {
 /// the future without needing a managed `State`.
 pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
     let settings: HashMap<String, String> = {
-        let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings")
+            .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| e.to_string())?
@@ -192,7 +226,10 @@ pub fn run_prune(conn: &rusqlite::Connection) -> Result<PruneResult, String> {
             params![log_modifier],
         )
         .map_err(|e| e.to_string())? as i64;
-    Ok(PruneResult { deleted_households, logs })
+    Ok(PruneResult {
+        deleted_households,
+        logs,
+    })
 }
 
 #[tauri::command]
@@ -225,7 +262,9 @@ pub struct PruneCandidates {
 pub fn list_prune_candidates(state: State<AppState>) -> Result<PruneCandidates, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let settings: HashMap<String, String> = {
-        let mut stmt = conn.prepare("SELECT key, value FROM settings").map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings")
+            .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| e.to_string())?
@@ -277,5 +316,8 @@ pub fn list_prune_candidates(state: State<AppState>) -> Result<PruneCandidates, 
         )
         .map_err(|e| e.to_string())?;
 
-    Ok(PruneCandidates { deleted_households, logs })
+    Ok(PruneCandidates {
+        deleted_households,
+        logs,
+    })
 }

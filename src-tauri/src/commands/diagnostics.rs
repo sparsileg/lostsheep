@@ -175,8 +175,11 @@ struct DiagnosticsProgress {
 /// percentage without flooding IPC at this app's up-to-10,000-household
 /// scale.
 fn emit_diagnostics_progress(app: &AppHandle, processed: usize, total: usize) {
-    if processed % 10 == 0 || processed == total {
-        let _ = app.emit("diagnostics-progress", DiagnosticsProgress { processed, total });
+    if processed.is_multiple_of(10) || processed == total {
+        let _ = app.emit(
+            "diagnostics-progress",
+            DiagnosticsProgress { processed, total },
+        );
     }
 }
 
@@ -226,7 +229,10 @@ fn expand_directional(word: &str) -> String {
 }
 
 fn normalize_name(s: &str) -> String {
-    s.split_whitespace().map(expand_directional).collect::<Vec<_>>().join(" ")
+    s.split_whitespace()
+        .map(expand_directional)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Rules 1+2 together: normalize both sides (directional expansion), then
@@ -252,7 +258,9 @@ fn names_match(candidates: &[String], household_road_name: &str) -> bool {
 /// True if `word` is "Apt" (any case), with or without a trailing period
 /// ("Apt", "APT.", "apt").
 fn is_apt_word(word: &str) -> bool {
-    word.strip_suffix('.').unwrap_or(word).eq_ignore_ascii_case("Apt")
+    word.strip_suffix('.')
+        .unwrap_or(word)
+        .eq_ignore_ascii_case("Apt")
 }
 
 /// Drops the assumed road-type word (the last one) and every leading word
@@ -293,7 +301,12 @@ fn edges_at_node(graph: &RoadGraph, node_id: i64) -> Vec<(i64, Option<String>)> 
     graph
         .adjacency
         .get(&node_id)
-        .map(|neighbors| neighbors.iter().map(|(n, _dist, name)| (*n, name.clone())).collect())
+        .map(|neighbors| {
+            neighbors
+                .iter()
+                .map(|(n, _dist, name)| (*n, name.clone()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -329,7 +342,9 @@ fn walk_to_named_roads(
                     Some(n) => {
                         trace_push(
                             trace,
-                            format!("  hop {hop}: node {node} -> neighbor {neighbor} named \"{n}\""),
+                            format!(
+                                "  hop {hop}: node {node} -> neighbor {neighbor} named \"{n}\""
+                            ),
                         );
                         names_found.insert(n);
                     }
@@ -347,17 +362,26 @@ fn walk_to_named_roads(
         }
 
         if !names_found.is_empty() {
-            trace_push(trace, format!("hop {hop}: named road(s) found: {names_found:?}"));
+            trace_push(
+                trace,
+                format!("hop {hop}: named road(s) found: {names_found:?}"),
+            );
             return names_found.into_iter().collect();
         }
         if next_frontier.is_empty() {
-            trace_push(trace, format!("hop {hop}: no unnamed neighbors left to expand — stopping"));
+            trace_push(
+                trace,
+                format!("hop {hop}: no unnamed neighbors left to expand — stopping"),
+            );
             break;
         }
         frontier = next_frontier;
     }
 
-    trace_push(trace, format!("no named road found within {MAX_UNNAMED_HOPS} hop(s)"));
+    trace_push(
+        trace,
+        format!("no named road found within {MAX_UNNAMED_HOPS} hop(s)"),
+    );
     Vec::new()
 }
 
@@ -440,7 +464,11 @@ fn nearby_scored_edges(
         let edge_min_lat = e.from_lat.min(e.to_lat);
         let edge_max_lon = e.from_lon.max(e.to_lon);
         let edge_min_lon = e.from_lon.min(e.to_lon);
-        if edge_max_lat < min_lat || edge_min_lat > max_lat || edge_max_lon < min_lon || edge_min_lon > max_lon {
+        if edge_max_lat < min_lat
+            || edge_min_lat > max_lat
+            || edge_max_lon < min_lon
+            || edge_min_lon > max_lon
+        {
             continue;
         }
 
@@ -453,7 +481,10 @@ fn nearby_scored_edges(
     }
     scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    trace_push(trace, format!("{} road_edge(s) overlapping search box", scored.len()));
+    trace_push(
+        trace,
+        format!("{} road_edge(s) overlapping search box", scored.len()),
+    );
     for (d, a, b, name) in scored.iter().take(10) {
         trace_push(
             trace,
@@ -497,8 +528,10 @@ fn road_name_problem(
         return Some("No road found near household within snap tolerance".to_string());
     }
 
-    let within_tol: Vec<&(f64, i64, i64, Option<String>)> =
-        scored.iter().filter(|(d, ..)| *d <= super::roads::SNAP_TOLERANCE_M).collect();
+    let within_tol: Vec<&(f64, i64, i64, Option<String>)> = scored
+        .iter()
+        .filter(|(d, ..)| *d <= super::roads::SNAP_TOLERANCE_M)
+        .collect();
 
     if within_tol.is_empty() {
         trace_push(
@@ -512,14 +545,23 @@ fn road_name_problem(
         return Some("No road found near household within snap tolerance".to_string());
     }
 
-    let named_within: Vec<String> = within_tol.iter().filter_map(|(_, _, _, n)| n.clone()).collect();
+    let named_within: Vec<String> = within_tol
+        .iter()
+        .filter_map(|(_, _, _, n)| n.clone())
+        .collect();
     trace_push(
         trace,
-        format!("{} named edge(s) within tolerance: {named_within:?}", named_within.len()),
+        format!(
+            "{} named edge(s) within tolerance: {named_within:?}",
+            named_within.len()
+        ),
     );
 
     if !named_within.is_empty() && names_match(&named_within, address_road_name) {
-        trace_push(trace, "matched directly against a named edge within tolerance".to_string());
+        trace_push(
+            trace,
+            "matched directly against a named edge within tolerance".to_string(),
+        );
         return None;
     }
 
@@ -543,7 +585,10 @@ fn road_name_problem(
     candidates.retain(|n| seen.insert(n.clone()));
 
     if names_match(&candidates, address_road_name) {
-        trace_push(trace, "matched after walking outward from nearest edge".to_string());
+        trace_push(
+            trace,
+            "matched after walking outward from nearest edge".to_string(),
+        );
         return None;
     }
 
@@ -557,9 +602,11 @@ fn road_name_problem(
     }
 }
 
-
 #[tauri::command]
-pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>) -> Result<DiagnosticsReport, String> {
+pub async fn find_potential_problems(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DiagnosticsReport, String> {
     // #48 follow-up: this used to be a plain sync fn. At ~390 households
     // the scan takes a minute or two, and a non-async command with no
     // spawn_blocking runs on the same thread as the webview's own event
@@ -773,7 +820,7 @@ pub async fn find_potential_problems(app: AppHandle, state: State<'_, AppState>)
             longitude: r.lon,
         })
         .collect();
-    missing_coords.sort_by(|a, b| a.household_name.to_lowercase().cmp(&b.household_name.to_lowercase()));
+    missing_coords.sort_by_key(|a| a.household_name.to_lowercase());
 
     let mut problems = Vec::new();
     let mut debug_captures: usize = 0;

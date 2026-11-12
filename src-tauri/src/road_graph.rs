@@ -27,7 +27,10 @@ pub const GRID_CELL_DEG: f64 = 0.01;
 /// and query time (visits.rs::snap_to_graph) so both always agree on
 /// bucket boundaries.
 pub fn grid_cell(lat: f64, lon: f64) -> (i32, i32) {
-    ((lat / GRID_CELL_DEG).floor() as i32, (lon / GRID_CELL_DEG).floor() as i32)
+    (
+        (lat / GRID_CELL_DEG).floor() as i32,
+        (lon / GRID_CELL_DEG).floor() as i32,
+    )
 }
 
 /// One road_edge — from/to node ids and their coordinates (denormalized
@@ -110,7 +113,11 @@ pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
     let mut grid: HashMap<(i32, i32), Vec<i64>> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare("SELECT id, lat, lon FROM road_nodes") {
         if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
         }) {
             for (id, lat, lon) in rows.flatten() {
                 coords.insert(id, (lat, lon));
@@ -135,8 +142,14 @@ pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
         }) {
             for row in rows.flatten() {
                 let (from_id, to_id, distance_m, name) = row;
-                adjacency.entry(from_id).or_default().push((to_id, distance_m, name.clone()));
-                adjacency.entry(to_id).or_default().push((from_id, distance_m, name.clone()));
+                adjacency
+                    .entry(from_id)
+                    .or_default()
+                    .push((to_id, distance_m, name.clone()));
+                adjacency
+                    .entry(to_id)
+                    .or_default()
+                    .push((from_id, distance_m, name.clone()));
                 // Issue #80: coords resolved once here, at build time —
                 // one HashMap lookup per edge, total, for the whole
                 // graph. #78 had dropped these fields from RoadEdge and
@@ -156,12 +169,25 @@ pub fn build_road_graph(conn: &rusqlite::Connection) -> RoadGraph {
                 else {
                     continue;
                 };
-                edges.push(RoadEdge { from_id, to_id, from_lat, from_lon, to_lat, to_lon, name });
+                edges.push(RoadEdge {
+                    from_id,
+                    to_id,
+                    from_lat,
+                    from_lon,
+                    to_lat,
+                    to_lon,
+                    name,
+                });
             }
         }
     }
 
-    RoadGraph { coords, grid, edges, adjacency }
+    RoadGraph {
+        coords,
+        grid,
+        edges,
+        adjacency,
+    }
 }
 
 /// Cache-aware graph load, shared by both callers (issue #66 follow-up):

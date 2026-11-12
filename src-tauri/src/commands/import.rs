@@ -5,6 +5,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+/// A pending review_queue row: (id, match_type, incoming_data,
+/// existing_household_id, existing household summary).
+type PendingReviewRow = (i64, String, Option<String>, Option<i64>, Option<String>);
+
 #[derive(Serialize)]
 pub struct ImportSummary {
     pub batch_id: i64,
@@ -28,13 +32,17 @@ struct ImportProgress {
 /// Emits at most once per 10 records (plus always the final one) — enough
 /// for a live counter without flooding IPC on a 10k-record import.
 fn emit_progress(app: &AppHandle, processed: usize, total: usize) {
-    if processed % 10 == 0 || processed == total {
+    if processed.is_multiple_of(10) || processed == total {
         let _ = app.emit("import-progress", ImportProgress { processed, total });
     }
 }
 
 #[tauri::command]
-pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: String) -> Result<ImportSummary, String> {
+pub async fn import_pdf(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<ImportSummary, String> {
     // run_diff takes state by value, so a handle to the pool is cloned
     // out first (cheap — r2d2::Pool is just an Arc-backed share) to
     // still have DB access for error logging after state is consumed.
@@ -44,8 +52,17 @@ pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: S
         // the pdftotext sidecar; file_path (raw, unvalidated) is kept around
         // only for the display filename in run_diff below.
         let resolved = crate::commands::paths::resolve_read_path(&file_path)?;
-        let parsed = pdf_parser::parse_pdf(&app, &resolved).await.map_err(|e| e.to_string())?;
-        run_diff(app.clone(), state, "pdf", &file_path, parsed.records, parsed.warnings.iter().map(|w| w.message.clone()).collect())
+        let parsed = pdf_parser::parse_pdf(&app, &resolved)
+            .await
+            .map_err(|e| e.to_string())?;
+        run_diff(
+            app.clone(),
+            state,
+            "pdf",
+            &file_path,
+            parsed.records,
+            parsed.warnings.iter().map(|w| w.message.clone()).collect(),
+        )
     }
     .await;
 
@@ -53,7 +70,12 @@ pub async fn import_pdf(app: AppHandle, state: State<'_, AppState>, file_path: S
     // 4-second message bar with no trace anywhere else.
     if let Err(e) = &result {
         if let Ok(conn) = pool.get() {
-            super::logs::log(&conn, "error", &format!("PDF import failed ({file_path}): {e}"), None);
+            super::logs::log(
+                &conn,
+                "error",
+                &format!("PDF import failed ({file_path}): {e}"),
+                None,
+            );
         }
     }
     result
@@ -69,8 +91,9 @@ fn run_diff(
 ) -> Result<ImportSummary, String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
 
-    let existing_household_count: i64 =
-        conn.query_row("SELECT count(*) FROM households", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let existing_household_count: i64 = conn
+        .query_row("SELECT count(*) FROM households", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
 
     let filename = std::path::Path::new(file_path)
         .file_name()
@@ -106,11 +129,19 @@ fn run_diff(
     let total = incoming.len();
 
     for (i, rec) in incoming.iter().enumerate() {
-        let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
+        let source_key = pdf_parser::source_key(
+            &rec.first_name,
+            &rec.last_name,
+            &rec.first_name_2,
+            &rec.last_name_2,
+            &rec.address_line1,
+        );
         seen_source_keys.insert(source_key.clone());
 
         let matching_ids: Vec<i64> = {
-            let mut stmt = tx.prepare("SELECT id FROM households WHERE source_key = ?1").map_err(|e| e.to_string())?;
+            let mut stmt = tx
+                .prepare("SELECT id FROM households WHERE source_key = ?1")
+                .map_err(|e| e.to_string())?;
             let ids: Vec<i64> = stmt
                 .query_map(params![source_key], |r| r.get(0))
                 .map_err(|e| e.to_string())?
@@ -149,13 +180,22 @@ fn run_diff(
                     params![existing_id],
                     |r| {
                         Ok(ExistingForDiff {
-                            first_name: r.get(0)?, last_name: r.get(1)?,
-                            first_name_2: r.get(2)?, last_name_2: r.get(3)?,
-                            phone_1: r.get(4)?, email_1: r.get(5)?,
-                            phone_2: r.get(6)?, email_2: r.get(7)?,
-                            address_line1: r.get(8)?, address_line2: r.get(9)?,
-                            city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
-                            latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
+                            first_name: r.get(0)?,
+                            last_name: r.get(1)?,
+                            first_name_2: r.get(2)?,
+                            last_name_2: r.get(3)?,
+                            phone_1: r.get(4)?,
+                            email_1: r.get(5)?,
+                            phone_2: r.get(6)?,
+                            email_2: r.get(7)?,
+                            address_line1: r.get(8)?,
+                            address_line2: r.get(9)?,
+                            city: r.get(10)?,
+                            state: r.get(11)?,
+                            zip: r.get(12)?,
+                            latitude: r.get(13)?,
+                            longitude: r.get(14)?,
+                            comments: r.get(15)?,
                         })
                     },
                 )
@@ -175,17 +215,17 @@ fn run_diff(
                 unchanged_count += 1;
             }
         } else {
-                // Could still be the SAME household with a changed address
-                // — best-effort match on either head's name. Issue #30:
-                // this used to be query_row, which silently returns
-                // whichever row SQLite happens to return first when more
-                // than one household shares a name — no ORDER BY, no
-                // stable order, and no way to tell "one match" from
-                // "many" apart. Extended families with a shared surname
-                // are exactly the case Functional_Requirements.md
-                // anticipates, so this collects every candidate instead.
-                let name_matches: Vec<i64> = {
-                    let mut stmt = tx
+            // Could still be the SAME household with a changed address
+            // — best-effort match on either head's name. Issue #30:
+            // this used to be query_row, which silently returns
+            // whichever row SQLite happens to return first when more
+            // than one household shares a name — no ORDER BY, no
+            // stable order, and no way to tell "one match" from
+            // "many" apart. Extended families with a shared surname
+            // are exactly the case Functional_Requirements.md
+            // anticipates, so this collects every candidate instead.
+            let name_matches: Vec<i64> = {
+                let mut stmt = tx
                         .prepare(
                             "SELECT id FROM households WHERE \
                              (first_name = ?1 AND last_name = ?2) OR (first_name_2 = ?1 AND last_name_2 = ?2) \
@@ -193,38 +233,58 @@ fn run_diff(
                              OR (?3 IS NOT NULL AND first_name_2 = ?3 AND last_name_2 = ?4)",
                         )
                         .map_err(|e| e.to_string())?;
-                    let ids: Vec<i64> = stmt
-                        .query_map(params![rec.first_name, rec.last_name, rec.first_name_2, rec.last_name_2], |r| r.get(0))
-                        .map_err(|e| e.to_string())?
-                        .filter_map(Result::ok)
-                        .collect();
-                    ids
-                };
+                let ids: Vec<i64> = stmt
+                    .query_map(
+                        params![
+                            rec.first_name,
+                            rec.last_name,
+                            rec.first_name_2,
+                            rec.last_name_2
+                        ],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())?
+                    .filter_map(Result::ok)
+                    .collect();
+                ids
+            };
 
-                // Two-plus name matches can't be auto-paired — city alone
-                // isn't a safe tiebreaker (people do move between
-                // cities), so rather than guess and risk a Replace
-                // silently overwriting the wrong family, this is added as
-                // a new record and flagged for the user to reconcile
-                // manually. Never destroys anything; a genuine duplicate
-                // is just as visible afterward as it would be either way.
-                let name_match = if name_matches.len() == 1 { Some(name_matches[0]) } else { None };
-                if let Some(id) = name_match {
-                    matched_existing_ids.insert(id);
-                }
-                if name_matches.len() > 1 {
-                    warnings.push(format!(
+            // Two-plus name matches can't be auto-paired — city alone
+            // isn't a safe tiebreaker (people do move between
+            // cities), so rather than guess and risk a Replace
+            // silently overwriting the wrong family, this is added as
+            // a new record and flagged for the user to reconcile
+            // manually. Never destroys anything; a genuine duplicate
+            // is just as visible afterward as it would be either way.
+            let name_match = if name_matches.len() == 1 {
+                Some(name_matches[0])
+            } else {
+                None
+            };
+            if let Some(id) = name_match {
+                matched_existing_ids.insert(id);
+            }
+            if name_matches.len() > 1 {
+                warnings.push(format!(
                         "row {}: \"{} {}\" matches {} existing households by name alone — added as new rather than guessing which one changed; check for duplicates manually",
                         i + 1,
                         rec.first_name,
                         rec.last_name,
                         name_matches.len()
                     ));
-                }
-                let match_type = if name_match.is_some() { "changed" } else { "new" };
-                if match_type == "changed" { changed_count += 1 } else { new_count += 1 };
+            }
+            let match_type = if name_match.is_some() {
+                "changed"
+            } else {
+                "new"
+            };
+            if match_type == "changed" {
+                changed_count += 1
+            } else {
+                new_count += 1
+            };
 
-                tx.execute(
+            tx.execute(
                     "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) \
                      VALUES (?1, ?2, ?3, ?4)",
                     params![
@@ -246,7 +306,9 @@ fn run_diff(
     // household on every re-import; at the documented 10,000-record
     // ceiling that's ~10^8 comparisons on a full re-import.
     {
-        let mut stmt = tx.prepare("SELECT id, source_key FROM households").map_err(|e| e.to_string())?;
+        let mut stmt = tx
+            .prepare("SELECT id, source_key FROM households")
+            .map_err(|e| e.to_string())?;
         let existing_keys: Vec<(i64, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| e.to_string())?
@@ -264,7 +326,11 @@ fn run_diff(
     }
 
     let review_count: i64 = tx
-        .query_row("SELECT count(*) FROM review_queue WHERE import_batch_id = ?1", params![batch_id], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM review_queue WHERE import_batch_id = ?1",
+            params![batch_id],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     tx.execute(
         "UPDATE import_batches SET new_count = ?1, review_count = ?2 WHERE id = ?3",
@@ -307,12 +373,20 @@ fn auto_accept_all(
     )
     .map_err(|e| e.to_string())?;
     let batch_id = tx.last_insert_rowid();
-    let not_known_tag_id = crate::commands::tags::get_or_create_tag_id(&tx, "Not known").map_err(|e| e.to_string())?;
+    let not_known_tag_id =
+        crate::commands::tags::get_or_create_tag_id(&tx, "Not known").map_err(|e| e.to_string())?;
 
     let total = incoming.len();
     for (i, rec) in incoming.iter().enumerate() {
-        let address_key = pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
-        let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
+        let address_key =
+            pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
+        let source_key = pdf_parser::source_key(
+            &rec.first_name,
+            &rec.last_name,
+            &rec.first_name_2,
+            &rec.last_name_2,
+            &rec.address_line1,
+        );
         // A single PDF can itself contain two distinct households that
         // collide on source_key (father/son at the same address) — even
         // starting from an empty DB. Pick the next free seq for this key
@@ -348,7 +422,12 @@ fn auto_accept_all(
     }
 
     tx.commit().map_err(|e| e.to_string())?;
-    super::logs::log(conn, "info", &format!("empty-database import: {total} households auto-accepted"), None);
+    super::logs::log(
+        conn,
+        "info",
+        &format!("empty-database import: {total} households auto-accepted"),
+        None,
+    );
 
     Ok(ImportSummary {
         batch_id,
@@ -463,20 +542,32 @@ fn changed_fields(existing: &ExistingForDiff, incoming: &ParsedRecord) -> Vec<St
 /// isn't something being replaced, so it's left out. Returns None when
 /// nothing worth preserving changed (the common case — most Replace
 /// resolutions are a name/address dedupe with no personal-info drift).
-fn build_preserved_info_note(old: &ExistingForDiff, incoming: &ParsedRecord, dtg: &str) -> Option<String> {
+fn build_preserved_info_note(
+    old: &ExistingForDiff,
+    incoming: &ParsedRecord,
+    dtg: &str,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(v) = &old.phone_1 {
-        if old.phone_1 != incoming.phone_1 { parts.push(format!("Previous phone: {v}.")); }
+        if old.phone_1 != incoming.phone_1 {
+            parts.push(format!("Previous phone: {v}."));
+        }
     }
     if let Some(v) = &old.email_1 {
-        if old.email_1 != incoming.email_1 { parts.push(format!("Previous email: {v}.")); }
+        if old.email_1 != incoming.email_1 {
+            parts.push(format!("Previous email: {v}."));
+        }
     }
     if let Some(v) = &old.phone_2 {
-        if old.phone_2 != incoming.phone_2 { parts.push(format!("Previous phone 2: {v}.")); }
+        if old.phone_2 != incoming.phone_2 {
+            parts.push(format!("Previous phone 2: {v}."));
+        }
     }
     if let Some(v) = &old.email_2 {
-        if old.email_2 != incoming.email_2 { parts.push(format!("Previous email 2: {v}.")); }
+        if old.email_2 != incoming.email_2 {
+            parts.push(format!("Previous email 2: {v}."));
+        }
     }
 
     let address_changed = old.address_line1 != incoming.address_line1
@@ -487,14 +578,24 @@ fn build_preserved_info_note(old: &ExistingForDiff, incoming: &ParsedRecord, dtg
     let had_old_address = old.address_line1.is_some() || old.city.is_some();
     if address_changed && had_old_address {
         let mut addr = old.address_line1.clone().unwrap_or_default();
-        if let Some(l2) = &old.address_line2 { addr.push_str(&format!(", {l2}")); }
-        if let Some(c) = &old.city { addr.push_str(&format!(", {c}")); }
-        if let Some(s) = &old.state { addr.push_str(&format!(" {s}")); }
-        if let Some(z) = &old.zip { addr.push_str(&format!(" {z}")); }
+        if let Some(l2) = &old.address_line2 {
+            addr.push_str(&format!(", {l2}"));
+        }
+        if let Some(c) = &old.city {
+            addr.push_str(&format!(", {c}"));
+        }
+        if let Some(s) = &old.state {
+            addr.push_str(&format!(" {s}"));
+        }
+        if let Some(z) = &old.zip {
+            addr.push_str(&format!(" {z}"));
+        }
         parts.push(format!("Previous address: {addr}."));
     }
 
-    if old.latitude.is_some() && (old.latitude != incoming.latitude || old.longitude != incoming.longitude) {
+    if old.latitude.is_some()
+        && (old.latitude != incoming.latitude || old.longitude != incoming.longitude)
+    {
         let lat = old.latitude.map(|v| v.to_string()).unwrap_or_default();
         let lng = old.longitude.map(|v| v.to_string()).unwrap_or_default();
         parts.push(format!("Previous coordinates: {lat}, {lng}."));
@@ -522,7 +623,7 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
              FROM review_queue rq WHERE rq.import_batch_id = ?1 AND rq.resolution = 'pending'",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, String, Option<String>, Option<i64>, Option<String>)> = stmt
+    let rows: Vec<PendingReviewRow> = stmt
         .query_map(params![batch_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })
@@ -572,8 +673,13 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
         // items never had one to begin with, so they're never stale.
         let stale = match_type != "new" && existing_household_id.is_none();
         out.push(ReviewItem {
-            id, match_type, incoming_data, existing_household_id, existing_summary,
-            changed_fields: changed, stale,
+            id,
+            match_type,
+            incoming_data,
+            existing_household_id,
+            existing_summary,
+            changed_fields: changed,
+            stale,
         });
     }
     Ok(out)
@@ -613,10 +719,10 @@ pub fn resolve_review_item(
     link_target_id: Option<i64>,
 ) -> Result<(), String> {
     let result = (|| -> Result<(), String> {
-    let mut conn = state.pool.get().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let (match_type, incoming_json, existing_id, batch_id): (String, Option<String>, Option<i64>, i64) = tx
+        let (match_type, incoming_json, existing_id, batch_id): (String, Option<String>, Option<i64>, i64) = tx
         .query_row(
             "SELECT match_type, incoming_data, existing_household_id, import_batch_id FROM review_queue WHERE id = ?1",
             params![item_id],
@@ -624,51 +730,51 @@ pub fn resolve_review_item(
         )
         .map_err(|e| e.to_string())?;
 
-    // Issue #62: a prior resolution earlier in this batch can null out
-    // existing_household_id via ON DELETE SET NULL (deleting/replacing the
-    // household another review row still points at). "replace"/"merge" on
-    // a detached 'changed' item used to fall through and mint a fresh
-    // household — silently duplicating a record instead of replacing
-    // anything. "delete" on a detached 'removed' item used to no-op inside
-    // its own `if let Some(id) = existing_id` guard while still reporting
-    // success. Both cases are the same failure — the item no longer refers
-    // to anything — so both fail loudly here, before touching any table,
-    // and the item stays 'pending' so the user can Ignore it deliberately
-    // (Option A). "add" is unaffected: existing_id is expected to be None
-    // there and always has been. "link" is unaffected too — it never reads
-    // this row's own existing_id (see below), it reads link_target_id.
-    if matches!(action.as_str(), "replace" | "merge" | "delete") && existing_id.is_none() {
-        return Err(
-            "the household this item referred to was already removed or replaced \
+        // Issue #62: a prior resolution earlier in this batch can null out
+        // existing_household_id via ON DELETE SET NULL (deleting/replacing the
+        // household another review row still points at). "replace"/"merge" on
+        // a detached 'changed' item used to fall through and mint a fresh
+        // household — silently duplicating a record instead of replacing
+        // anything. "delete" on a detached 'removed' item used to no-op inside
+        // its own `if let Some(id) = existing_id` guard while still reporting
+        // success. Both cases are the same failure — the item no longer refers
+        // to anything — so both fail loudly here, before touching any table,
+        // and the item stays 'pending' so the user can Ignore it deliberately
+        // (Option A). "add" is unaffected: existing_id is expected to be None
+        // there and always has been. "link" is unaffected too — it never reads
+        // this row's own existing_id (see below), it reads link_target_id.
+        if matches!(action.as_str(), "replace" | "merge" | "delete") && existing_id.is_none() {
+            return Err(
+                "the household this item referred to was already removed or replaced \
              earlier in this batch — nothing left to act on; choose Ignore"
-                .to_string(),
-        );
-    }
-
-    // Issue #70: "link" overrides existing_id with the user-picked target
-    // rather than this row's own (None, for a 'new' item) — everything
-    // below this point (the "add" | "replace" | "merge" | "link" arm) then
-    // runs unmodified against whichever id is bound to existing_id.
-    //
-    // link_removed_item_id is the paired 'removed' review_queue row's OWN
-    // id, captured here — not re-derived later from existing_household_id.
-    // The household DELETE further down (inside the "link" arm, same as
-    // "replace"/"merge") fires ON DELETE SET NULL on
-    // review_queue.existing_household_id for every row that referenced it,
-    // including this 'removed' row itself. Looking it up again after that
-    // delete by "existing_household_id = target" would find nothing —
-    // that column is already NULL by then. Resolving by this row's own id,
-    // captured before the delete, sidesteps the cascade entirely.
-    let mut link_removed_item_id: Option<i64> = None;
-    let existing_id = if action == "link" {
-        if existing_id.is_some() {
-            return Err("link is only valid for a 'new' item".to_string());
+                    .to_string(),
+            );
         }
-        let target = link_target_id.ok_or("link requires link_target_id")?;
-        // Confirm the target is still a real, pending 'removed' item in
-        // THIS batch — guards a stale dropdown selection (target already
-        // linked, deleted, or replaced by another action in the meantime).
-        let target_pending: Option<i64> = tx
+
+        // Issue #70: "link" overrides existing_id with the user-picked target
+        // rather than this row's own (None, for a 'new' item) — everything
+        // below this point (the "add" | "replace" | "merge" | "link" arm) then
+        // runs unmodified against whichever id is bound to existing_id.
+        //
+        // link_removed_item_id is the paired 'removed' review_queue row's OWN
+        // id, captured here — not re-derived later from existing_household_id.
+        // The household DELETE further down (inside the "link" arm, same as
+        // "replace"/"merge") fires ON DELETE SET NULL on
+        // review_queue.existing_household_id for every row that referenced it,
+        // including this 'removed' row itself. Looking it up again after that
+        // delete by "existing_household_id = target" would find nothing —
+        // that column is already NULL by then. Resolving by this row's own id,
+        // captured before the delete, sidesteps the cascade entirely.
+        let mut link_removed_item_id: Option<i64> = None;
+        let existing_id = if action == "link" {
+            if existing_id.is_some() {
+                return Err("link is only valid for a 'new' item".to_string());
+            }
+            let target = link_target_id.ok_or("link requires link_target_id")?;
+            // Confirm the target is still a real, pending 'removed' item in
+            // THIS batch — guards a stale dropdown selection (target already
+            // linked, deleted, or replaced by another action in the meantime).
+            let target_pending: Option<i64> = tx
             .query_row(
                 "SELECT id FROM review_queue WHERE import_batch_id = ?1 AND match_type = 'removed' \
                  AND existing_household_id = ?2 AND resolution = 'pending'",
@@ -677,66 +783,81 @@ pub fn resolve_review_item(
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if target_pending.is_none() {
-            return Err(
+            if target_pending.is_none() {
+                return Err(
                 "the selected household is no longer a pending removal in this batch — refresh and try again"
                     .to_string(),
             );
-        }
-        link_removed_item_id = target_pending;
-        Some(target)
-    } else {
-        existing_id
-    };
+            }
+            link_removed_item_id = target_pending;
+            Some(target)
+        } else {
+            existing_id
+        };
 
-    match action.as_str() {
-        "add" | "replace" | "merge" | "link" => {
-            let rec: ParsedRecord = serde_json::from_str(
-                incoming_json.as_deref().ok_or("no incoming data for this action")?,
-            )
-            .map_err(|e| e.to_string())?;
-            let address_key = pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
-            let source_key = pdf_parser::source_key(&rec.first_name, &rec.last_name, &rec.first_name_2, &rec.last_name_2, &rec.address_line1);
+        match action.as_str() {
+            "add" | "replace" | "merge" | "link" => {
+                let rec: ParsedRecord = serde_json::from_str(
+                    incoming_json
+                        .as_deref()
+                        .ok_or("no incoming data for this action")?,
+                )
+                .map_err(|e| e.to_string())?;
+                let address_key =
+                    pdf_parser::address_key(&rec.address_line1, &rec.address_line2, &rec.city);
+                let source_key = pdf_parser::source_key(
+                    &rec.first_name,
+                    &rec.last_name,
+                    &rec.first_name_2,
+                    &rec.last_name_2,
+                    &rec.address_line1,
+                );
 
-            // replace/merge preserve the outgoing household's tag(s) and
-            // comments before the old row is touched — ON DELETE CASCADE
-            // would otherwise wipe the tag along with it (the original #19
-            // finding), and the parser's own comments value is almost
-            // always None, so an unconditional overwrite silently erased
-            // whatever the user had typed (#20). Only a GENUINELY new
-            // household should ever get auto-tagged/reset.
-            let mut preserved_tag_ids: Vec<i64> = Vec::new();
-            let mut existing_comments: Option<String> = None;
-            let mut carried_household_uid: Option<String> = None;
-            // Issue #83: phone/email/address/coordinates the incoming
-            // record is about to overwrite, formatted as a single
-            // timestamped note so they aren't lost outright. Populated
-            // below, alongside existing_comments, only for replace/merge
-            // against a real existing household.
-            let mut preserved_info_note: Option<String> = None;
-            if action == "replace" || action == "merge" || action == "link" {
-                if let Some(old_id) = existing_id {
-                    {
-                        let mut stmt = tx
-                            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
-                            .map_err(|e| e.to_string())?;
-                        preserved_tag_ids = stmt
-                            .query_map(params![old_id], |r| r.get(0))
+                // replace/merge preserve the outgoing household's tag(s) and
+                // comments before the old row is touched — ON DELETE CASCADE
+                // would otherwise wipe the tag along with it (the original #19
+                // finding), and the parser's own comments value is almost
+                // always None, so an unconditional overwrite silently erased
+                // whatever the user had typed (#20). Only a GENUINELY new
+                // household should ever get auto-tagged/reset.
+                let mut preserved_tag_ids: Vec<i64> = Vec::new();
+                let mut existing_comments: Option<String> = None;
+                let mut carried_household_uid: Option<String> = None;
+                // Issue #83: phone/email/address/coordinates the incoming
+                // record is about to overwrite, formatted as a single
+                // timestamped note so they aren't lost outright. Populated
+                // below, alongside existing_comments, only for replace/merge
+                // against a real existing household.
+                let mut preserved_info_note: Option<String> = None;
+                if action == "replace" || action == "merge" || action == "link" {
+                    if let Some(old_id) = existing_id {
+                        {
+                            let mut stmt = tx
+                                .prepare(
+                                    "SELECT tag_id FROM household_tags WHERE household_id = ?1",
+                                )
+                                .map_err(|e| e.to_string())?;
+                            preserved_tag_ids = stmt
+                                .query_map(params![old_id], |r| r.get(0))
+                                .map_err(|e| e.to_string())?
+                                .collect::<Result<_, _>>()
+                                .map_err(|e| e.to_string())?;
+                        }
+                        existing_comments = tx
+                            .query_row(
+                                "SELECT comments FROM households WHERE id = ?1",
+                                params![old_id],
+                                |r| r.get::<_, Option<String>>(0),
+                            )
+                            .optional()
                             .map_err(|e| e.to_string())?
-                            .collect::<Result<_, _>>()
-                            .map_err(|e| e.to_string())?;
-                    }
-                    existing_comments = tx
-                        .query_row("SELECT comments FROM households WHERE id = ?1", params![old_id], |r| r.get::<_, Option<String>>(0))
-                        .optional()
-                        .map_err(|e| e.to_string())?
-                        .flatten();
-                    // Issue #83: read the full old record (same columns
-                    // changed_fields() already diffs for display) so any
-                    // phone/email/address/coordinates about to be
-                    // overwritten can be written into the note below
-                    // before this row's own values are replaced.
-                    let old_for_note: Option<ExistingForDiff> = tx
+                            .flatten();
+                        // Issue #83: read the full old record (same columns
+                        // changed_fields() already diffs for display) so any
+                        // phone/email/address/coordinates about to be
+                        // overwritten can be written into the note below
+                        // before this row's own values are replaced.
+                        let old_for_note: Option<ExistingForDiff> = tx
                         .query_row(
                             "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
                              phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
@@ -756,69 +877,77 @@ pub fn resolve_review_item(
                         )
                         .optional()
                         .map_err(|e| e.to_string())?;
-                    if let Some(old) = &old_for_note {
-                        let dtg: String = tx
-                            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get(0))
+                        if let Some(old) = &old_for_note {
+                            let dtg: String = tx
+                                .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                                    r.get(0)
+                                })
+                                .map_err(|e| e.to_string())?;
+                            preserved_info_note = build_preserved_info_note(old, &rec, &dtg);
+                        }
+                        // Issue #69: carry the household's durable identity
+                        // forward across Replace/Merge — this is the load-
+                        // bearing part of the whole issue. Read before the
+                        // sentinel bump / delete below, same as
+                        // existing_comments above.
+                        carried_household_uid = tx
+                            .query_row(
+                                "SELECT household_uid FROM households WHERE id = ?1",
+                                params![old_id],
+                                |r| r.get(0),
+                            )
+                            .optional()
                             .map_err(|e| e.to_string())?;
-                        preserved_info_note = build_preserved_info_note(old, &rec, &dtg);
-                    }
-                    // Issue #69: carry the household's durable identity
-                    // forward across Replace/Merge — this is the load-
-                    // bearing part of the whole issue. Read before the
-                    // sentinel bump / delete below, same as
-                    // existing_comments above.
-                    carried_household_uid = tx
-                        .query_row("SELECT household_uid FROM households WHERE id = ?1", params![old_id], |r| r.get(0))
-                        .optional()
-                        .map_err(|e| e.to_string())?;
-                    // The new row is inserted before the old one is
-                    // deleted (visits must be re-pointed to the new id
-                    // first), so if the incoming record's source_key is
-                    // unchanged, the old row is still occupying the exact
-                    // (source_key, source_key_seq) slot the new row would
-                    // naturally reclaim. Bump the outgoing row onto a
-                    // guaranteed-free sentinel first — -id is always
-                    // negative and therefore never collides with a real
-                    // slot — so the insert below never trips the
-                    // UNIQUE(source_key, source_key_seq) constraint. The
-                    // row is deleted a few lines down regardless.
-                    //
-                    // Same problem, same fix, for household_uid: the new
-                    // row below is inserted carrying this old row's uid
-                    // forward (carried_household_uid, read above) while
-                    // the old row — still holding that same uid — hasn't
-                    // been deleted yet. That collided with the UNIQUE
-                    // index on households.household_uid. Bump the old
-                    // row's uid to a disposable throwaway value in the
-                    // same UPDATE, freeing the real uid for the insert.
-                    let temp_uid = format!("superseded-{}", Uuid::new_v4());
-                    tx.execute(
+                        // The new row is inserted before the old one is
+                        // deleted (visits must be re-pointed to the new id
+                        // first), so if the incoming record's source_key is
+                        // unchanged, the old row is still occupying the exact
+                        // (source_key, source_key_seq) slot the new row would
+                        // naturally reclaim. Bump the outgoing row onto a
+                        // guaranteed-free sentinel first — -id is always
+                        // negative and therefore never collides with a real
+                        // slot — so the insert below never trips the
+                        // UNIQUE(source_key, source_key_seq) constraint. The
+                        // row is deleted a few lines down regardless.
+                        //
+                        // Same problem, same fix, for household_uid: the new
+                        // row below is inserted carrying this old row's uid
+                        // forward (carried_household_uid, read above) while
+                        // the old row — still holding that same uid — hasn't
+                        // been deleted yet. That collided with the UNIQUE
+                        // index on households.household_uid. Bump the old
+                        // row's uid to a disposable throwaway value in the
+                        // same UPDATE, freeing the real uid for the insert.
+                        let temp_uid = format!("superseded-{}", Uuid::new_v4());
+                        tx.execute(
                         "UPDATE households SET source_key_seq = -id, household_uid = ?2 WHERE id = ?1",
                         params![old_id, temp_uid],
                     )
                     .map_err(|e| e.to_string())?;
+                    }
                 }
-            }
 
-            let final_comments = match (rec.comments.as_deref(), existing_comments.as_deref()) {
-                (None, None) => None,
-                (Some(incoming), None) => Some(incoming.to_string()),
-                (None, Some(existing)) => Some(existing.to_string()),
-                (Some(incoming), Some(existing)) if incoming == existing => Some(existing.to_string()),
-                (Some(incoming), Some(existing)) => Some(format!("{incoming}\n\n{existing}")),
-            };
-            // Issue #83: append the preserved-info note (if anything
-            // changed) after the carried-forward comment text — same
-            // append-don't-clobber principle as #20's comment handling
-            // just above.
-            let final_comments = match (final_comments, preserved_info_note) {
-                (None, None) => None,
-                (Some(c), None) => Some(c),
-                (None, Some(note)) => Some(note),
-                (Some(c), Some(note)) => Some(format!("{c}\n\n{note}")),
-            };
+                let final_comments = match (rec.comments.as_deref(), existing_comments.as_deref()) {
+                    (None, None) => None,
+                    (Some(incoming), None) => Some(incoming.to_string()),
+                    (None, Some(existing)) => Some(existing.to_string()),
+                    (Some(incoming), Some(existing)) if incoming == existing => {
+                        Some(existing.to_string())
+                    }
+                    (Some(incoming), Some(existing)) => Some(format!("{incoming}\n\n{existing}")),
+                };
+                // Issue #83: append the preserved-info note (if anything
+                // changed) after the carried-forward comment text — same
+                // append-don't-clobber principle as #20's comment handling
+                // just above.
+                let final_comments = match (final_comments, preserved_info_note) {
+                    (None, None) => None,
+                    (Some(c), None) => Some(c),
+                    (None, Some(note)) => Some(note),
+                    (Some(c), Some(note)) => Some(format!("{c}\n\n{note}")),
+                };
 
-            let source_key_seq: i64 = tx
+                let source_key_seq: i64 = tx
                 .query_row(
                     "SELECT COALESCE(MAX(source_key_seq), -1) + 1 FROM households WHERE source_key = ?1",
                     params![source_key],
@@ -826,15 +955,16 @@ pub fn resolve_review_item(
                 )
                 .map_err(|e| e.to_string())?;
 
-            // Issue #69: "add" always mints fresh (genuinely new
-            // household). "replace"/"merge" carry the old uid forward —
-            // existing_id is guaranteed Some here for those two actions
-            // (the #62 guard above rejects a detached replace/merge before
-            // this point), so carried_household_uid is always populated
-            // for them; the fallback below only fires for "add".
-            let household_uid = carried_household_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
+                // Issue #69: "add" always mints fresh (genuinely new
+                // household). "replace"/"merge" carry the old uid forward —
+                // existing_id is guaranteed Some here for those two actions
+                // (the #62 guard above rejects a detached replace/merge before
+                // this point), so carried_household_uid is always populated
+                // for them; the fallback below only fires for "add".
+                let household_uid =
+                    carried_household_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-            tx.execute(
+                tx.execute(
                 "INSERT INTO households (household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
                  address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
@@ -845,31 +975,37 @@ pub fn resolve_review_item(
                 ],
             )
             .map_err(|e| e.to_string())?;
-            let new_id = tx.last_insert_rowid();
+                let new_id = tx.last_insert_rowid();
 
-            if action == "add" {
-                let not_known_id = crate::commands::tags::get_or_create_tag_id(&tx, "Not known").map_err(|e| e.to_string())?;
-                tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, not_known_id])
+                if action == "add" {
+                    let not_known_id =
+                        crate::commands::tags::get_or_create_tag_id(&tx, "Not known")
+                            .map_err(|e| e.to_string())?;
+                    tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, not_known_id])
                     .map_err(|e| e.to_string())?;
-            } else {
-                for tag_id in preserved_tag_ids {
-                    tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, tag_id])
+                } else {
+                    for tag_id in preserved_tag_ids {
+                        tx.execute("INSERT OR IGNORE INTO household_tags (household_id, tag_id) VALUES (?1, ?2)", params![new_id, tag_id])
                         .map_err(|e| e.to_string())?;
-                }
-                if let Some(old_id) = existing_id {
-                    // Re-point visits at the new row BEFORE the old one is
-                    // deleted, so the cascade below has nothing left to
-                    // remove (#19) — order matters: this must run before
-                    // the DELETE, not after.
-                    tx.execute("UPDATE visits SET household_id = ?1 WHERE household_id = ?2", params![new_id, old_id])
+                    }
+                    if let Some(old_id) = existing_id {
+                        // Re-point visits at the new row BEFORE the old one is
+                        // deleted, so the cascade below has nothing left to
+                        // remove (#19) — order matters: this must run before
+                        // the DELETE, not after.
+                        tx.execute(
+                            "UPDATE visits SET household_id = ?1 WHERE household_id = ?2",
+                            params![new_id, old_id],
+                        )
                         .map_err(|e| e.to_string())?;
-                    tx.execute("DELETE FROM households WHERE id = ?1", params![old_id]).map_err(|e| e.to_string())?;
+                        tx.execute("DELETE FROM households WHERE id = ?1", params![old_id])
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
             }
-        }
-        "delete" => {
-            if let Some(id) = existing_id {
-                let affected = tx
+            "delete" => {
+                if let Some(id) = existing_id {
+                    let affected = tx
                     .execute(
                         "INSERT INTO deleted_households (original_id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
                          address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
@@ -878,92 +1014,93 @@ pub fn resolve_review_item(
                         params![id, comment],
                     )
                     .map_err(|e| e.to_string())?;
-                if affected == 0 {
-                    return Err(format!("no household with id {id}"));
-                }
-                let deleted_id = tx.last_insert_rowid();
+                    if affected == 0 {
+                        return Err(format!("no household with id {id}"));
+                    }
+                    let deleted_id = tx.last_insert_rowid();
 
-                // Mirror visits and tags before the DELETE cascades them
-                // away — same treatment as soft_delete_household (#19).
-                // Issue #69: visit_uid carried into the mirror too, same as
-                // household_uid just above — this is the review-driven
-                // delete path (Review Updates' "removed" -> Delete), not
-                // households::soft_delete_household, and needs the same fix.
-                {
-                    let mut stmt = tx
+                    // Mirror visits and tags before the DELETE cascades them
+                    // away — same treatment as soft_delete_household (#19).
+                    // Issue #69: visit_uid carried into the mirror too, same as
+                    // household_uid just above — this is the review-driven
+                    // delete path (Review Updates' "removed" -> Delete), not
+                    // households::soft_delete_household, and needs the same fix.
+                    {
+                        let mut stmt = tx
                         .prepare("SELECT visit_uid, visit_date, comments FROM visits WHERE household_id = ?1")
                         .map_err(|e| e.to_string())?;
-                    let visits: Vec<(String, String, Option<String>)> = stmt
-                        .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                        .map_err(|e| e.to_string())?
-                        .collect::<Result<_, _>>()
-                        .map_err(|e| e.to_string())?;
-                    for (visit_uid, visit_date, v_comments) in visits {
-                        tx.execute(
+                        let visits: Vec<(String, String, Option<String>)> = stmt
+                            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                            .map_err(|e| e.to_string())?
+                            .collect::<Result<_, _>>()
+                            .map_err(|e| e.to_string())?;
+                        for (visit_uid, visit_date, v_comments) in visits {
+                            tx.execute(
                             "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
                             params![deleted_id, visit_uid, visit_date, v_comments],
                         )
                         .map_err(|e| e.to_string())?;
+                        }
                     }
-                }
-                {
-                    let mut stmt = tx
-                        .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
-                        .map_err(|e| e.to_string())?;
-                    let tag_ids: Vec<i64> = stmt
-                        .query_map(params![id], |r| r.get(0))
-                        .map_err(|e| e.to_string())?
-                        .collect::<Result<_, _>>()
-                        .map_err(|e| e.to_string())?;
-                    for tag_id in tag_ids {
-                        tx.execute(
+                    {
+                        let mut stmt = tx
+                            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
+                            .map_err(|e| e.to_string())?;
+                        let tag_ids: Vec<i64> = stmt
+                            .query_map(params![id], |r| r.get(0))
+                            .map_err(|e| e.to_string())?
+                            .collect::<Result<_, _>>()
+                            .map_err(|e| e.to_string())?;
+                        for tag_id in tag_ids {
+                            tx.execute(
                             "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) VALUES (?1, ?2)",
                             params![deleted_id, tag_id],
                         )
                         .map_err(|e| e.to_string())?;
+                        }
                     }
+
+                    tx.execute("DELETE FROM households WHERE id = ?1", params![id])
+                        .map_err(|e| e.to_string())?;
                 }
-
-                tx.execute("DELETE FROM households WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
             }
+            "ignore" => {}
+            other => return Err(format!("unknown action '{other}'")),
         }
-        "ignore" => {}
-        other => return Err(format!("unknown action '{other}'")),
-    }
 
-    // Issue #70: "link" just merged the picked 'removed' household's
-    // tags/comments/visits/household_uid into the new row and deleted that
-    // household (identical to the "merge" branch above, existing_id ==
-    // link_target_id). That household's own 'removed' review_queue row is
-    // still sitting there as 'pending' — resolve it now, in the same
-    // transaction, so it doesn't sit stuck (or get picked up separately
-    // and hit the #62 guard). Resolved by ITS OWN id
-    // (link_removed_item_id, captured before the delete above) rather
-    // than by existing_household_id: the delete already nulled that
-    // column out via ON DELETE SET NULL, so re-deriving it here would
-    // silently match nothing. Resolution value is 'link' (not a separate
-    // 'linked') — same value on both the active and passive side of the
-    // pairing, one addition to the resolution CHECK constraint instead of
-    // two (schema.sql).
-    if action == "link" {
-        if let Some(removed_item_id) = link_removed_item_id {
-            tx.execute(
+        // Issue #70: "link" just merged the picked 'removed' household's
+        // tags/comments/visits/household_uid into the new row and deleted that
+        // household (identical to the "merge" branch above, existing_id ==
+        // link_target_id). That household's own 'removed' review_queue row is
+        // still sitting there as 'pending' — resolve it now, in the same
+        // transaction, so it doesn't sit stuck (or get picked up separately
+        // and hit the #62 guard). Resolved by ITS OWN id
+        // (link_removed_item_id, captured before the delete above) rather
+        // than by existing_household_id: the delete already nulled that
+        // column out via ON DELETE SET NULL, so re-deriving it here would
+        // silently match nothing. Resolution value is 'link' (not a separate
+        // 'linked') — same value on both the active and passive side of the
+        // pairing, one addition to the resolution CHECK constraint instead of
+        // two (schema.sql).
+        if action == "link" {
+            if let Some(removed_item_id) = link_removed_item_id {
+                tx.execute(
                 "UPDATE review_queue SET resolution = 'link', resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
                  WHERE id = ?1 AND resolution = 'pending'",
                 params![removed_item_id],
             )
             .map_err(|e| e.to_string())?;
+            }
         }
-    }
 
-    let _ = match_type;
-    tx.execute(
+        let _ = match_type;
+        tx.execute(
         "UPDATE review_queue SET resolution = ?1, resolution_comment = ?2, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3",
         params![action, comment, item_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
     })();
 
     // Issue #27: this is the only place households are destroyed and
@@ -971,8 +1108,18 @@ pub fn resolve_review_item(
     // more than almost anywhere else in the app.
     if let Ok(conn) = state.pool.get() {
         match &result {
-            Ok(()) => super::logs::log(&conn, "info", &format!("review item {item_id} resolved: {action}"), None),
-            Err(e) => super::logs::log(&conn, "error", &format!("review item {item_id} resolution ({action}) failed: {e}"), None),
+            Ok(()) => super::logs::log(
+                &conn,
+                "info",
+                &format!("review item {item_id} resolved: {action}"),
+                None,
+            ),
+            Err(e) => super::logs::log(
+                &conn,
+                "error",
+                &format!("review item {item_id} resolution ({action}) failed: {e}"),
+                None,
+            ),
         }
     }
     result
@@ -989,10 +1136,15 @@ pub fn commit_import_batch(state: State<AppState>, batch_id: i64) -> Result<(), 
         )
         .map_err(|e| e.to_string())?;
     if pending > 0 {
-        return Err(format!("{pending} review item(s) still pending — resolve before committing"));
+        return Err(format!(
+            "{pending} review item(s) still pending — resolve before committing"
+        ));
     }
-    conn.execute("UPDATE import_batches SET status = 'committed' WHERE id = ?1", params![batch_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE import_batches SET status = 'committed' WHERE id = ?1",
+        params![batch_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1027,7 +1179,10 @@ pub struct BulkAddResult {
 /// retries only the ones that didn't make it — already-added items are
 /// skipped by the same WHERE clause as before.
 #[tauri::command]
-pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<BulkAddResult, String> {
+pub fn resolve_all_new_records(
+    state: State<AppState>,
+    batch_id: i64,
+) -> Result<BulkAddResult, String> {
     let ids: Vec<i64> = {
         let conn = state.pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -1048,7 +1203,10 @@ pub fn resolve_all_new_records(state: State<AppState>, batch_id: i64) -> Result<
     for id in ids {
         match resolve_review_item(state.clone(), id, "add".to_string(), None, None) {
             Ok(()) => added += 1,
-            Err(e) => failed.push(BulkAddFailure { item_id: id, error: e }),
+            Err(e) => failed.push(BulkAddFailure {
+                item_id: id,
+                error: e,
+            }),
         }
     }
     Ok(BulkAddResult { added, failed })
@@ -1086,7 +1244,10 @@ pub struct DiscardBatchResult {
 /// If nothing in the batch was ever resolved, the batch row itself is
 /// removed too rather than left behind as an empty committed shell.
 #[tauri::command]
-pub fn discard_import_batch(state: State<AppState>, batch_id: i64) -> Result<DiscardBatchResult, String> {
+pub fn discard_import_batch(
+    state: State<AppState>,
+    batch_id: i64,
+) -> Result<DiscardBatchResult, String> {
     let result: Result<DiscardBatchResult, String> = (|| {
         let mut conn = state.pool.get().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1107,14 +1268,24 @@ pub fn discard_import_batch(state: State<AppState>, batch_id: i64) -> Result<Dis
             .map_err(|e| e.to_string())?;
 
         if already_resolved == 0 {
-            tx.execute("DELETE FROM import_batches WHERE id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM import_batches WHERE id = ?1",
+                params![batch_id],
+            )
+            .map_err(|e| e.to_string())?;
         } else {
-            tx.execute("UPDATE import_batches SET status = 'committed' WHERE id = ?1", params![batch_id])
-                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE import_batches SET status = 'committed' WHERE id = ?1",
+                params![batch_id],
+            )
+            .map_err(|e| e.to_string())?;
         }
 
         tx.commit().map_err(|e| e.to_string())?;
-        Ok(DiscardBatchResult { discarded, already_resolved })
+        Ok(DiscardBatchResult {
+            discarded,
+            already_resolved,
+        })
     })();
 
     // Issue #27 precedent (same as resolve_review_item below/above): this

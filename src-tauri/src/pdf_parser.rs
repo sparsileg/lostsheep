@@ -51,7 +51,10 @@ pub struct ParseResult {
 
 fn csz_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^(?P<city>[A-Za-z .'-]+)\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(-\d{4})?-?)$").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"^(?P<city>[A-Za-z .'-]+)\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(-\d{4})?-?)$")
+            .unwrap()
+    })
 }
 fn coord_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -101,8 +104,14 @@ fn street_start_re() -> &'static Regex {
 /// "Box" (case-insensitive, optional trailing period on "PO" — "P.O."),
 /// e.g. tokens ["PO","Box","42"] or ["P.O.","Box","42"].
 fn is_po_box_start(tokens: &[&str], i: usize) -> bool {
-    let po = tokens.get(i).map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("po")).unwrap_or(false);
-    let bx = tokens.get(i + 1).map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("box")).unwrap_or(false);
+    let po = tokens
+        .get(i)
+        .map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("po"))
+        .unwrap_or(false);
+    let bx = tokens
+        .get(i + 1)
+        .map(|t| t.trim_end_matches('.').eq_ignore_ascii_case("box"))
+        .unwrap_or(false);
     po && bx
 }
 
@@ -181,7 +190,11 @@ fn split_name_and_glued_address(rest: &str) -> (String, Option<String>) {
 }
 
 fn parse_heads(names_part: &str) -> Vec<String> {
-    names_part.split(" & ").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    names_part
+        .split(" & ")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Splits a head's full given-name string into ("First Middle", "First")
@@ -191,7 +204,14 @@ fn split_first_middle(h: &str) -> (String, String) {
     let mut parts = h.splitn(2, ' ');
     let first = parts.next().unwrap_or("").to_string();
     let middle = parts.next().unwrap_or("").to_string();
-    (if middle.is_empty() { first.clone() } else { format!("{first} {middle}") }, first)
+    (
+        if middle.is_empty() {
+            first.clone()
+        } else {
+            format!("{first} {middle}")
+        },
+        first,
+    )
 }
 
 /// Extracts text via poppler's `pdftotext -raw`, not the `pdf-extract`
@@ -263,7 +283,10 @@ pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<Pa
         .map_err(|e| anyhow::anyhow!("pdftotext sidecar failed to run: {e}"))?;
 
     if !output.status.success() {
-        return Err(anyhow::anyhow!("pdftotext failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow::anyhow!(
+            "pdftotext failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -274,7 +297,12 @@ fn parse_directory_text(text: &str) -> ParseResult {
     let lines = clean_lines(text);
     let name_re = name_line_re();
 
-    let name_idx: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| name_re.is_match(l)).map(|(i, _)| i).collect();
+    let name_idx: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| name_re.is_match(l))
+        .map(|(i, _)| i)
+        .collect();
 
     let mut records = Vec::new();
     let mut warnings = Vec::new();
@@ -344,12 +372,14 @@ fn parse_directory_text(text: &str) -> ParseResult {
 
         let lookahead = remaining.len().min(4);
         let mut csz_offset = None;
-        for k in 0..lookahead {
-            let line = &remaining[k];
+        for (k, line) in remaining.iter().enumerate().take(lookahead) {
             if coord_re().is_match(line) || line.contains('@') || phone_re().is_match(line) {
                 break;
             }
-            if heads.iter().any(|h| name_matches_head(line, h.split(' ').next().unwrap_or(h))) {
+            if heads
+                .iter()
+                .any(|h| name_matches_head(line, h.split(' ').next().unwrap_or(h)))
+            {
                 break;
             }
             if csz_re().is_match(line) {
@@ -422,15 +452,27 @@ fn parse_directory_text(text: &str) -> ParseResult {
         let mut emails: Vec<Option<String>> = Vec::new();
         for h in &heads {
             let first_tok = h.split(' ').next().unwrap_or(h);
-            if remaining.first().map(|l| name_matches_head(l, first_tok)).unwrap_or(false) {
+            if remaining
+                .first()
+                .map(|l| name_matches_head(l, first_tok))
+                .unwrap_or(false)
+            {
                 remaining.remove(0);
             }
-            let phone = if remaining.first().map(|l| phone_re().is_match(l)).unwrap_or(false) {
+            let phone = if remaining
+                .first()
+                .map(|l| phone_re().is_match(l))
+                .unwrap_or(false)
+            {
                 Some(remaining.remove(0))
             } else {
                 None
             };
-            let email = if remaining.first().map(|l| l.contains('@') && !l.contains(' ')).unwrap_or(false) {
+            let email = if remaining
+                .first()
+                .map(|l| l.contains('@') && !l.contains(' '))
+                .unwrap_or(false)
+            {
                 Some(remaining.remove(0))
             } else {
                 None
@@ -443,12 +485,16 @@ fn parse_directory_text(text: &str) -> ParseResult {
         // never stored (see ParsedRecord::has_minors doc comment). Still
         // surfaced as an import warning so it's visible at import time,
         // just not persisted to the database in any form.
-        let leftover: Vec<String> = remaining.into_iter().filter(|l| !l.trim().is_empty()).collect();
+        let leftover: Vec<String> = remaining
+            .into_iter()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
         let has_minors = !leftover.is_empty();
         if has_minors {
             warnings.push(ParseWarning {
                 context: format!("{last_name}, {names_part}"),
-                message: "unparsed trailing line(s), likely minors — flagged but names not stored".to_string(),
+                message: "unparsed trailing line(s), likely minors — flagged but names not stored"
+                    .to_string(),
             });
         }
 
@@ -464,7 +510,10 @@ fn parse_directory_text(text: &str) -> ParseResult {
                 context: format!("{last_name}, {names_part}"),
                 message: format!("entry lists {} heads, expected at most 2 — kept the first 2, rest added to comments", heads.len()),
             });
-            Some(format!("Additional heads (unparsed, review manually): {}", heads[2..].join(", ")))
+            Some(format!(
+                "Additional heads (unparsed, review manually): {}",
+                heads[2..].join(", ")
+            ))
         } else {
             None
         };
@@ -473,7 +522,11 @@ fn parse_directory_text(text: &str) -> ParseResult {
         let (first_name_2, last_name_2, role_2) = match heads.get(1) {
             Some(h2) => {
                 let (full, _) = split_first_middle(h2);
-                (Some(full), Some(last_name.clone()), Some("head".to_string()))
+                (
+                    Some(full),
+                    Some(last_name.clone()),
+                    Some("head".to_string()),
+                )
             }
             None => (None, None, None),
         };
@@ -508,16 +561,28 @@ fn parse_directory_text(text: &str) -> ParseResult {
 /// collapsed whitespace, punctuation stripped. Exact matches on this key
 /// are discarded from the incoming batch as unchanged. Includes the
 /// second head (if any) so a couple's key changes if either name does.
-pub fn source_key(first: &str, last: &str, first2: &Option<String>, last2: &Option<String>, addr1: &Option<String>) -> String {
+pub fn source_key(
+    first: &str,
+    last: &str,
+    first2: &Option<String>,
+    last2: &Option<String>,
+    addr1: &Option<String>,
+) -> String {
     normalize(&format!(
         "{} {} {} {} {}",
-        first, last,
-        first2.clone().unwrap_or_default(), last2.clone().unwrap_or_default(),
+        first,
+        last,
+        first2.clone().unwrap_or_default(),
+        last2.clone().unwrap_or_default(),
         addr1.clone().unwrap_or_default()
     ))
 }
 
-pub fn address_key(addr1: &Option<String>, addr2: &Option<String>, city: &Option<String>) -> String {
+pub fn address_key(
+    addr1: &Option<String>,
+    addr2: &Option<String>,
+    city: &Option<String>,
+) -> String {
     normalize(&format!(
         "{} {} {}",
         addr1.clone().unwrap_or_default(),
@@ -557,7 +622,10 @@ mod tests {
         // assumptions become noise.
         let result = parse_directory_text(SAMPLE);
         assert!(
-            !result.warnings.iter().any(|w| w.message.contains("possible parsing gap")),
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("possible parsing gap")),
             "unexpected parsing-gap warning: {:?}",
             result.warnings
         );
@@ -566,7 +634,11 @@ mod tests {
     #[test]
     fn handles_glued_name_and_address() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.last_name == "Winslow").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.last_name == "Winslow")
+            .unwrap();
         assert_eq!(r.first_name, "Vivian Skye");
         assert_eq!(r.address_line1.as_deref(), Some("410 Brookstone Rd"));
     }
@@ -577,7 +649,11 @@ mod tests {
         // Matched by last_name, not first_name — "Grant" also appears as a
         // head on the unrelated Ferris entry, so first_name alone is
         // ambiguous in this fixture.
-        let r = result.records.iter().find(|r| r.last_name == "Sinclair").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.last_name == "Sinclair")
+            .unwrap();
         assert!(r.address_line1.is_none());
         assert_eq!(r.latitude, Some(39.158007));
     }
@@ -585,7 +661,11 @@ mod tests {
     #[test]
     fn couples_collapse_into_one_record_with_second_head() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Julian Micah").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Julian Micah")
+            .unwrap();
         assert_eq!(r.last_name, "Whitcombe");
         assert_eq!(r.first_name_2.as_deref(), Some("Fiona Grace"));
         assert_eq!(r.last_name_2.as_deref(), Some("Whitcombe"));
@@ -595,7 +675,11 @@ mod tests {
     #[test]
     fn single_head_entry_has_no_second_head() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Miles").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Miles")
+            .unwrap();
         assert!(r.first_name_2.is_none());
         assert!(r.role_2.is_none());
     }
@@ -610,8 +694,16 @@ mod tests {
         // Grant matched by last_name too — "Grant" alone is ambiguous,
         // it's also the first head of the unrelated Sinclair entry.
         let result = parse_directory_text(SAMPLE);
-        let grant = result.records.iter().find(|r| r.first_name == "Grant" && r.last_name == "Ferris").unwrap();
-        let sullivan = result.records.iter().find(|r| r.first_name == "Sullivan").unwrap();
+        let grant = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Grant" && r.last_name == "Ferris")
+            .unwrap();
+        let sullivan = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Sullivan")
+            .unwrap();
         assert_eq!(grant.last_name, "Ferris");
         assert_eq!(sullivan.last_name, "Ferris David");
         assert!(grant.first_name_2.as_deref() == Some("Monique"));
@@ -621,7 +713,11 @@ mod tests {
     #[test]
     fn flags_minors_as_a_boolean_not_stored_names() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.first_name == "Julian Micah").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Julian Micah")
+            .unwrap();
         assert!(r.has_minors, "expected has_minors to be set");
         // The actual names must never end up in the database anywhere.
         assert!(!r.comments.as_deref().unwrap_or("").contains("Owen Julian"));
@@ -630,7 +726,11 @@ mod tests {
     #[test]
     fn handles_multiword_lowercase_surname() {
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.last_name == "De La Cruz Montenegro").unwrap();
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.last_name == "De La Cruz Montenegro")
+            .unwrap();
         assert_eq!(r.first_name, "Adriana Fernanda");
     }
 
@@ -640,7 +740,10 @@ mod tests {
         // with Ö never registered as a block start at all — this asserts
         // the record exists as its own entry, not merged into a neighbour.
         let result = parse_directory_text(SAMPLE);
-        let r = result.records.iter().find(|r| r.last_name == "Öhman")
+        let r = result
+            .records
+            .iter()
+            .find(|r| r.last_name == "Öhman")
             .unwrap_or_else(|| panic!("Öhman entry missing entirely — record was dropped"));
         assert_eq!(r.first_name, "Erik");
         assert_eq!(r.address_line1.as_deref(), Some("104 Aster Ln"));
@@ -654,8 +757,15 @@ mod tests {
         // wrongly setting her has_minors flag from Öhman's own leftover
         // lines. Confirms the fix, not just that Öhman parses.
         let result = parse_directory_text(SAMPLE);
-        let dana = result.records.iter().find(|r| r.first_name == "Dana").unwrap();
-        assert!(!dana.has_minors, "Dana wrongly flagged has_minors — Öhman block was absorbed into her record");
+        let dana = result
+            .records
+            .iter()
+            .find(|r| r.first_name == "Dana")
+            .unwrap();
+        assert!(
+            !dana.has_minors,
+            "Dana wrongly flagged has_minors — Öhman block was absorbed into her record"
+        );
     }
 
     #[test]
@@ -668,10 +778,21 @@ mod tests {
         // same "Somewhere UT 22602" line on purpose.
         let result = parse_directory_text(SAMPLE);
         for name in ["Nina", "Peter", "Dana"] {
-            let r = result.records.iter().find(|r| r.first_name == name)
+            let r = result
+                .records
+                .iter()
+                .find(|r| r.first_name == name)
                 .unwrap_or_else(|| panic!("{name} missing entirely — record was dropped"));
-            assert_eq!(r.city.as_deref(), Some("Somewhere"), "{name}: city wrongly stripped");
-            assert_eq!(r.state.as_deref(), Some("UT"), "{name}: state wrongly stripped");
+            assert_eq!(
+                r.city.as_deref(),
+                Some("Somewhere"),
+                "{name}: city wrongly stripped"
+            );
+            assert_eq!(
+                r.state.as_deref(),
+                Some("UT"),
+                "{name}: state wrongly stripped"
+            );
         }
     }
 }

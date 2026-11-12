@@ -10,10 +10,21 @@
 // this sorts *visits within the chosen date range*, not "households never
 // visited" — a household with zero visits in range won't appear at all,
 // since the underlying query is a visit log, not a per-household summary.
+//
+// Reports view: a tab strip over Needs Attention (needs-attention.js, the
+// default tab — Visit_Reporting_Design.md §5) and this file's own Visit
+// Log. The view key stays 'visits-report' so nothing else that routes to
+// it has to change; only the sidebar label became "Reports".
 registerView('visits-report', {
     init() {
         document.getElementById('visitsReportRoot').innerHTML = `
-            <h1>Visit Report</h1>
+            <h1>Reports</h1>
+            <div class="rp-tabs" role="tablist">
+                <button type="button" class="rp-tab active" role="tab" data-rp-tab="needs-attention">Needs Attention</button>
+                <button type="button" class="rp-tab" role="tab" data-rp-tab="visit-log">Visit Log</button>
+            </div>
+            <div id="rpPaneNeedsAttention" class="rp-pane"></div>
+            <div id="rpPaneVisitLog" class="rp-pane" hidden>
             <div class="vr-toolbar">
                 <label class="vr-date-label">From <input type="text" id="vrDateFrom" placeholder="YYYY-MM-DD"></label>
                 <label class="vr-date-label">To <input type="text" id="vrDateTo" placeholder="YYYY-MM-DD"></label>
@@ -27,7 +38,12 @@ registerView('visits-report', {
                 <thead><tr><th>Household</th><th>Date</th><th>Comments</th></tr></thead>
                 <tbody id="vrTableBody"></tbody>
             </table>
+            </div>
         `;
+
+        NeedsAttention.mount(document.getElementById('rpPaneNeedsAttention'));
+        document.querySelectorAll('[data-rp-tab]').forEach(btn =>
+            btn.addEventListener('click', () => selectReportsTab(btn.dataset.rpTab)));
 
         vrState.sortDropdown = mountDropdown(document.getElementById('vrSortDropdown'), {
             items: [
@@ -59,12 +75,33 @@ registerView('visits-report', {
         document.getElementById('vrDateTo').value = isoDate(today);
     },
     async onShow() {
-        await runVisitsReport();
+        await refreshReportsTab();
     },
 });
 const VisitsReportView = ViewRegistry['visits-report'];
 
 const vrState = { sort: 'desc', rows: [], groupByHousehold: false };
+
+// Which Reports tab is showing. Not persisted — Needs Attention is the
+// landing tab each launch.
+let rpActiveTab = 'needs-attention';
+
+function selectReportsTab(tab) {
+    rpActiveTab = tab;
+    document.querySelectorAll('[data-rp-tab]').forEach(btn => {
+        const on = btn.dataset.rpTab === tab;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.getElementById('rpPaneNeedsAttention').hidden = tab !== 'needs-attention';
+    document.getElementById('rpPaneVisitLog').hidden = tab !== 'visit-log';
+    refreshReportsTab().catch(e => showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR));
+}
+
+async function refreshReportsTab() {
+    if (rpActiveTab === 'needs-attention') await NeedsAttention.refresh();
+    else await runVisitsReport();
+}
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 

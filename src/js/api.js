@@ -39,6 +39,7 @@ const Api = {
     deleteVisit: (visitId) => invoke('delete_visit', { visitId }),
     getVisitsReport: (dateFrom, dateTo) => invoke('get_visits_report', { dateFrom, dateTo }),
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
+    getNeedsAttention: (tagId, thresholdDays) => invoke('get_needs_attention', { tagId, thresholdDays }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),
     getMapData: (tagId) => invoke('get_map_data', { tagId }),
     getMissingCoordsCount: () => invoke('get_missing_coords_count'),

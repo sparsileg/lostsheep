@@ -190,7 +190,17 @@ registerView('map', {
         wireMapResize();
     },
     async onShow() {
+        // Reports → Needs Attention's "Visit around here" (needs-attention.js)
+        // hands over a seed household plus the report's tag filter. Taken
+        // and cleared up front so a failure below can't replay it on a
+        // later, unrelated visit to this view. The tag is applied before
+        // loadMapData() so markers and the candidate pool match the report.
+        const pendingSeed = this.pendingSeed;
+        this.pendingSeed = null;
+        if (pendingSeed) this.selectedTagId = pendingSeed.tagId || '';
+
         await populateMapTagSelect();
+        this.tagDropdown?.setValue(this.selectedTagId);
         await loadTagStats();
         setTimeout(resizeMapEl, 50);
         // Re-sync from SharedSearch every time this view is shown — the
@@ -209,6 +219,12 @@ registerView('map', {
         // to a route that no longer corresponds to anything selected.
         clearActiveRoute();
         await applyRoadSettings();
+
+        if (pendingSeed) {
+            this.seedGroupKey = pendingSeed.addressKey;
+            this.seedHouseholdId = pendingSeed.householdId;
+            await generateVisitList();
+        }
     },
 });
 const MapView = ViewRegistry.map; // convenient alias for handlers below

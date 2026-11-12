@@ -38,7 +38,8 @@ pub struct AppState {
     // (not 'static) — same reason pool/roads_pool are cloned out before
     // that closure today. Cloning the outer Arc is what makes the cache
     // itself movable into that closure the same way.
-    pub road_graph_cache: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<road_graph::RoadGraph>>>>,
+    pub road_graph_cache:
+        std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<road_graph::RoadGraph>>>>,
     // Issue #68: set by db::open_pool's update_hook on every real write to
     // any non-bookkeeping table (see the exclusion list there). Polled by
     // spawn_backup_reminder_thread below, which persists it to the
@@ -128,10 +129,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("no app data dir resolved");
+            let data_dir = app.path().app_data_dir().expect("no app data dir resolved");
             std::fs::create_dir_all(&data_dir).expect("could not create app data dir");
 
             // Issue #85: which pair of database files this launch opens
@@ -144,11 +142,10 @@ fn main() {
                 profiles::resolve_data_paths(&data_dir, &registry)
                     .expect("could not resolve profile database paths");
 
-            let key_hex = keychain::get_or_create_db_key()
-                .unwrap_or_else(|e| {
-                    eprintln!("FATAL: {e}");
-                    std::process::exit(1);
-                });
+            let key_hex = keychain::get_or_create_db_key().unwrap_or_else(|e| {
+                eprintln!("FATAL: {e}");
+                std::process::exit(1);
+            });
 
             // Issue #68: shared with db::open_pool's update_hook (fires on
             // every write, sets this) and spawn_backup_reminder_thread
@@ -156,8 +153,9 @@ fn main() {
             // setting right after the pool opens, so a change made just
             // before the app closed still starts its 5-minute countdown
             // from the right time rather than resetting to "no change".
-            let last_db_change_at: std::sync::Arc<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>> =
-                std::sync::Arc::new(std::sync::Mutex::new(None));
+            let last_db_change_at: std::sync::Arc<
+                std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(None));
 
             let pool = db::open_pool(&db_path, &key_hex, last_db_change_at.clone())
                 .expect("failed to open encrypted database");
@@ -195,7 +193,8 @@ fn main() {
             // restore (#25/#26) — that's the whole point of the split.
             // (roads_db_path itself now comes from profiles::resolve_data_paths
             // above, per-profile — issue #85.)
-            let roads_pool = db::open_roads_pool(&roads_db_path).expect("failed to open roads database");
+            let roads_pool =
+                db::open_roads_pool(&roads_db_path).expect("failed to open roads database");
 
             // #58: retention pruning no longer runs unattended here. An
             // unattended sweep with no prompt and no visible signal was
@@ -204,7 +203,11 @@ fn main() {
             // list_prune_candidates on launch, shows the user what would
             // be removed and how long ago it was deleted, and only calls
             // prune_old_deleted_and_logs if they confirm.
-            spawn_backup_reminder_thread(app.handle().clone(), pool.clone(), last_db_change_at.clone());
+            spawn_backup_reminder_thread(
+                app.handle().clone(),
+                pool.clone(),
+                last_db_change_at.clone(),
+            );
 
             app.manage(AppState {
                 pool,
@@ -249,6 +252,7 @@ fn main() {
             commands::visits::delete_visit,
             commands::visits::get_visits_report,
             commands::visits::get_household_visits,
+            commands::visits::get_needs_attention,
             commands::visits::generate_visit_list,
             commands::map_data::get_map_data,
             commands::map_data::get_missing_coords_count,
@@ -301,7 +305,9 @@ fn main() {
             // in that case ("state() called before manage()"), confirmed
             // by hitting that panic in practice. try_state just skips the
             // tick and the loop naturally retries on the next one.
-            let Some(state) = app_handle.try_state::<AppState>() else { return; };
+            let Some(state) = app_handle.try_state::<AppState>() else {
+                return;
+            };
             if let Some(name) = &state.active_profile_name {
                 let desired = format!("Lost Sheep - {name}");
                 if let Some(window) = app_handle.get_webview_window("main") {
@@ -333,7 +339,11 @@ mod uid_lifecycle_tests {
     use uuid::Uuid;
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("lostsheep_test_{}_{}", Uuid::new_v4().simple(), name))
+        std::env::temp_dir().join(format!(
+            "lostsheep_test_{}_{}",
+            Uuid::new_v4().simple(),
+            name
+        ))
     }
 
     fn random_key_hex() -> String {
@@ -345,8 +355,8 @@ mod uid_lifecycle_tests {
         let roads_path = temp_path("roads.db");
         let key_hex = random_key_hex();
         let last_db_change_at = Arc::new(Mutex::new(None));
-        let pool = db::open_pool(&db_path, &key_hex, last_db_change_at.clone())
-            .expect("open_pool failed");
+        let pool =
+            db::open_pool(&db_path, &key_hex, last_db_change_at.clone()).expect("open_pool failed");
         let roads_pool = db::open_roads_pool(&roads_path).expect("open_roads_pool failed");
         let state = AppState {
             pool,
@@ -394,9 +404,14 @@ mod uid_lifecycle_tests {
     }
 
     fn get_household_uid(pool: &db::Pool, id: i64) -> String {
-        pool.get().unwrap().query_row(
-            "SELECT household_uid FROM households WHERE id = ?1", rusqlite::params![id], |r| r.get(0),
-        ).unwrap()
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT household_uid FROM households WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     #[test]
@@ -413,36 +428,91 @@ mod uid_lifecycle_tests {
 
         {
             let conn = st.pool.get().unwrap();
-            let gone: Option<i64> = conn.query_row(
-                "SELECT id FROM households WHERE id = ?1", rusqlite::params![hh_id], |r| r.get(0),
-            ).optional().unwrap();
+            let gone: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM households WHERE id = ?1",
+                    rusqlite::params![hh_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap();
             assert!(gone.is_none(), "household still present after soft delete");
         }
 
-        let deleted_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM deleted_households WHERE original_id = ?1", rusqlite::params![hh_id], |r| r.get(0),
-        ).unwrap();
-        let mirrored_uid: Option<String> = st.pool.get().unwrap().query_row(
-            "SELECT household_uid FROM deleted_households WHERE id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(mirrored_uid.as_deref(), Some(hh_uid.as_str()), "household_uid not mirrored on delete");
+        let deleted_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM deleted_households WHERE original_id = ?1",
+                rusqlite::params![hh_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mirrored_uid: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT household_uid FROM deleted_households WHERE id = ?1",
+                rusqlite::params![deleted_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mirrored_uid.as_deref(),
+            Some(hh_uid.as_str()),
+            "household_uid not mirrored on delete"
+        );
 
-        let mirrored_visit_uid: Option<String> = st.pool.get().unwrap().query_row(
-            "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(mirrored_visit_uid.as_deref(), Some(visit_uid.as_str()), "visit_uid not mirrored on delete");
+        let mirrored_visit_uid: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1",
+                rusqlite::params![deleted_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mirrored_visit_uid.as_deref(),
+            Some(visit_uid.as_str()),
+            "visit_uid not mirrored on delete"
+        );
 
         households::restore_deleted_household(st.clone(), deleted_id).unwrap();
 
-        let new_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM households WHERE source_key = 'test-key-1'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across delete/restore");
+        let new_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM households WHERE source_key = 'test-key-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            get_household_uid(&st.pool, new_id),
+            hh_uid,
+            "household_uid changed across delete/restore"
+        );
 
-        let restored_visit_uid: String = st.pool.get().unwrap().query_row(
-            "SELECT visit_uid FROM visits WHERE household_id = ?1", rusqlite::params![new_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(restored_visit_uid, visit_uid, "visit_uid changed across delete/restore");
+        let restored_visit_uid: String = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT visit_uid FROM visits WHERE household_id = ?1",
+                rusqlite::params![new_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            restored_visit_uid, visit_uid,
+            "visit_uid changed across delete/restore"
+        );
 
         cleanup(&[db_path, roads_path]);
     }
@@ -466,7 +536,11 @@ mod uid_lifecycle_tests {
         });
         let batch_id: i64 = {
             let conn = st.pool.get().unwrap();
-            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.execute(
+                "INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')",
+                [],
+            )
+            .unwrap();
             conn.last_insert_rowid()
         };
         let item_id: i64 = {
@@ -478,12 +552,24 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None, None).unwrap();
+        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None, None)
+            .unwrap();
 
-        let new_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM households WHERE address_line1 = '123 New St'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across Replace");
+        let new_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM households WHERE address_line1 = '123 New St'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            get_household_uid(&st.pool, new_id),
+            hh_uid,
+            "household_uid changed across Replace"
+        );
 
         cleanup(&[db_path, roads_path]);
     }
@@ -502,7 +588,11 @@ mod uid_lifecycle_tests {
         // not households::soft_delete_household directly.
         let batch_id: i64 = {
             let conn = st.pool.get().unwrap();
-            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.execute(
+                "INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')",
+                [],
+            )
+            .unwrap();
             conn.last_insert_rowid()
         };
         let item_id: i64 = {
@@ -514,27 +604,74 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), item_id, "delete".to_string(), Some("test".into()), None).unwrap();
+        import::resolve_review_item(
+            st.clone(),
+            item_id,
+            "delete".to_string(),
+            Some("test".into()),
+            None,
+        )
+        .unwrap();
 
-        let deleted_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM deleted_households WHERE original_id = ?1", rusqlite::params![hh_id], |r| r.get(0),
-        ).unwrap();
-        let mirrored_uid: Option<String> = st.pool.get().unwrap().query_row(
-            "SELECT household_uid FROM deleted_households WHERE id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(mirrored_uid.as_deref(), Some(hh_uid.as_str()), "household_uid not mirrored on review-delete");
+        let deleted_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM deleted_households WHERE original_id = ?1",
+                rusqlite::params![hh_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mirrored_uid: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT household_uid FROM deleted_households WHERE id = ?1",
+                rusqlite::params![deleted_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mirrored_uid.as_deref(),
+            Some(hh_uid.as_str()),
+            "household_uid not mirrored on review-delete"
+        );
 
-        let mirrored_visit_uid: Option<String> = st.pool.get().unwrap().query_row(
-            "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1", rusqlite::params![deleted_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(mirrored_visit_uid.as_deref(), Some(visit_uid.as_str()), "visit_uid not mirrored on review-delete");
+        let mirrored_visit_uid: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT visit_uid FROM deleted_visits WHERE deleted_household_id = ?1",
+                rusqlite::params![deleted_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mirrored_visit_uid.as_deref(),
+            Some(visit_uid.as_str()),
+            "visit_uid not mirrored on review-delete"
+        );
 
         households::restore_deleted_household(st.clone(), deleted_id).unwrap();
 
-        let new_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM households WHERE source_key = 'test-key-3'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid changed across review-delete/restore");
+        let new_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM households WHERE source_key = 'test-key-3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            get_household_uid(&st.pool, new_id),
+            hh_uid,
+            "household_uid changed across review-delete/restore"
+        );
 
         cleanup(&[db_path, roads_path]);
     }
@@ -566,11 +703,13 @@ mod uid_lifecycle_tests {
             conn.execute(
                 "INSERT INTO household_tags (household_id, tag_id) VALUES (?1, ?2)",
                 rusqlite::params![hh_id, tag_id],
-            ).unwrap();
+            )
+            .unwrap();
             conn.execute(
                 "UPDATE households SET comments = 'pre-link comment' WHERE id = ?1",
                 rusqlite::params![hh_id],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let incoming = serde_json::json!({
@@ -583,7 +722,11 @@ mod uid_lifecycle_tests {
         });
         let batch_id: i64 = {
             let conn = st.pool.get().unwrap();
-            conn.execute("INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')", []).unwrap();
+            conn.execute(
+                "INSERT INTO import_batches (source_type, filename) VALUES ('csv', 'test.csv')",
+                [],
+            )
+            .unwrap();
             conn.last_insert_rowid()
         };
         // The 'new' item — auto-matching failed at import time, which is
@@ -607,38 +750,101 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), new_item_id, "link".to_string(), None, Some(hh_id)).unwrap();
+        import::resolve_review_item(
+            st.clone(),
+            new_item_id,
+            "link".to_string(),
+            None,
+            Some(hh_id),
+        )
+        .unwrap();
 
-        let new_id: i64 = st.pool.get().unwrap().query_row(
-            "SELECT id FROM households WHERE address_line1 = '456 Linked Ave'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(get_household_uid(&st.pool, new_id), hh_uid, "household_uid did not carry forward across link");
+        let new_id: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM households WHERE address_line1 = '456 Linked Ave'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            get_household_uid(&st.pool, new_id),
+            hh_uid,
+            "household_uid did not carry forward across link"
+        );
 
-        let carried_comment: Option<String> = st.pool.get().unwrap().query_row(
-            "SELECT comments FROM households WHERE id = ?1", rusqlite::params![new_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(carried_comment.as_deref(), Some("pre-link comment"), "comment not carried forward across link");
+        let carried_comment: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT comments FROM households WHERE id = ?1",
+                rusqlite::params![new_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            carried_comment.as_deref(),
+            Some("pre-link comment"),
+            "comment not carried forward across link"
+        );
 
-        let carried_visit_uid: String = st.pool.get().unwrap().query_row(
-            "SELECT visit_uid FROM visits WHERE household_id = ?1", rusqlite::params![new_id], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(carried_visit_uid, visit_uid, "visit not re-pointed across link");
+        let carried_visit_uid: String = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT visit_uid FROM visits WHERE household_id = ?1",
+                rusqlite::params![new_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            carried_visit_uid, visit_uid,
+            "visit not re-pointed across link"
+        );
 
-        let carried_tag_count: i64 = st.pool.get().unwrap().query_row(
-            "SELECT count(*) FROM household_tags WHERE household_id = ?1 AND tag_id = ?2",
-            rusqlite::params![new_id, tag_id], |r| r.get(0),
-        ).unwrap();
+        let carried_tag_count: i64 = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM household_tags WHERE household_id = ?1 AND tag_id = ?2",
+                rusqlite::params![new_id, tag_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(carried_tag_count, 1, "tag not carried forward across link");
 
-        let old_gone: Option<i64> = st.pool.get().unwrap().query_row(
-            "SELECT id FROM households WHERE id = ?1", rusqlite::params![hh_id], |r| r.get(0),
-        ).optional().unwrap();
+        let old_gone: Option<i64> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM households WHERE id = ?1",
+                rusqlite::params![hh_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
         assert!(old_gone.is_none(), "old household still present after link");
 
-        let removed_resolution: String = st.pool.get().unwrap().query_row(
-            "SELECT resolution FROM review_queue WHERE id = ?1", rusqlite::params![removed_item_id], |r| r.get(0),
-        ).unwrap();
-        assert_ne!(removed_resolution, "pending", "paired 'removed' review item was not auto-resolved by link");
+        let removed_resolution: String = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT resolution FROM review_queue WHERE id = ?1",
+                rusqlite::params![removed_item_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(
+            removed_resolution, "pending",
+            "paired 'removed' review item was not auto-resolved by link"
+        );
 
         cleanup(&[db_path, roads_path]);
     }
