@@ -8,6 +8,7 @@ registerView('households', {
                     <button type="button" class="hh-search-clear" id="hhSearchClearBtn" aria-label="Clear search" title="Clear search">&times;</button>
                 </div>
                 <div id="hhTagFilterDropdown"></div>
+                <label class="hh-check"><input type="checkbox" id="hhOpenReferralFilter"> Has open referral</label>
                 <button class="btn" id="hhGenerateDirectoryBtn">Generate Directory PDF</button>
                 <button class="btn" id="hhPasteVisitBtn">Paste Visit</button>
             </div>
@@ -53,6 +54,11 @@ registerView('households', {
                 loadHouseholds();
             },
         });
+        document.getElementById('hhOpenReferralFilter').addEventListener('change', (e) => {
+            state.openReferral = e.target.checked;
+            state.page = 1;
+            loadHouseholds();
+        });
         document.getElementById('hhGenerateDirectoryBtn').addEventListener('click', generateDirectoryPdf);
         document.getElementById('hhPasteVisitBtn').addEventListener('click', openPasteVisitModal);
     },
@@ -76,7 +82,7 @@ registerView('households', {
 // matter.
 window.SharedSearch = window.SharedSearch || { query: '' };
 
-const state = { page: 1, pageSize: 25, tagFilter: null, lastResult: null };
+const state = { page: 1, pageSize: 25, tagFilter: null, openReferral: false, lastResult: null };
 
 // Pulled out of init()'s closure so onShow() can also call it without
 // duplicating the DOM lookups.
@@ -118,7 +124,7 @@ async function refreshTagFilterOptions() {
 
 async function loadHouseholds() {
     const query = document.getElementById('hhSearchInput').value;
-    const params = { query, tag_names: state.tagFilter ? [state.tagFilter] : [], page: state.page, page_size: state.pageSize };
+    const params = { query, tag_names: state.tagFilter ? [state.tagFilter] : [], open_referral: state.openReferral, page: state.page, page_size: state.pageSize };
     let result;
     try { result = await Api.searchHouseholds(params); } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
     state.lastResult = result;
@@ -132,7 +138,7 @@ async function loadHouseholds() {
         <tr class="hh-row" data-open="${h.id}">
             <td>${escapeHtml(formatDirectoryName(h))}</td>
             <td>${escapeHtml(h.address_line1)}${h.address_line2 ? ', ' + escapeHtml(h.address_line2) : ''}${h.city ? ', ' + escapeHtml(h.city) : ''}</td>
-            <td>${renderTagChips(h.tags)}</td>
+            <td>${renderTagChips(h.tags)}${hhReferralBadge(h)}</td>
             <td><button class="btn" data-known="${h.id}" data-target-tag="${escapeHtml(targetTag)}">${label}</button></td>
         </tr>`;
     }).join('');
@@ -158,6 +164,14 @@ async function loadHouseholds() {
     });
 }
 
+// "Clerk: to report" / "Clerk: reported" on a household with an open
+// clerk referral (Record_Referral_Design.md §4.2). A word, not a colour.
+function hhReferralBadge(h) {
+    if (!h.open_referral) return '';
+    const label = h.open_referral === 'to_report' ? 'to report' : 'reported';
+    return ` <span class="hh-ref-badge" title="Open clerk referral">Clerk: ${label}</span>`;
+}
+
 // Issue #15 — pulls every household matching the current search/tag
 // filter, not just the page on screen, for the PDF directory export.
 // Reuses search_households (same query the table already shows) rather
@@ -173,7 +187,7 @@ async function fetchAllFilteredHouseholds() {
     let page = 1;
     let all = [];
     for (;;) {
-        const result = await Api.searchHouseholds({ query, tag_names, page, page_size });
+        const result = await Api.searchHouseholds({ query, tag_names, open_referral: state.openReferral, page, page_size });
         all = all.concat(result.households);
         if (all.length >= result.total || result.households.length === 0) break;
         page += 1;

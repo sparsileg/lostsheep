@@ -29,6 +29,10 @@ pub struct Household {
     /// monthly / quarterly / as_needed, or None (Visit_Reporting_Design.md §2.3).
     pub contact_plan: Option<String>,
     pub tags: Vec<String>,
+    /// Status of the household's open clerk referral: "to_report" if any
+    /// is still to report, else "reported"; None with none open
+    /// (Record_Referral_Design.md §4.2, the Households badge).
+    pub open_referral: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +41,9 @@ pub struct SearchParams {
     pub tag_names: Vec<String>, // implicit AND across these
     pub page: u32,
     pub page_size: u32,
+    /// Only households with an open (to report / reported) referral.
+    #[serde(default)]
+    pub open_referral: bool,
 }
 
 #[derive(Serialize)]
@@ -56,6 +63,14 @@ fn row_to_household(
         .query_map(params![id], |r| r.get::<_, String>(0))?
         .filter_map(Result::ok)
         .collect();
+    let household_uid: String = row.get("household_uid")?;
+    let open_referral: Option<String> = conn
+        .prepare_cached(
+            "SELECT status FROM referrals WHERE household_uid = ?1 \
+             AND status IN ('to_report','reported') ORDER BY status = 'to_report' DESC LIMIT 1",
+        )?
+        .query_row(params![household_uid], |r| r.get(0))
+        .optional()?;
     Ok(Household {
         id,
         first_name: row.get("first_name")?,
@@ -79,6 +94,7 @@ fn row_to_household(
         comments: row.get("comments")?,
         contact_plan: row.get("contact_plan")?,
         tags,
+        open_referral,
     })
 }
 
@@ -141,6 +157,13 @@ fn build_where(params: &SearchParams) -> (String, Vec<Box<dyn rusqlite::ToSql>>)
             "h.id IN (SELECT ht.household_id FROM household_tags ht JOIN tags t ON t.id=ht.tag_id WHERE t.name_norm = ?)".to_string(),
         );
         binds.push(Box::new(normalize_tag(tag)));
+    }
+
+    if params.open_referral {
+        where_clauses.push(
+            "h.household_uid IN (SELECT household_uid FROM referrals WHERE status IN ('to_report','reported'))"
+                .to_string(),
+        );
     }
 
     (where_clauses.join(" AND "), binds)
@@ -560,4 +583,75 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
     );
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod open_referral_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn conn() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(include_str!("../db/schema.sql")).unwrap();
+        c
+    }
+
+    fn household(c: &Connection, last: &str) -> i64 {
+        c.execute(
+            "INSERT INTO households (household_uid, first_name, last_name, role, address_key, source_key) \
+             VALUES (?1, 'A', ?2, 'head', ?2, ?2)",
+            params![Uuid::new_v4().to_string(), last],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    }
+
+    fn referral(c: &Connection, hh: i64, status: &str) {
+        c.execute(
+            "INSERT INTO referrals (household_uid, snapshot_name, kind, learned_on, status) \
+             SELECT household_uid, 'x', 'other', '2026-11-01', ?2 FROM households WHERE id = ?1",
+            params![hh, status],
+        )
+        .unwrap();
+    }
+
+    fn get(c: &Connection, id: i64) -> Household {
+        c.query_row("SELECT * FROM households WHERE id = ?1", params![id], |r| {
+            row_to_household(c, r)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn badge_and_filter_follow_open_referrals() {
+        let c = conn();
+        let to_report = household(&c, "ToReport");
+        let reported = household(&c, "Reported");
+        let closed = household(&c, "Closed");
+        let none = household(&c, "None");
+        referral(&c, to_report, "reported");
+        referral(&c, to_report, "to_report");
+        referral(&c, reported, "reported");
+        referral(&c, closed, "confirmed");
+
+        assert_eq!(
+            get(&c, to_report).open_referral.as_deref(),
+            Some("to_report")
+        );
+        assert_eq!(get(&c, reported).open_referral.as_deref(), Some("reported"));
+        assert_eq!(get(&c, closed).open_referral, None);
+        assert_eq!(get(&c, none).open_referral, None);
+
+        let search = |open_referral| SearchParams {
+            query: None,
+            tag_names: vec![],
+            page: 1,
+            page_size: 25,
+            open_referral,
+        };
+        let mut ids = matching_household_ids(&c, &search(true)).unwrap();
+        ids.sort();
+        assert_eq!(ids, vec![to_report, reported]);
+        assert_eq!(matching_household_ids(&c, &search(false)).unwrap().len(), 4);
+    }
 }

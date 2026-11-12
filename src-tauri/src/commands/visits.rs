@@ -169,6 +169,7 @@ pub fn get_visits_report(
     state: State<AppState>,
     date_from: String,
     date_to: String,
+    tag_id: Option<i64>,
 ) -> Result<Vec<VisitRecord>, String> {
     // A malformed range used to just return an empty table — indistinguishable
     // from "no visits in this period" (#35). Reject it explicitly instead.
@@ -184,11 +185,13 @@ pub fn get_visits_report(
              h.first_name || ' ' || h.last_name || coalesce(' & ' || h.first_name_2 || ' ' || h.last_name_2, ''), \
              v.visit_date, v.comments, v.method, v.outcome, v.invited \
              FROM visits v JOIN households h ON h.id = v.household_id \
-             WHERE v.visit_date BETWEEN ?1 AND ?2 ORDER BY v.visit_date DESC",
+             WHERE v.visit_date BETWEEN ?1 AND ?2 \
+               AND (?3 IS NULL OR h.id IN (SELECT household_id FROM household_tags WHERE tag_id = ?3)) \
+             ORDER BY v.visit_date DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![date_from, date_to], |row| {
+        .query_map(params![date_from, date_to, tag_id], |row| {
             Ok(VisitRecord {
                 id: row.get(0)?,
                 household_id: row.get(1)?,
@@ -322,6 +325,21 @@ pub fn plan_interval_days(plan: &str) -> Option<i64> {
     }
 }
 
+/// Past the plan's interval since the last contact, or never contacted.
+/// No plan, or `as_needed`, is never due.
+pub fn plan_is_due(
+    plan: Option<&str>,
+    last_contact_date: Option<&str>,
+    today: chrono::NaiveDate,
+) -> bool {
+    plan.and_then(plan_interval_days).is_some_and(|interval| {
+        match days_between(last_contact_date, today) {
+            Some(d) => d > interval,
+            None => last_contact_date.is_none(),
+        }
+    })
+}
+
 /// SQL for "this visits row counts as contact", for a visits alias.
 fn contact_sql(alias: &str) -> String {
     format!("({alias}.outcome = 'contacted' AND {alias}.method IN ('visit','phone'))")
@@ -390,15 +408,8 @@ pub fn needs_attention_query(
             // household is not counted as never-visited.
             let days_since = days_between(last_visit_date.as_deref(), today);
             let contact_plan: Option<String> = r.get(16)?;
-            let plan_due = contact_plan
-                .as_deref()
-                .and_then(plan_interval_days)
-                .is_some_and(
-                    |interval| match days_between(last_contact_date.as_deref(), today) {
-                        Some(d) => d > interval,
-                        None => last_contact_date.is_none(),
-                    },
-                );
+            let plan_due =
+                plan_is_due(contact_plan.as_deref(), last_contact_date.as_deref(), today);
             let mut tags: Vec<String> = r
                 .get::<_, Option<String>>(9)?
                 .map(|s| s.split(TAG_SEP).map(str::to_string).collect())
@@ -471,6 +482,168 @@ pub fn get_needs_attention(
         count_attempts.unwrap_or(false),
         chrono::Local::now().date_naive(),
     )
+}
+
+// ── Coverage Summary (Visit_Reporting_Design.md §3.3) ────────────────────
+// Are we reaching people? Per tag, plus a total: households, never
+// contacted, contacted in the period. Do-not-contact households are left
+// out, as in Needs Attention. With count_attempts any recorded visit,
+// call or card counts, matching Needs Attention's checkbox.
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CoverageRow {
+    /// Tag name; "" for households with no tag.
+    pub tag: String,
+    pub households: i64,
+    pub never: i64,
+    pub reached_in_period: i64,
+}
+
+#[derive(Serialize, Debug)]
+pub struct CoverageResult {
+    pub rows: Vec<CoverageRow>,
+    /// Distinct households, so a household with two tags counts once.
+    pub total: CoverageRow,
+}
+
+pub fn coverage_query(
+    conn: &rusqlite::Connection,
+    date_from: &str,
+    date_to: &str,
+    count_attempts: bool,
+) -> Result<CoverageResult, String> {
+    let counts = if count_attempts {
+        "1=1".to_string()
+    } else {
+        contact_sql("v")
+    };
+    let base = format!(
+        "WITH s AS ( \
+            SELECT household_id, \
+                   MAX(CASE WHEN {counts} THEN 1 ELSE 0 END) AS ever, \
+                   MAX(CASE WHEN {counts} AND v.visit_date BETWEEN ?1 AND ?2 THEN 1 ELSE 0 END) AS inp \
+            FROM visits v GROUP BY household_id), \
+         e AS ( \
+            SELECT h.id, coalesce(s.ever, 0) AS ever, coalesce(s.inp, 0) AS inp \
+            FROM households h LEFT JOIN s ON s.household_id = h.id \
+            WHERE h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 \
+                               JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact'))"
+    );
+    let map = |r: &rusqlite::Row| -> rusqlite::Result<CoverageRow> {
+        Ok(CoverageRow {
+            tag: r.get(0)?,
+            households: r.get(1)?,
+            never: r.get(2)?,
+            reached_in_period: r.get(3)?,
+        })
+    };
+    let mut stmt = conn
+        .prepare(&format!(
+            "{base} SELECT coalesce(t.name, ''), count(*), \
+                    coalesce(sum(e.ever = 0), 0), coalesce(sum(e.inp), 0) \
+             FROM e LEFT JOIN household_tags ht ON ht.household_id = e.id \
+             LEFT JOIN tags t ON t.id = ht.tag_id \
+             GROUP BY t.id ORDER BY t.name IS NULL, t.name"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![date_from, date_to], map)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let total = conn
+        .query_row(
+            &format!(
+                "{base} SELECT 'Total', count(*), coalesce(sum(e.ever = 0), 0), coalesce(sum(e.inp), 0) FROM e"
+            ),
+            params![date_from, date_to],
+            map,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(CoverageResult { rows, total })
+}
+
+#[tauri::command]
+pub fn get_coverage(
+    state: State<AppState>,
+    date_from: String,
+    date_to: String,
+    count_attempts: Option<bool>,
+) -> Result<CoverageResult, String> {
+    let date_from = parse_iso_date(&date_from)?.format("%Y-%m-%d").to_string();
+    let date_to = parse_iso_date(&date_to)?.format("%Y-%m-%d").to_string();
+    if date_from > date_to {
+        return Err("From must be on or before To.".to_string());
+    }
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    coverage_query(&conn, &date_from, &date_to, count_attempts.unwrap_or(false))
+}
+
+// ── Contact Plans (Visit_Reporting_Design.md §3.5) ───────────────────────
+// Every household with a plan, plus every do-not-contact household (the
+// ward council list names them so no one assigns a visit there).
+
+#[derive(Serialize, Debug)]
+pub struct ContactPlanRow {
+    pub household_id: i64,
+    pub first_name: String,
+    pub last_name: String,
+    pub first_name_2: Option<String>,
+    pub last_name_2: Option<String>,
+    pub address_line1: Option<String>,
+    pub city: Option<String>,
+    pub contact_plan: Option<String>,
+    pub last_contact_date: Option<String>,
+    pub plan_due: bool,
+    pub do_not_contact: bool,
+}
+
+pub fn contact_plans_query(
+    conn: &rusqlite::Connection,
+    today: chrono::NaiveDate,
+) -> Result<Vec<ContactPlanRow>, String> {
+    let sql = format!(
+        "SELECT h.id, h.first_name, h.last_name, h.first_name_2, h.last_name_2, \
+                h.address_line1, h.city, h.contact_plan, \
+                (SELECT MAX(v.visit_date) FROM visits v WHERE v.household_id = h.id AND {contact}), \
+                EXISTS (SELECT 1 FROM household_tags ht JOIN tags t ON t.id = ht.tag_id \
+                        WHERE ht.household_id = h.id AND t.system_key = 'do_not_contact') AS dnc \
+         FROM households h \
+         WHERE h.contact_plan IS NOT NULL OR dnc \
+         ORDER BY h.last_name, h.first_name",
+        contact = contact_sql("v")
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            let contact_plan: Option<String> = r.get(7)?;
+            let last_contact_date: Option<String> = r.get(8)?;
+            let do_not_contact: bool = r.get(9)?;
+            Ok(ContactPlanRow {
+                household_id: r.get(0)?,
+                first_name: r.get(1)?,
+                last_name: r.get(2)?,
+                first_name_2: r.get(3)?,
+                last_name_2: r.get(4)?,
+                address_line1: r.get(5)?,
+                city: r.get(6)?,
+                plan_due: !do_not_contact
+                    && plan_is_due(contact_plan.as_deref(), last_contact_date.as_deref(), today),
+                contact_plan,
+                last_contact_date,
+                do_not_contact,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_contact_plans(state: State<AppState>) -> Result<Vec<ContactPlanRow>, String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    contact_plans_query(&conn, chrono::Local::now().date_naive())
 }
 
 /// Edits an existing visit's date and/or comments. Same normalization
@@ -603,6 +776,37 @@ pub fn fetch_grouped_households(
     conn: &rusqlite::Connection,
     tag_id: Option<i64>,
 ) -> Result<Vec<VisitListEntry>, String> {
+    fetch_grouped_households_except(conn, tag_id, &HashSet::new())
+}
+
+/// Households with an open (to report / reported) clerk referral saying
+/// they moved, died or asked to be removed (Record_Referral_Design.md
+/// §4.2). generate_visit_list leaves them out: there is no reason to
+/// route to a house we already know the member doesn't live in. They
+/// stay on the map, where the user can still open them.
+pub fn referred_away_ids(conn: &rusqlite::Connection) -> Result<HashSet<i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT h.id FROM households h JOIN referrals r ON r.household_uid = h.household_uid \
+             WHERE r.status IN ('to_report','reported') \
+               AND r.kind IN ('moved_known','moved_unknown','deceased','remove_records')",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+/// fetch_grouped_households without the households in `skip`; an
+/// address left with nobody is dropped.
+pub fn fetch_grouped_households_except(
+    conn: &rusqlite::Connection,
+    tag_id: Option<i64>,
+    skip: &HashSet<i64>,
+) -> Result<Vec<VisitListEntry>, String> {
     let sql = match tag_id {
         Some(_) => {
             "SELECT h.id, h.address_key, h.address_line1, h.address_line2, h.city, h.state, h.zip, h.latitude, h.longitude, \
@@ -672,9 +876,9 @@ pub fn fetch_grouped_households(
         stmt.query_map([], map_row).map_err(|e| e.to_string())?
     }
     .filter_map(Result::ok)
+    .filter(|r: &Row| !skip.contains(&r.id))
     .collect();
 
-    use std::collections::HashMap;
     let mut groups: HashMap<String, Vec<&Row>> = HashMap::new();
     for r in &rows {
         groups.entry(r.address_key.clone()).or_default().push(r);
@@ -1446,7 +1650,10 @@ pub fn generate_visit_list(
         )
         .unwrap_or((0.0, 0.0));
 
-    let mut entries = fetch_grouped_households(&conn, params.tag_id)?;
+    // The seed itself is kept even if referred away: the user chose it.
+    let mut skip = referred_away_ids(&conn)?;
+    skip.remove(&params.seed_household_id);
+    let mut entries = fetch_grouped_households_except(&conn, params.tag_id, &skip)?;
     for e in &mut entries {
         e.distance_meters = crate::geo::haversine_meters(seed.0, seed.1, e.latitude, e.longitude);
         e.distance_context = "seed".to_string();
@@ -1935,5 +2142,104 @@ mod needs_attention_tests {
         visit(&c, f, "2026-12-01");
         let r = needs_attention_query(&c, None, Some(30), false, today()).unwrap();
         assert!(r.rows.is_empty());
+    }
+
+    fn referral(c: &Connection, hh: i64, kind: &str, status: &str) {
+        c.execute(
+            "INSERT INTO referrals (household_uid, snapshot_name, kind, learned_on, status) \
+             SELECT household_uid, 'x', ?2, '2026-11-01', ?3 FROM households WHERE id = ?1",
+            params![hh, kind, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn coverage_per_tag_and_total() {
+        let c = conn();
+        let a = household(&c, "A", "Known", true);
+        let b = household(&c, "B", "Known", true);
+        let n = household(&c, "C", "NotKnown", true);
+        let u = household(&c, "D", "Untagged", true);
+        let dnc = household(&c, "E", "Dnc", true);
+        tag(&c, a, "known");
+        tag(&c, b, "known");
+        tag(&c, n, "not known");
+        tag(&c, dnc, "do not contact");
+        visit_kind(&c, a, "2026-10-01", "visit", "contacted"); // in period
+        visit_kind(&c, b, "2025-01-01", "phone", "contacted"); // before
+        visit_kind(&c, n, "2026-10-02", "visit", "not_home"); // attempt only
+        visit_kind(&c, dnc, "2026-10-03", "visit", "contacted");
+        let _ = u;
+
+        let r = coverage_query(&c, "2026-07-01", "2026-12-31", false).unwrap();
+        let get = |t: &str| r.rows.iter().find(|x| x.tag == t).unwrap();
+        assert_eq!(
+            get("Known"),
+            &CoverageRow {
+                tag: "Known".into(),
+                households: 2,
+                never: 0,
+                reached_in_period: 1
+            }
+        );
+        assert_eq!(get("Not known").never, 1);
+        assert_eq!(get("Not known").reached_in_period, 0);
+        assert_eq!(get("").households, 1);
+        assert!(r.rows.iter().all(|x| x.tag != "Do not contact"));
+        assert_eq!(r.rows.last().unwrap().tag, "", "untagged sorts last");
+        assert_eq!(
+            (r.total.households, r.total.never, r.total.reached_in_period),
+            (4, 2, 1)
+        );
+
+        let r = coverage_query(&c, "2026-07-01", "2026-12-31", true).unwrap();
+        assert_eq!((r.total.never, r.total.reached_in_period), (1, 2));
+    }
+
+    #[test]
+    fn contact_plans_list_plans_and_do_not_contact() {
+        let c = conn();
+        let m = household(&c, "M", "Monthly", true);
+        let none = household(&c, "N", "None", true);
+        let dnc = household(&c, "D", "Dnc", true);
+        c.execute(
+            "UPDATE households SET contact_plan = 'monthly' WHERE id = ?1",
+            params![m],
+        )
+        .unwrap();
+        tag(&c, dnc, "do not contact");
+        visit_kind(&c, m, "2026-11-01", "visit", "contacted");
+        visit_kind(&c, m, "2026-11-05", "card", "sent");
+        let rows = contact_plans_query(&c, today()).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r.household_id).collect();
+        assert!(ids.contains(&m) && ids.contains(&dnc) && !ids.contains(&none));
+        let mr = rows.iter().find(|r| r.household_id == m).unwrap();
+        assert_eq!(mr.last_contact_date.as_deref(), Some("2026-11-01"));
+        assert!(!mr.plan_due);
+        let dr = rows.iter().find(|r| r.household_id == dnc).unwrap();
+        assert!(dr.do_not_contact && dr.contact_plan.is_none() && !dr.plan_due);
+    }
+
+    #[test]
+    fn open_move_and_death_referrals_are_referred_away() {
+        let c = conn();
+        let moved = household(&c, "Mo", "Ved", true);
+        let dead = household(&c, "De", "Ad", true);
+        let info = household(&c, "In", "Fo", true);
+        let closed = household(&c, "Cl", "Osed", true);
+        let stay = household(&c, "St", "Ay", true);
+        referral(&c, moved, "moved_unknown", "reported");
+        referral(&c, dead, "deceased", "to_report");
+        referral(&c, info, "contact_info", "to_report");
+        referral(&c, closed, "moved_known", "confirmed");
+        let away = referred_away_ids(&c).unwrap();
+        assert_eq!(away, HashSet::from([moved, dead]));
+
+        let all = fetch_grouped_households(&c, None).unwrap();
+        assert_eq!(all.len(), 5, "the map still shows everyone");
+        let kept = fetch_grouped_households_except(&c, None, &away).unwrap();
+        let mut ids: Vec<i64> = kept.iter().flat_map(|e| e.household_ids.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec![info, closed, stay]);
     }
 }

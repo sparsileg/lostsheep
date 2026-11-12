@@ -12,8 +12,9 @@
 // since the underlying query is a visit log, not a per-household summary.
 //
 // Reports view: a tab strip over Needs Attention (needs-attention.js, the
-// default tab — Visit_Reporting_Design.md §5) and this file's own Visit
-// Log. The view key stays 'visits-report' so nothing else that routes to
+// default tab — Visit_Reporting_Design.md §5), this file's own Visit Log,
+// Coverage (coverage-report.js) and Contact Plans (contact-plans.js). The
+// sort labels above are now "Date (newest/oldest first)" (§3.2). The view key stays 'visits-report' so nothing else that routes to
 // it has to change; only the sidebar label became "Reports".
 registerView('visits-report', {
     init() {
@@ -22,15 +23,21 @@ registerView('visits-report', {
             <div class="rp-tabs" role="tablist">
                 <button type="button" class="rp-tab active" role="tab" data-rp-tab="needs-attention">Needs Attention</button>
                 <button type="button" class="rp-tab" role="tab" data-rp-tab="visit-log">Visit Log</button>
+                <button type="button" class="rp-tab" role="tab" data-rp-tab="coverage">Coverage</button>
+                <button type="button" class="rp-tab" role="tab" data-rp-tab="contact-plans">Contact Plans</button>
             </div>
             <div id="rpPaneNeedsAttention" class="rp-pane"></div>
+            <div id="rpPaneCoverage" class="rp-pane" hidden></div>
+            <div id="rpPaneContactPlans" class="rp-pane" hidden></div>
             <div id="rpPaneVisitLog" class="rp-pane" hidden>
             <div class="vr-toolbar">
                 <label class="vr-date-label">From <input type="text" id="vrDateFrom" placeholder="YYYY-MM-DD"></label>
                 <label class="vr-date-label">To <input type="text" id="vrDateTo" placeholder="YYYY-MM-DD"></label>
+                <label class="na-label">Tag <div id="vrTagDropdown" class="na-dropdown"></div></label>
                 <button class="btn btn-primary" id="vrRunBtn">Run Report</button>
                 <button class="btn" id="vrExportCsvBtn">Export CSV</button>
-                <div id="vrSortDropdown" style="min-width:220px;"></div>
+                <button class="btn" id="vrExportPdfBtn">Export PDF</button>
+                <div id="vrSortDropdown"></div>
                 <label class="vr-group-label"><input type="checkbox" id="vrGroupToggle"> Group by household</label>
             </div>
             <div id="vrResultsMeta"></div>
@@ -42,19 +49,29 @@ registerView('visits-report', {
         `;
 
         NeedsAttention.mount(document.getElementById('rpPaneNeedsAttention'));
+        CoverageReport.mount(document.getElementById('rpPaneCoverage'));
+        ContactPlans.mount(document.getElementById('rpPaneContactPlans'));
         document.querySelectorAll('[data-rp-tab]').forEach(btn =>
             btn.addEventListener('click', () => selectReportsTab(btn.dataset.rpTab)));
 
         vrState.sortDropdown = mountDropdown(document.getElementById('vrSortDropdown'), {
+            // Sorts visit rows, so it is named for the date (design §3.2).
             items: [
-                { value: 'desc', label: 'Last Visited (descending)' },
-                { value: 'asc', label: 'Last Visited (ascending)' },
+                { value: 'desc', label: 'Date (newest first)' },
+                { value: 'asc', label: 'Date (oldest first)' },
             ],
             value: 'desc',
+            sizeToItems: true,
             onSelect: (val) => { vrState.sort = val; renderVrRows(); },
+        });
+        vrState.tagDropdown = mountDropdown(document.getElementById('vrTagDropdown'), {
+            items: [{ value: '', label: 'All' }],
+            value: '',
+            onSelect: (val) => { vrState.tagId = val; runVisitsReport(); },
         });
         document.getElementById('vrRunBtn').addEventListener('click', runVisitsReport);
         document.getElementById('vrExportCsvBtn').addEventListener('click', exportVisitsCsv);
+        document.getElementById('vrExportPdfBtn').addEventListener('click', exportVisitsPdf);
         // Screen-only convenience — the sort control still governs the order
         // of visits inside each household's block; this only decides how
         // those blocks are grouped and ordered (always alphabetical). CSV
@@ -80,7 +97,7 @@ registerView('visits-report', {
 });
 const VisitsReportView = ViewRegistry['visits-report'];
 
-const vrState = { sort: 'desc', rows: [], groupByHousehold: false };
+const vrState = { sort: 'desc', rows: [], groupByHousehold: false, tagId: '', tagDropdown: null, ran: null };
 
 // Which Reports tab is showing. Not persisted — Needs Attention is the
 // landing tab each launch.
@@ -95,12 +112,31 @@ function selectReportsTab(tab) {
     });
     document.getElementById('rpPaneNeedsAttention').hidden = tab !== 'needs-attention';
     document.getElementById('rpPaneVisitLog').hidden = tab !== 'visit-log';
+    document.getElementById('rpPaneCoverage').hidden = tab !== 'coverage';
+    document.getElementById('rpPaneContactPlans').hidden = tab !== 'contact-plans';
     refreshReportsTab().catch(e => showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR));
 }
 
 async function refreshReportsTab() {
     if (rpActiveTab === 'needs-attention') await NeedsAttention.refresh();
-    else await runVisitsReport();
+    else if (rpActiveTab === 'coverage') await CoverageReport.refresh();
+    else if (rpActiveTab === 'contact-plans') await ContactPlans.refresh();
+    else {
+        await refreshVrTagOptions();
+        await runVisitsReport();
+    }
+}
+
+// Every tag, system ones included: this is a record of what happened,
+// not a list to send anyone to.
+async function refreshVrTagOptions() {
+    const tags = await Api.listTags().catch(() => []);
+    if (vrState.tagId && !tags.some(t => String(t.id) === vrState.tagId)) vrState.tagId = '';
+    vrState.tagDropdown.setItems([
+        { value: '', label: 'All' },
+        ...tags.map(t => ({ value: String(t.id), label: t.name })),
+    ]);
+    vrState.tagDropdown.setValue(vrState.tagId);
 }
 
 // Local calendar date (core.js), not UTC: toISOString() gave tomorrow's
@@ -129,12 +165,31 @@ async function runVisitsReport() {
         return;
     }
     try {
-        vrState.rows = await Api.getVisitsReport(dateFrom, dateTo);
+        vrState.rows = await Api.getVisitsReport(dateFrom, dateTo, vrState.tagId ? Number(vrState.tagId) : null);
     } catch (e) {
         showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
         return;
     }
+    // What the rows on screen were run with, for the PDF header.
+    vrState.ran = { from: dateFrom, to: dateTo, tagLabel: vrTagLabel() };
     renderVrRows();
+}
+
+function vrTagLabel() {
+    if (!vrState.tagId) return 'All';
+    const item = document.querySelector(`#vrTagDropdown [data-value="${CSS.escape(vrState.tagId)}"]`);
+    return item ? item.textContent : 'Tag';
+}
+
+async function exportVisitsPdf() {
+    const rows = getSortedVrRows();
+    if (!rows.length || !vrState.ran) {
+        showMessage('Nothing to export — run a report with at least one visit first.', CONSTANTS.MESSAGE_TYPES.ERROR);
+        return;
+    }
+    let unitName = '';
+    try { unitName = (await Api.getActiveProfile())?.name || ''; } catch (_) { /* optional header line */ }
+    ReportsPdf.visitLog(rows, { ...vrState.ran, unitName, summary: vrSummaryText(rows) });
 }
 
 // Issue #77: pulled out of renderVrRows so the CSV export below sorts the

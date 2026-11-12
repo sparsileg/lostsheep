@@ -357,6 +357,16 @@ marked committed at once.
 from visit-list generation, the households badge and filter, the dashboard
 line.
 
+*Implemented (v1.5.0):* `visits.rs::referred_away_ids` (open
+`moved_*`, `deceased`, `remove_records` referrals, to report or
+reported) are left out of `generate_visit_list`, except the seed
+household itself, which the user chose. They stay on the map so they
+can still be opened. The Households table shows a "Clerk: to report" /
+"Clerk: reported" badge (`Household.open_referral`) and has a "Has open
+referral" filter, which the Directory PDF follows like the other
+filters. The Dashboard shows "Clerk referrals: N to report · M overdue"
+under the tag cards when either is non-zero; it opens Clerk Referrals.
+
 **Stage 4: visit outcomes.** Done together with Stage 2 of
 `Visit_Reporting_Design.md`, not separately: add `deceased` to the outcome
 list, and add the referral prompt and the Known prompt to the visit modal.

@@ -27,3 +27,15 @@
 .na-check { display: flex; align-items: center; gap: 6px; }
 /* "due" is a word, not only a colour (themes must be colour-blind friendly). */
 .na-due { color: var(--warning-color); font-weight: 700; }
+
+/* Coverage */
+.cv-table { max-width: 760px; }
+.cv-total td { font-weight: 700; border-top: 2px solid var(--border-color); }
+.cv-untagged { font-style: italic; opacity: 0.8; }
+
+/* Contact Plans */
+.cp-heading { margin: 18px 0 6px; font-size: 1.05em; }
+.cp-table td { vertical-align: middle; }
+.cp-plan { display: inline-block; min-width: 0; }
+.cp-open { color: var(--primary-color); }
+.cp-none { opacity: 0.75; margin: 0 0 6px; }

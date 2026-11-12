@@ -32,6 +32,7 @@ const NeedsAttention = {
                 <label class="na-label">Not visited in <div id="naThresholdDropdown" class="na-dropdown"></div></label>
                 <label class="na-label">Sort <div id="naSortDropdown" class="na-dropdown"></div></label>
                 <label class="na-check" title="Count not-home, no-answer and cards too: where have I at least been?"><input type="checkbox" id="naCountAttempts"> Count attempts as visits</label>
+                <button class="btn" id="naPdfBtn">Export PDF</button>
             </div>
             <div id="naSummary" class="na-summary"></div>
             <table id="naTable">
@@ -52,11 +53,13 @@ const NeedsAttention = {
         mountDropdown(document.getElementById('naThresholdDropdown'), {
             items: [
                 ...NA_THRESHOLDS.map(n => ({ value: n, label: `${n} days` })),
+                { value: 'due', label: 'Due per contact plan' },
                 { value: 'any', label: 'Any (show all)' },
             ],
             value: naState.threshold,
             onSelect: (val) => { naState.threshold = val; NeedsAttention.refresh(); },
         });
+        document.getElementById('naPdfBtn').addEventListener('click', naExportPdf);
         document.getElementById('naCountAttempts').addEventListener('change', (e) => {
             naState.countAttempts = e.target.checked;
             NeedsAttention.refresh();
@@ -74,7 +77,8 @@ const NeedsAttention = {
     async refresh() {
         await refreshNaTagOptions();
         const tagId = naState.tagId ? Number(naState.tagId) : null;
-        const threshold = naState.threshold === 'any' ? null : Number(naState.threshold);
+        // 'due' asks for everyone, then keeps the plan_due rows (naRows).
+        const threshold = ['any', 'due'].includes(naState.threshold) ? null : Number(naState.threshold);
         try {
             naState.result = await Api.getNeedsAttention(tagId, threshold, naState.countAttempts);
         } catch (e) {
@@ -111,8 +115,14 @@ function naFormatName(r) {
     return `${first} & ${r.last_name_2}, ${r.first_name_2}`;
 }
 
+// The result's rows under the current filter.
+function naRows() {
+    const rows = naState.result?.rows || [];
+    return naState.threshold === 'due' ? rows.filter(r => r.plan_due) : rows;
+}
+
 function naSortedRows() {
-    const rows = (naState.result?.rows || []).map(r => ({ ...r, display: naFormatName(r) }));
+    const rows = naRows().map(r => ({ ...r, display: naFormatName(r) }));
     const byName = (a, b) => a.display.localeCompare(b.display);
     if (naState.sort === 'name') return rows.sort(byName);
     // Never first (alphabetical), then most days since. A household whose
@@ -134,6 +144,11 @@ function naSummaryText(result) {
     const reached = naState.countAttempts ? 'visited' : 'contacted';
     const due = result.rows.filter(r => r.plan_due).length;
     const dueText = due ? ` ${due} due per contact plan.` : '';
+    if (naState.threshold === 'due') {
+        return due
+            ? `${plural(due, 'household')} due per contact plan (past the plan’s interval since the last contact).`
+            : 'No household is due per its contact plan.';
+    }
     if (naState.threshold === 'any') {
         return `${plural(result.total_eligible, 'household')} — ${result.never_count} never ${reached}.${dueText}`;
     }
@@ -156,7 +171,8 @@ function renderNaRows() {
     const bodyEl = document.getElementById('naTableBody');
     const rows = naSortedRows();
     if (!rows.length) {
-        bodyEl.innerHTML = `<tr><td colspan="9" class="na-empty">Everyone in this group is current.</td></tr>`;
+        const msg = naState.threshold === 'due' ? 'Nobody is due per contact plan.' : 'Everyone in this group is current.';
+        bodyEl.innerHTML = `<tr><td colspan="9" class="na-empty">${msg}</td></tr>`;
         return;
     }
     bodyEl.innerHTML = rows.map(r => {
@@ -192,6 +208,32 @@ function renderNaRows() {
         const row = rows.find(r => r.household_id === Number(btn.dataset.naSeed));
         if (row) naUseAsSeed(row);
     }));
+}
+
+// The plan and the "due" marker stay off this PDF (design §2.3: only the
+// Contact Plans PDF prints plans), so the plan-based filter can't be
+// exported either: its very membership is the plan.
+async function naExportPdf() {
+    if (naState.threshold === 'due') {
+        showMessage('The contact plan list is exported from the Contact Plans tab, so it stays on the ward council PDF only.', CONSTANTS.MESSAGE_TYPES.INFO, 6000);
+        return;
+    }
+    const rows = naSortedRows();
+    if (!rows.length) { showMessage('Nothing to export.', CONSTANTS.MESSAGE_TYPES.INFO); return; }
+    let unitName = '';
+    try { unitName = (await Api.getActiveProfile())?.name || ''; } catch (_) { /* optional header line */ }
+    const tagLabel = naState.tagId
+        ? ((await Api.listTags().catch(() => [])).find(t => String(t.id) === naState.tagId)?.name || 'Tag')
+        : 'All';
+    const reached = naState.countAttempts ? 'visited' : 'contacted';
+    ReportsPdf.needsAttention(rows, {
+        unitName,
+        tagLabel,
+        filterLabel: naState.threshold === 'any' ? 'Everyone' : `Not ${reached} in over ${naState.threshold} days`,
+        // Summary minus the plan sentence.
+        summary: naSummaryText(naState.result).replace(/ \d+ due per contact plan\.$/, ''),
+        lastHeader: naState.countAttempts ? 'Last visit' : 'Last contact',
+    });
 }
 
 // Switches to the Dashboard and generates a visit list seeded at this

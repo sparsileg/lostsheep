@@ -55,6 +55,7 @@ registerView('map', {
         document.getElementById('mapViewRoot').innerHTML = `
             <h1>Dashboard</h1>
             <div class="dash-stats" id="dashTagStats"></div>
+            <div class="dash-referrals" id="dashReferralLine" hidden></div>
             <div class="map-toolbar">
                 <div id="mapTagDropdown" style="min-width:260px;"></div>
                 <label for="mapVisitCount">Stops: </label>
@@ -430,6 +431,24 @@ async function loadTagStats() {
         `<div class="dash-card dash-card-alert"><div class="dash-num">${missingCoords}</div><div>No Coords</div></div>`;
 
     document.getElementById('dashTagStats').innerHTML = tagCards + noCoordsCard;
+    await loadReferralLine();
+}
+
+// "Clerk referrals: 3 to report · 1 overdue", linking to the Clerk
+// Referrals view; hidden when both are zero (Record_Referral_Design.md
+// §4.2). Silent on failure, like the No Coords card.
+async function loadReferralLine() {
+    const el = document.getElementById('dashReferralLine');
+    const refs = await Api.listReferrals(null).catch(() => null);
+    const toReport = refs ? refs.filter(r => r.status === 'to_report').length : 0;
+    const overdue = refs ? refs.filter(r => r.overdue).length : 0;
+    if (!toReport && !overdue) { el.hidden = true; el.innerHTML = ''; return; }
+    const parts = [];
+    if (toReport) parts.push(`${toReport} to report`);
+    if (overdue) parts.push(`${overdue} overdue`);
+    el.innerHTML = `<button type="button" class="dash-referrals-link">Clerk referrals: ${parts.join(' · ')}</button>`;
+    el.hidden = false;
+    el.querySelector('button').addEventListener('click', () => showView('referrals'));
 }
 
 async function populateMapTagSelect() {

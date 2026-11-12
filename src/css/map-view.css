@@ -130,3 +130,8 @@
    is a fixed 220px, too narrow to hold "Copy -123.456789, 45.123456" on
    one line. Widened here instead of touching the shared class. */
 .map-coord-menu { width: auto; min-width: 260px; white-space: nowrap; }
+.dash-referrals { margin: -4px 0 10px; }
+.dash-referrals-link {
+    background: transparent; border: none; padding: 0; font: inherit; cursor: pointer;
+    color: var(--primary-color); text-decoration: underline;
+}

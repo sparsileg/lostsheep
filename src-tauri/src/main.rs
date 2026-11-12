@@ -254,6 +254,8 @@ fn main() {
             commands::visits::get_visits_report,
             commands::visits::get_household_visits,
             commands::visits::get_needs_attention,
+            commands::visits::get_coverage,
+            commands::visits::get_contact_plans,
             commands::visits::generate_visit_list,
             commands::map_data::get_map_data,
             commands::map_data::get_missing_coords_count,

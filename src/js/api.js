@@ -39,7 +39,9 @@ const Api = {
     updateVisit: (visitId, visitDate, comments, kind = {}) =>
         invoke('update_visit', { visitId, visitDate, comments, method: kind.method ?? null, outcome: kind.outcome ?? null, invited: kind.invited ?? null }),
     deleteVisit: (visitId) => invoke('delete_visit', { visitId }),
-    getVisitsReport: (dateFrom, dateTo) => invoke('get_visits_report', { dateFrom, dateTo }),
+    getVisitsReport: (dateFrom, dateTo, tagId) => invoke('get_visits_report', { dateFrom, dateTo, tagId: tagId ?? null }),
+    getCoverage: (dateFrom, dateTo, countAttempts) => invoke('get_coverage', { dateFrom, dateTo, countAttempts: !!countAttempts }),
+    getContactPlans: () => invoke('get_contact_plans'),
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
     getNeedsAttention: (tagId, thresholdDays, countAttempts) => invoke('get_needs_attention', { tagId, thresholdDays, countAttempts: !!countAttempts }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),

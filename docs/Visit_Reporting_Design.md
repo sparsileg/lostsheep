@@ -492,6 +492,26 @@ the ward council PDF (§3.5) and the "Due per contact plan" filter. All small
 once stages 1 and 2 exist. Add a test that the route, clerk, directory and
 data-validation PDFs never include `contact_plan`.
 
+*Implemented (v1.5.0):* Reports has four tabs. **Coverage**
+(`visits.rs::coverage_query`, `coverage-report.js`): per tag plus a
+distinct-household total, with a "(No tag)" row last; This quarter /
+This year / Last 12 months / Custom; "reached" means contacted, or any
+visit, call or card with "Count attempts as visits". **Contact Plans**
+(`contact_plans_query`, `contact-plans.js`): grouped tables with an
+inline plan dropdown and a due marker; do-not-contact households are
+listed only under Do not contact, even if they also hold a plan.
+**Exports** (`reports-pdf.js`): Needs Attention, Visit Log, Coverage,
+and the ward council Contact Plans PDF in the §3.5 layout (names, last
+contact, blank Adjustment column; no addresses or notes). Needs
+Attention gains "Due per contact plan"; its PDF omits the plan and the
+due marker, and is refused under that filter, since the filter's rows
+are themselves the plan list. The Visit Log gains a tag filter (every
+tag, system ones included: it is a record, not a list to send people
+to) and "Date (newest first)" sort labels. The no-plan test is a source
+check in `scripts/js-check.mjs` (`just test`): `map-view.js` (route PDF /
+Copy Text), `referrals-pdf.js`, `directory-pdf.js` and
+`data-validation-pdf.js` must not name the field.
+
 **Stage 4 — visit-aware routing (option B).** Behaviour change to an existing
 feature; ship separately so it can be evaluated on its own.
 

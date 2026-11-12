@@ -77,3 +77,8 @@
 .hh-paste-match:hover { background: var(--color-table-row-hover); }
 .hh-paste-match div:first-child { font-weight: 700; }
 .hh-paste-match div:last-child { font-size: 0.9em; opacity: 0.85; }
+.hh-check { display: flex; align-items: center; gap: 6px; }
+.hh-ref-badge {
+    display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 10px; font-size: 0.8em;
+    border: 1px solid var(--warning-color); color: var(--text-color); white-space: nowrap;
+}
