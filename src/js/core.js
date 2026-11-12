@@ -1,7 +1,7 @@
 // core.js — app boot, view router, tiny shared utilities.
 const CONSTANTS = {
     APP_VERSION: '1.4.0',
-    VIEWS: ['import', 'review', 'households', 'visits-report', 'referrals', 'deleted-records', 'map', 'logs'],
+    VIEWS: ['import', 'review', 'households', 'visits-report', 'referrals', 'household', 'deleted-records', 'map', 'logs'],
     MESSAGE_TYPES: { INFO: 'info', ERROR: 'error', WARNING: 'warning' },
 };
 
@@ -10,6 +10,13 @@ function escapeHtml(str) {
     return String(str)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Today (or `d`) as YYYY-MM-DD in local time. Not toISOString(), which
+// is UTC and gives tomorrow's date on an evening in the Americas.
+function localIsoDate(d = new Date()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 // A single persistent slot, not a new element per message — appending
@@ -50,7 +57,21 @@ function showMessage(text, type = CONSTANTS.MESSAGE_TYPES.INFO, timeoutMs = 1500
 const ViewRegistry = {};
 function registerView(name, handlers) { ViewRegistry[name] = handlers; }
 
+// A view may define beforeLeave(): a function returning (a promise of)
+// false to stay put, e.g. the household page with unsaved notes. Only
+// the view being left is asked, and only when actually switching.
 function showView(viewName, navEl) {
+    const current = document.querySelector('.view.active');
+    const leaving = current ? current.id.replace(/^view-/, '') : null;
+    const guard = leaving && leaving !== viewName ? ViewRegistry[leaving]?.beforeLeave : null;
+    if (guard) {
+        Promise.resolve(guard()).then(ok => { if (ok) switchView(viewName, navEl); });
+        return;
+    }
+    switchView(viewName, navEl);
+}
+
+function switchView(viewName, navEl) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     const target = document.getElementById(`view-${viewName}`);
     if (target) target.classList.add('active');
@@ -204,6 +225,7 @@ function showPruneConfirmModal(households, logs) {
 
 window.CONSTANTS = CONSTANTS;
 window.escapeHtml = escapeHtml;
+window.localIsoDate = localIsoDate;
 window.showMessage = showMessage;
 window.registerView = registerView;
 window.showView = showView;

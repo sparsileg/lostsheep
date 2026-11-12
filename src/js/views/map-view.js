@@ -463,7 +463,7 @@ async function loadMapData() {
         const marker = L.marker([g.latitude, g.longitude]).addTo(MapView.markersLayer);
         MapView.markersByAddressKey[g.address_key] = marker;
         MapView.markerBaseState[g.address_key] = { type: 'default' };
-        marker.bindPopup(`<strong>${escapeHtml(formatEntryAddress(g))}</strong><br>${g.names.map(escapeHtml).join('<br>')}
+        marker.bindPopup(`<strong>${escapeHtml(formatEntryAddress(g))}</strong><br>${g.names.map((n, i) => `<a href="#" class="map-popup-hh" data-open-hh="${g.household_ids[i]}" title="Open household">${escapeHtml(n)}</a>`).join('<br>')}
             <br><button class="btn" data-select-seed="${escapeHtml(g.address_key)}">Visit around here</button>
             <button class="btn" data-report-clerk="${escapeHtml(g.address_key)}">Report to clerk…</button>`);
         marker.on('popupopen', () => {
@@ -472,6 +472,13 @@ async function loadMapData() {
                 MapView.seedHouseholdId = g.household_ids[0];
                 marker.closePopup();
                 generateVisitList();
+            });
+            marker.getPopup()?.getElement()?.querySelectorAll('[data-open-hh]').forEach(a => {
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    marker.closePopup();
+                    openHousehold(Number(a.dataset.openHh));
+                });
             });
             document.querySelector(`[data-report-clerk="${CSS.escape(g.address_key)}"]`)?.addEventListener('click', () => {
                 marker.closePopup();

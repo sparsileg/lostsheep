@@ -23,21 +23,10 @@
 .modal label.checkbox-label input[type="checkbox"] { width: auto; margin: 0; }
 .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
 
-/* Household detail modal — mirrors the source directory's own layout,
-   stacked top-to-bottom: Close button, name, heads with contact info,
-   minors marker, address/coords, tags, comments, visit history, then the
-   "record a new visit" form. Everything scrolls together as one block via
-   base.css's generic `.modal { overflow-y: auto }` — no inner split.
-   (Previously the record-visit form and Close button were pinned outside
-   a separately-scrolling content area; on a shorter viewport that hid
-   Save Comments inside the inner scroll region while the pinned footer
-   ate space below it — two scrollbars in one modal, confusing. #91. Close
-   was later moved from the bottom of this flow to the top so it's
-   reachable without scrolling on a long record.) */
-.hh-detail-modal { width: 560px; max-width: 92vw; max-height: 85vh; }
+/* Household page pieces (household-view.js); the page layout itself
+   is in household-view.css. */
 .hh-confirm-modal { width: 380px; max-width: 90vw; }
 .hh-confirm-modal p { margin: 0 0 14px; }
-.hh-detail-modal h3 { margin: 6px 0; }
 .hh-comments-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .hh-comments-header h3 { margin: 6px 0; }
 .hh-minors-marker { opacity: 0.75; font-style: italic; margin: 4px 0; }
@@ -48,7 +37,7 @@
 .hh-detail-head strong { display: block; }
 .hh-detail-head div { font-size: 0.9em; opacity: 0.85; }
 
-.hh-visit-history { max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.hh-visit-history { margin-bottom: 4px; }
 .hh-visit-entry {
     padding: 8px 10px; margin-bottom: 6px; background: var(--card-bg);
     border-radius: 4px; border-left: 3px solid var(--primary-color);

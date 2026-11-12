@@ -1,0 +1,36 @@
+/* Household page (household-view.js): a sticky header, then two
+   columns, one on a narrow window. The whole page scrolls inside
+   #mainContent; only the header stays put. */
+.hp-header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 16px;
+    margin: -20px -20px 16px; padding: 14px 20px 12px;
+    background: var(--bg-color); border-bottom: 1px solid var(--border-color);
+}
+.hp-title h1 { margin: 0; font-size: 1.5em; }
+.hp-subtitle { color: var(--color-text-muted); margin-top: 2px; }
+
+.hp-columns {
+    display: grid; gap: 20px; align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+}
+@media (max-width: 1100px) {
+    .hp-columns { grid-template-columns: minmax(0, 1fr); }
+}
+.hp-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.hp-card {
+    background: var(--card-bg); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 12px 16px;
+}
+.hp-card h3 { margin: 0 0 8px; }
+.hp label { display: block; margin-bottom: 8px; }
+.hp input:not([type="checkbox"]), .hp textarea { width: 100%; box-sizing: border-box; }
+.hp .modal-buttons { margin-top: 8px; }
+/* Visit cards sit on a card already: use the raised colour so they
+   still stand apart. */
+.hp .hh-visit-entry { background: var(--color-bg-raised); }
+.hp .hh-comments-header h3 { margin: 0; }
+.hp .hh-comments-header { margin-bottom: 8px; }
+
+.map-popup-hh { color: inherit; text-decoration: underline; cursor: pointer; }
+.hp-copy-btn { font-size: 0.9em; }

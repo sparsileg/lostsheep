@@ -33,11 +33,6 @@ function referralIsOpen(r) {
     return r.status === 'to_report' || r.status === 'reported';
 }
 
-function localIsoDate(d = new Date()) {
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 // ── Create / edit modal ─────────────────────────────────────────────────
 // opts.households: [{ id, name }] — more than one when opened from a map
 //   marker that groups several directory entries at one address; the
@@ -295,7 +290,7 @@ async function referralAction(action, id) {
     if (!r) return;
     try {
         if (action === 'open') {
-            openHouseholdModal(r.household_id);
+            openHousehold(r.household_id);
             return;
         }
         if (action === 'edit') {
