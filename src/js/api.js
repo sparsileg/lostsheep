@@ -7,6 +7,7 @@ const Api = {
     searchHouseholds: (params) => invoke('search_households', { params }),
     getHousehold: (id) => invoke('get_household', { id }),
     updateHouseholdComments: (id, comments) => invoke('update_household_comments', { id, comments }),
+    setContactPlan: (id, plan) => invoke('set_contact_plan', { id, plan }),
     softDeleteHousehold: (id, reason) => invoke('soft_delete_household', { id, reason }),
     listDeletedHouseholds: () => invoke('list_deleted_households'),
     restoreDeletedHousehold: (id) => invoke('restore_deleted_household', { id }),
@@ -24,30 +25,31 @@ const Api = {
     // import
     importPdf: (filePath) => invoke('import_pdf', { filePath }),
     getReviewQueue: (batchId) => invoke('get_review_queue', { batchId }),
-    resolveReviewItem: (itemId, action, comment, linkTargetId) =>
-        invoke('resolve_review_item', { itemId, action, comment, linkTargetId }),
+    resolveReviewItem: (itemId, action, comment, linkTargetId, confirmReferrals) =>
+        invoke('resolve_review_item', { itemId, action, comment, linkTargetId, confirmReferrals: confirmReferrals || null }),
     commitImportBatch: (batchId) => invoke('commit_import_batch', { batchId }),
     resolveAllNewRecords: (batchId) => invoke('resolve_all_new_records', { batchId }),
     getPendingImportBatch: () => invoke('get_pending_import_batch'),
     discardImportBatch: (batchId) => invoke('discard_import_batch', { batchId }),
 
     // visits / map
-    recordVisit: (householdId, visitDate, comments) =>
-        invoke('record_visit', { householdId, visitDate, comments }),
-    updateVisit: (visitId, visitDate, comments) =>
-        invoke('update_visit', { visitId, visitDate, comments }),
+    // kind: { method, outcome, invited }; omitted = a contacted visit.
+    recordVisit: (householdId, visitDate, comments, kind = {}) =>
+        invoke('record_visit', { householdId, visitDate, comments, method: kind.method ?? null, outcome: kind.outcome ?? null, invited: kind.invited ?? null }),
+    updateVisit: (visitId, visitDate, comments, kind = {}) =>
+        invoke('update_visit', { visitId, visitDate, comments, method: kind.method ?? null, outcome: kind.outcome ?? null, invited: kind.invited ?? null }),
     deleteVisit: (visitId) => invoke('delete_visit', { visitId }),
     getVisitsReport: (dateFrom, dateTo) => invoke('get_visits_report', { dateFrom, dateTo }),
     getHouseholdVisits: (householdId) => invoke('get_household_visits', { householdId }),
-    getNeedsAttention: (tagId, thresholdDays) => invoke('get_needs_attention', { tagId, thresholdDays }),
+    getNeedsAttention: (tagId, thresholdDays, countAttempts) => invoke('get_needs_attention', { tagId, thresholdDays, countAttempts: !!countAttempts }),
     generateVisitList: (params) => invoke('generate_visit_list', { params }),
     getMapData: (tagId) => invoke('get_map_data', { tagId }),
     getMissingCoordsCount: () => invoke('get_missing_coords_count'),
 
     // clerk referrals
     listReferrals: (householdId) => invoke('list_referrals', { householdId }),
-    createReferral: (householdId, kind, details, newAddress, learnedOn) =>
-        invoke('create_referral', { householdId, kind, details, newAddress, learnedOn }),
+    createReferral: (householdId, kind, details, newAddress, learnedOn, visitUid) =>
+        invoke('create_referral', { householdId, kind, details, newAddress, learnedOn, visitUid: visitUid || null }),
     updateReferral: (id, kind, details, newAddress, learnedOn) =>
         invoke('update_referral', { id, kind, details, newAddress, learnedOn }),
     markReferralsReported: (ids, reportedOn) => invoke('mark_referrals_reported', { ids, reportedOn }),

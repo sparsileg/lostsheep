@@ -332,8 +332,12 @@ fn run_diff(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    // Nothing to review means nothing to commit by hand: the batch is
+    // complete now. (Before 1.5.0 such a batch stayed 'pending' for
+    // ever; the overdue count treats those as complete too.)
     tx.execute(
-        "UPDATE import_batches SET new_count = ?1, review_count = ?2 WHERE id = ?3",
+        "UPDATE import_batches SET new_count = ?1, review_count = ?2, \
+         status = CASE WHEN ?2 = 0 THEN 'committed' ELSE status END WHERE id = ?3",
         params![new_count, review_count, batch_id],
     )
     .map_err(|e| e.to_string())?;
@@ -463,6 +467,10 @@ pub struct ReviewItem {
     /// user before they click rather than after. Always false for 'new'
     /// items, which never had an existing_household_id to begin with.
     pub stale: bool,
+    /// Open clerk referrals on this item's household, and what resolving
+    /// the item would do to each (Record_Referral_Design.md §3.3). Empty
+    /// for 'new' items and households with none.
+    pub referrals: Vec<super::referrals::ReviewReferral>,
 }
 
 /// Existing household fields needed to diff against an incoming
@@ -485,6 +493,70 @@ struct ExistingForDiff {
     latitude: Option<f64>,
     longitude: Option<f64>,
     comments: Option<String>,
+}
+
+fn load_existing_for_diff(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<ExistingForDiff>, String> {
+    conn.query_row(
+        "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
+         phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
+         longitude, comments FROM households WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(ExistingForDiff {
+                first_name: r.get(0)?,
+                last_name: r.get(1)?,
+                first_name_2: r.get(2)?,
+                last_name_2: r.get(3)?,
+                phone_1: r.get(4)?,
+                email_1: r.get(5)?,
+                phone_2: r.get(6)?,
+                email_2: r.get(7)?,
+                address_line1: r.get(8)?,
+                address_line2: r.get(9)?,
+                city: r.get(10)?,
+                state: r.get(11)?,
+                zip: r.get(12)?,
+                latitude: r.get(13)?,
+                longitude: r.get(14)?,
+                comments: r.get(15)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// The open referrals a review item touches, for the household `existing_id`:
+/// all of them for a removal ("delete"), or judged against the incoming
+/// record for a change (Replace/Merge/Link).
+fn referrals_for_item(
+    conn: &rusqlite::Connection,
+    existing_id: i64,
+    removal: bool,
+    incoming: Option<&ParsedRecord>,
+) -> Result<Vec<super::referrals::ReviewReferral>, String> {
+    let uid: Option<String> = conn
+        .query_row(
+            "SELECT household_uid FROM households WHERE id = ?1",
+            params![existing_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(uid) = uid else {
+        return Ok(Vec::new());
+    };
+    if removal {
+        return super::referrals::review_referrals(conn, &uid, "removed", None, &[]);
+    }
+    let changed = match (load_existing_for_diff(conn, existing_id)?, incoming) {
+        (Some(e), Some(rec)) => changed_fields(&e, rec),
+        _ => Vec::new(),
+    };
+    super::referrals::review_referrals(conn, &uid, "changed", incoming, &changed)
 }
 
 /// Coarse, human-facing categories rather than raw column names — the
@@ -636,34 +708,19 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
         // Only a 'changed' item has both an incoming record and an
         // existing household to compare — 'new' has no existing row,
         // 'removed' has no incoming_data.
-        let changed = match (&incoming_data, existing_household_id) {
-            (Some(json), Some(eid)) => {
-                let rec: Option<ParsedRecord> = serde_json::from_str(json).ok();
-                let existing: Option<ExistingForDiff> = conn
-                    .query_row(
-                        "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
-                         phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
-                         longitude, comments FROM households WHERE id = ?1",
-                        params![eid],
-                        |r| {
-                            Ok(ExistingForDiff {
-                                first_name: r.get(0)?, last_name: r.get(1)?,
-                                first_name_2: r.get(2)?, last_name_2: r.get(3)?,
-                                phone_1: r.get(4)?, email_1: r.get(5)?,
-                                phone_2: r.get(6)?, email_2: r.get(7)?,
-                                address_line1: r.get(8)?, address_line2: r.get(9)?,
-                                city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
-                                latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
-                            })
-                        },
-                    )
-                    .optional()
-                    .map_err(|e| e.to_string())?;
-                match (existing, rec) {
-                    (Some(e), Some(r)) => changed_fields(&e, &r),
-                    _ => Vec::new(),
-                }
-            }
+        let rec: Option<ParsedRecord> = incoming_data
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
+        let changed = match (&rec, existing_household_id) {
+            (Some(r), Some(eid)) => match load_existing_for_diff(&conn, eid)? {
+                Some(e) => changed_fields(&e, r),
+                None => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let referrals = match (match_type.as_str(), existing_household_id) {
+            ("removed", Some(eid)) => referrals_for_item(&conn, eid, true, None)?,
+            ("changed", Some(eid)) => referrals_for_item(&conn, eid, false, rec.as_ref())?,
             _ => Vec::new(),
         };
         // Issue #62: 'changed'/'removed' items are matched against an
@@ -680,6 +737,7 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
             existing_summary,
             changed_fields: changed,
             stale,
+            referrals,
         });
     }
     Ok(out)
@@ -710,6 +768,13 @@ pub fn get_review_queue(state: State<AppState>, batch_id: i64) -> Result<Vec<Rev
 /// via link_target_id instead of the row's own existing_household_id.
 /// Scoped deliberately to same-batch 'removed' items only — no cross-batch
 /// or all-households search.
+///
+/// Clerk referrals (Record_Referral_Design.md §3.3): resolving a removal
+/// as Delete, or a change as Replace/Merge/Link, confirms the household's
+/// open referrals whose effect is "confirm" (see referrals::review_referrals),
+/// plus any "ask" ones the user chose to confirm (`confirm_referrals`), in
+/// the same transaction. Returns the references confirmed. A Delete with
+/// no reason given records one from the referral.
 #[tauri::command]
 pub fn resolve_review_item(
     state: State<AppState>,
@@ -717,8 +782,9 @@ pub fn resolve_review_item(
     action: String,
     comment: Option<String>,
     link_target_id: Option<i64>,
-) -> Result<(), String> {
-    let result = (|| -> Result<(), String> {
+    confirm_referrals: Option<Vec<i64>>,
+) -> Result<Vec<String>, String> {
+    let result = (|| -> Result<Vec<String>, String> {
         let mut conn = state.pool.get().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -795,6 +861,25 @@ pub fn resolve_review_item(
             existing_id
         };
 
+        // Open clerk referrals this resolution settles, worked out before
+        // the household is replaced or deleted below.
+        let referral_plan = match (action.as_str(), existing_id) {
+            ("delete", Some(eid)) => referrals_for_item(&tx, eid, true, None)?,
+            ("replace" | "merge" | "link", Some(eid)) => {
+                let rec: Option<ParsedRecord> = incoming_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok());
+                referrals_for_item(&tx, eid, false, rec.as_ref())?
+            }
+            _ => Vec::new(),
+        };
+        let comment = match (&comment, action.as_str()) {
+            (c, "delete") if c.as_deref().is_none_or(|c| c.trim().is_empty()) => {
+                super::referrals::deletion_reason(&referral_plan).or(comment)
+            }
+            _ => comment,
+        };
+
         match action.as_str() {
             "add" | "replace" | "merge" | "link" => {
                 let rec: ParsedRecord = serde_json::from_str(
@@ -823,6 +908,9 @@ pub fn resolve_review_item(
                 let mut preserved_tag_ids: Vec<i64> = Vec::new();
                 let mut existing_comments: Option<String> = None;
                 let mut carried_household_uid: Option<String> = None;
+                // Visit_Reporting_Design.md §2.3: the contact plan is ours,
+                // not the directory's, so it carries forward like comments.
+                let mut carried_contact_plan: Option<String> = None;
                 // Issue #83: phone/email/address/coordinates the incoming
                 // record is about to overwrite, formatted as a single
                 // timestamped note so they aren't lost outright. Populated
@@ -857,26 +945,7 @@ pub fn resolve_review_item(
                         // phone/email/address/coordinates about to be
                         // overwritten can be written into the note below
                         // before this row's own values are replaced.
-                        let old_for_note: Option<ExistingForDiff> = tx
-                        .query_row(
-                            "SELECT first_name, last_name, first_name_2, last_name_2, phone_1, email_1, \
-                             phone_2, email_2, address_line1, address_line2, city, state, zip, latitude, \
-                             longitude, comments FROM households WHERE id = ?1",
-                            params![old_id],
-                            |r| {
-                                Ok(ExistingForDiff {
-                                    first_name: r.get(0)?, last_name: r.get(1)?,
-                                    first_name_2: r.get(2)?, last_name_2: r.get(3)?,
-                                    phone_1: r.get(4)?, email_1: r.get(5)?,
-                                    phone_2: r.get(6)?, email_2: r.get(7)?,
-                                    address_line1: r.get(8)?, address_line2: r.get(9)?,
-                                    city: r.get(10)?, state: r.get(11)?, zip: r.get(12)?,
-                                    latitude: r.get(13)?, longitude: r.get(14)?, comments: r.get(15)?,
-                                })
-                            },
-                        )
-                        .optional()
-                        .map_err(|e| e.to_string())?;
+                        let old_for_note = load_existing_for_diff(&tx, old_id)?;
                         if let Some(old) = &old_for_note {
                             let dtg: String = tx
                                 .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
@@ -898,6 +967,15 @@ pub fn resolve_review_item(
                             )
                             .optional()
                             .map_err(|e| e.to_string())?;
+                        carried_contact_plan = tx
+                            .query_row(
+                                "SELECT contact_plan FROM households WHERE id = ?1",
+                                params![old_id],
+                                |r| r.get::<_, Option<String>>(0),
+                            )
+                            .optional()
+                            .map_err(|e| e.to_string())?
+                            .flatten();
                         // The new row is inserted before the old one is
                         // deleted (visits must be re-pointed to the new id
                         // first), so if the incoming record's source_key is
@@ -966,12 +1044,12 @@ pub fn resolve_review_item(
 
                 tx.execute(
                 "INSERT INTO households (household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-                 address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+                 address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments, contact_plan) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
                 params![
                     household_uid, rec.first_name, rec.last_name, rec.role, rec.phone_1, rec.email_1, rec.first_name_2, rec.last_name_2, rec.role_2,
                     rec.phone_2, rec.email_2, rec.address_line1, rec.address_line2, rec.city, rec.state, rec.zip, rec.latitude, rec.longitude,
-                    address_key, source_key, source_key_seq, rec.has_minors, final_comments
+                    address_key, source_key, source_key_seq, rec.has_minors, final_comments, carried_contact_plan
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -1005,63 +1083,10 @@ pub fn resolve_review_item(
             }
             "delete" => {
                 if let Some(id) = existing_id {
-                    let affected = tx
-                    .execute(
-                        "INSERT INTO deleted_households (original_id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-                         address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
-                         SELECT id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
-                         latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
-                        params![id, comment],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    if affected == 0 {
-                        return Err(format!("no household with id {id}"));
-                    }
-                    let deleted_id = tx.last_insert_rowid();
-
-                    // Mirror visits and tags before the DELETE cascades them
-                    // away — same treatment as soft_delete_household (#19).
-                    // Issue #69: visit_uid carried into the mirror too, same as
-                    // household_uid just above — this is the review-driven
-                    // delete path (Review Updates' "removed" -> Delete), not
-                    // households::soft_delete_household, and needs the same fix.
-                    {
-                        let mut stmt = tx
-                        .prepare("SELECT visit_uid, visit_date, comments FROM visits WHERE household_id = ?1")
-                        .map_err(|e| e.to_string())?;
-                        let visits: Vec<(String, String, Option<String>)> = stmt
-                            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                            .map_err(|e| e.to_string())?
-                            .collect::<Result<_, _>>()
-                            .map_err(|e| e.to_string())?;
-                        for (visit_uid, visit_date, v_comments) in visits {
-                            tx.execute(
-                            "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
-                            params![deleted_id, visit_uid, visit_date, v_comments],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        }
-                    }
-                    {
-                        let mut stmt = tx
-                            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
-                            .map_err(|e| e.to_string())?;
-                        let tag_ids: Vec<i64> = stmt
-                            .query_map(params![id], |r| r.get(0))
-                            .map_err(|e| e.to_string())?
-                            .collect::<Result<_, _>>()
-                            .map_err(|e| e.to_string())?;
-                        for tag_id in tag_ids {
-                            tx.execute(
-                            "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) VALUES (?1, ?2)",
-                            params![deleted_id, tag_id],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        }
-                    }
-
-                    tx.execute("DELETE FROM households WHERE id = ?1", params![id])
-                        .map_err(|e| e.to_string())?;
+                    // Same soft delete as the Households view's (#19/#69):
+                    // visits, tags and the contact plan are mirrored so the
+                    // household can be restored from Deleted Records.
+                    super::households::soft_delete_in_tx(&tx, id, comment.as_deref())?;
                 }
             }
             "ignore" => {}
@@ -1093,6 +1118,26 @@ pub fn resolve_review_item(
             }
         }
 
+        let asked = confirm_referrals.unwrap_or_default();
+        let mut confirmed: Vec<String> = Vec::new();
+        if !referral_plan.is_empty() {
+            let batch_date: String = tx
+                .query_row(
+                    "SELECT date(imported_at, 'localtime') FROM import_batches WHERE id = ?1",
+                    params![batch_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let today = super::referrals::today_local();
+            for r in &referral_plan {
+                if r.effect == "confirm" || (r.effect == "ask" && asked.contains(&r.id)) {
+                    let note = format!("{}, import of {batch_date}", r.reason);
+                    super::referrals::confirm_from_import(&tx, r.id, &note, batch_id, &today)?;
+                    confirmed.push(r.reference.clone());
+                }
+            }
+        }
+
         let _ = match_type;
         tx.execute(
         "UPDATE review_queue SET resolution = ?1, resolution_comment = ?2, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3",
@@ -1100,7 +1145,7 @@ pub fn resolve_review_item(
     )
     .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(confirmed)
     })();
 
     // Issue #27: this is the only place households are destroyed and
@@ -1108,10 +1153,17 @@ pub fn resolve_review_item(
     // more than almost anywhere else in the app.
     if let Ok(conn) = state.pool.get() {
         match &result {
-            Ok(()) => super::logs::log(
+            Ok(confirmed) => super::logs::log(
                 &conn,
                 "info",
-                &format!("review item {item_id} resolved: {action}"),
+                &if confirmed.is_empty() {
+                    format!("review item {item_id} resolved: {action}")
+                } else {
+                    format!(
+                        "review item {item_id} resolved: {action}; clerk referral(s) confirmed: {}",
+                        confirmed.join(", ")
+                    )
+                },
                 None,
             ),
             Err(e) => super::logs::log(
@@ -1125,8 +1177,16 @@ pub fn resolve_review_item(
     result
 }
 
+/// What committing a batch settled, for the post-import message
+/// (Record_Referral_Design.md §4.2).
+#[derive(Serialize)]
+pub struct CommitSummary {
+    pub referrals_confirmed: i64,
+    pub referrals_overdue: i64,
+}
+
 #[tauri::command]
-pub fn commit_import_batch(state: State<AppState>, batch_id: i64) -> Result<(), String> {
+pub fn commit_import_batch(state: State<AppState>, batch_id: i64) -> Result<CommitSummary, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let pending: i64 = conn
         .query_row(
@@ -1145,7 +1205,12 @@ pub fn commit_import_batch(state: State<AppState>, batch_id: i64) -> Result<(), 
         params![batch_id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    let (referrals_confirmed, referrals_overdue) =
+        super::referrals::import_summary_counts(&conn, batch_id)?;
+    Ok(CommitSummary {
+        referrals_confirmed,
+        referrals_overdue,
+    })
 }
 
 /// One item's outcome within a bulk "add all new" run — only populated for
@@ -1201,8 +1266,8 @@ pub fn resolve_all_new_records(
     let mut added = 0i64;
     let mut failed = Vec::new();
     for id in ids {
-        match resolve_review_item(state.clone(), id, "add".to_string(), None, None) {
-            Ok(()) => added += 1,
+        match resolve_review_item(state.clone(), id, "add".to_string(), None, None, None) {
+            Ok(_) => added += 1,
             Err(e) => failed.push(BulkAddFailure {
                 item_id: id,
                 error: e,

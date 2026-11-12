@@ -73,6 +73,7 @@ pub fn open_pool(
     // narrower CHECK constraint forever and reject 'link' resolutions
     // with a raw CHECK-constraint error at write time.
     migrate_review_queue_link_resolution(&conn)?;
+    migrate_stage2(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     Ok(pool)
 }
@@ -404,6 +405,95 @@ fn migrate_review_queue_link_resolution(conn: &Connection) -> rusqlite::Result<(
     Ok(())
 }
 
+/// Adds `column` to `table` unless it is already there. Returns whether
+/// it was added. A missing table is left alone: schema.sql creates it,
+/// with the column, right after the migrations run.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> rusqlite::Result<bool> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |r| r.get(0),
+    )?;
+    if table_exists == 0 {
+        return Ok(false);
+    }
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let has_column = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+    if has_column {
+        return Ok(false);
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    Ok(true)
+}
+
+/// Version 1.5.0: visit outcome / method / invitation and household
+/// contact plans (Visit_Reporting_Design.md Stage 2), and the import batch
+/// that confirmed a clerk referral (Record_Referral_Design.md Stage 2).
+///
+/// Existing visits default to visit / contacted: the only thing the app
+/// could record before was a visit, and "contacted" is the conservative
+/// reading (it never makes a household look neglected that wasn't). The
+/// time of the migration is kept in schema_meta so those defaulted rows
+/// can be told apart from observed ones later (created_at earlier than it).
+fn migrate_stage2(conn: &Connection) -> rusqlite::Result<()> {
+    let outcome_added = add_column_if_missing(
+        conn,
+        "visits",
+        "outcome",
+        "TEXT NOT NULL DEFAULT 'contacted' CHECK (outcome IN ('contacted','no_answer','not_home',\
+         'refused','moved','deceased','sent','other'))",
+    )?;
+    add_column_if_missing(
+        conn,
+        "visits",
+        "method",
+        "TEXT NOT NULL DEFAULT 'visit' CHECK (method IN ('visit','phone','card'))",
+    )?;
+    add_column_if_missing(conn, "visits", "invited", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        conn,
+        "deleted_visits",
+        "outcome",
+        "TEXT NOT NULL DEFAULT 'contacted'",
+    )?;
+    add_column_if_missing(
+        conn,
+        "deleted_visits",
+        "method",
+        "TEXT NOT NULL DEFAULT 'visit'",
+    )?;
+    add_column_if_missing(
+        conn,
+        "deleted_visits",
+        "invited",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "households",
+        "contact_plan",
+        "TEXT CHECK (contact_plan IS NULL OR contact_plan IN ('monthly','quarterly','as_needed'))",
+    )?;
+    add_column_if_missing(conn, "deleted_households", "contact_plan", "TEXT")?;
+    add_column_if_missing(conn, "referrals", "import_batch_id", "INTEGER")?;
+    if outcome_added {
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) \
+             VALUES ('visit_outcome_migrated_at', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn apply_key(conn: &Connection, key_hex: &str) -> rusqlite::Result<()> {
     conn.pragma_update(None, "key", format!("x'{}'", key_hex))?;
     // Cheap sanity read — throws SQLITE_NOTADB if the key is wrong, which
@@ -474,6 +564,79 @@ pub fn restore_via_online_backup(
         backup.run_to_completion(i32::MAX, std::time::Duration::from_millis(0), None)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stage2_migration_tests {
+    use super::*;
+
+    /// A 1.4.0-shaped database: the tables Stage 2 alters, without the new
+    /// columns, holding one visit and one household.
+    fn v140() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+             CREATE TABLE households (id INTEGER PRIMARY KEY, household_uid TEXT NOT NULL, \
+                first_name TEXT NOT NULL); \
+             CREATE TABLE deleted_households (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL); \
+             CREATE TABLE visits (id INTEGER PRIMARY KEY, visit_uid TEXT NOT NULL, \
+                household_id INTEGER NOT NULL, visit_date TEXT NOT NULL, comments TEXT); \
+             CREATE TABLE deleted_visits (id INTEGER PRIMARY KEY, visit_date TEXT NOT NULL); \
+             CREATE TABLE referrals (id INTEGER PRIMARY KEY, household_uid TEXT NOT NULL); \
+             INSERT INTO households (household_uid, first_name) VALUES ('u1', 'Ann'); \
+             INSERT INTO visits (visit_uid, household_id, visit_date) VALUES ('v1', 1, '2026-01-01');",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn adds_columns_with_defaults_and_records_the_date() {
+        let c = v140();
+        migrate_stage2(&c).unwrap();
+        let (outcome, method, invited): (String, String, i64) = c
+            .query_row("SELECT outcome, method, invited FROM visits", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(
+            (outcome.as_str(), method.as_str(), invited),
+            ("contacted", "visit", 0)
+        );
+        let plan: Option<String> = c
+            .query_row("SELECT contact_plan FROM households", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(plan, None);
+        let marked: i64 = c
+            .query_row(
+                "SELECT count(*) FROM schema_meta WHERE key = 'visit_outcome_migrated_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marked, 1);
+        // The CHECKs came along with the columns.
+        assert!(c
+            .execute("UPDATE visits SET outcome = 'bogus'", [])
+            .is_err());
+        assert!(c
+            .execute("UPDATE households SET contact_plan = 'weekly'", [])
+            .is_err());
+        c.prepare("SELECT import_batch_id FROM referrals").unwrap();
+    }
+
+    #[test]
+    fn is_idempotent_and_schema_sql_applies_after_it() {
+        let c = v140();
+        migrate_stage2(&c).unwrap();
+        migrate_stage2(&c).unwrap();
+        // A fresh database: nothing to migrate, schema.sql creates it all.
+        let fresh = Connection::open_in_memory().unwrap();
+        migrate_stage2(&fresh).unwrap();
+        fresh.execute_batch(SCHEMA_SQL).unwrap();
+        migrate_stage2(&fresh).unwrap();
+        fresh.execute_batch(SCHEMA_SQL).unwrap();
+    }
 }
 
 #[cfg(test)]

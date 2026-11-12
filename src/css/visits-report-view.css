@@ -24,3 +24,6 @@
    for colour-blind users (Visit_Reporting_Design.md §5). */
 .na-never { color: var(--warning-color); font-weight: 700; }
 .na-empty { text-align: center; opacity: 0.75; }
+.na-check { display: flex; align-items: center; gap: 6px; }
+/* "due" is a word, not only a colour (themes must be colour-blind friendly). */
+.na-due { color: var(--warning-color); font-weight: 700; }

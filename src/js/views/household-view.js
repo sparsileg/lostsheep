@@ -1,7 +1,7 @@
 // ── Household page ──────────────────────────────────────────────────────
 // One household, full window: replaced the household detail modal, which
-// had outgrown a popup (details, tags, comments, visits, clerk referrals,
-// with more to come in Visit_Reporting_Design.md Stage 2).
+// had outgrown a popup (details, tags, contact plan, comments, visits
+// with method and outcome, clerk referrals).
 //
 // Not in the sidebar. openHousehold(id) shows it from wherever the user
 // is (Households list, Clerk Referrals, a map popup), and ← Back returns
@@ -9,8 +9,9 @@
 // list's search and page are still there on return.
 //
 // Mostly read-only, matching the source directory's own layout. Only
-// comments, tags, visits and referrals are editable here; name/address/
-// phone corrections happen through re-import + Review Updates.
+// comments, tags, the contact plan, visits and referrals are editable
+// here; name/address/phone corrections happen through re-import + Review
+// Updates.
 //
 // Layout: a sticky header (Back, name, address), then two columns —
 // left "who they are" (heads, contact info, tags, comments), right "what
@@ -102,6 +103,10 @@ async function renderHouseholdPage(id) {
                         <h3>Tags</h3>
                         <div id="modalTags">${renderTagChips(h.tags, { onRemove: true })}</div>
                         <div id="modalTagDropdown" class="inline-dropdown"></div>
+                        <div class="hp-plan-row">
+                            <span class="hp-plan-label" title="How often we intend to reach out. Shown only here, in Reports, and on the Contact Plans list for ward council.">Contact plan</span>
+                            <div id="hpPlanDropdown" class="inline-dropdown"></div>
+                        </div>
                     </div>
                     <div class="hp-card">
                         <div class="hh-comments-header">
@@ -115,6 +120,7 @@ async function renderHouseholdPage(id) {
                     <div class="hp-card">
                         <h3>Record New Visit</h3>
                         <label>Date (YYYY-MM-DD) <input type="text" id="fVisitDate" placeholder="YYYY-MM-DD" value="${localIsoDate()}"></label>
+                        <div id="fVisitKind"></div>
                         <label>Comments <textarea id="fVisitComments" rows="3"></textarea></label>
                         <div class="modal-buttons">
                             <button class="btn" id="fCancelVisit">Clear</button>
@@ -168,6 +174,19 @@ async function renderHouseholdPage(id) {
         });
     }
 
+    mountDropdown(document.getElementById('hpPlanDropdown'), {
+        items: CONTACT_PLANS,
+        value: h.contact_plan || '',
+        sizeToItems: true,
+        onSelect: async (plan) => {
+            try {
+                await Api.setContactPlan(id, plan || null);
+                h.contact_plan = plan || null;
+                showMessage(plan ? `Contact plan set to ${contactPlanLabel(plan)}.` : 'Contact plan cleared.', CONSTANTS.MESSAGE_TYPES.INFO);
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        },
+    });
+
     document.getElementById('fSaveComments').addEventListener('click', async () => {
         try {
             const value = document.getElementById('fComments').value;
@@ -179,25 +198,117 @@ async function renderHouseholdPage(id) {
 
     document.getElementById('hpCopyVisits').addEventListener('click', () => copyVisitHistory(id, formatDirectoryName(h)));
 
+    let visitKind = mountVisitKindControls(document.getElementById('fVisitKind'));
     document.getElementById('fCancelVisit').addEventListener('click', () => {
         document.getElementById('fVisitDate').value = localIsoDate();
         document.getElementById('fVisitComments').value = '';
+        visitKind = mountVisitKindControls(document.getElementById('fVisitKind'));
     });
     document.getElementById('fAddVisit').addEventListener('click', async () => {
         const date = document.getElementById('fVisitDate').value.trim();
         if (!isValidIsoDate(date)) { showMessage('Enter a real date as YYYY-MM-DD (e.g. 2026-03-05).', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+        const kind = visitKind.get();
+        const comments = document.getElementById('fVisitComments').value || null;
+        let recorded;
         try {
-            await Api.recordVisit(id, date, document.getElementById('fVisitComments').value || null);
-            document.getElementById('fVisitComments').value = '';
-            await refreshVisitHistory(id);
-            showMessage('Visit recorded.', CONSTANTS.MESSAGE_TYPES.INFO);
-        } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+            recorded = await Api.recordVisit(id, date, comments, kind);
+        } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
+        document.getElementById('fVisitComments').value = '';
+        visitKind = mountVisitKindControls(document.getElementById('fVisitKind'));
+        await refreshVisitHistory(id);
+        showMessage(`${kind.method === 'card' ? 'Card' : kind.method === 'phone' ? 'Call' : 'Visit'} recorded.`, CONSTANTS.MESSAGE_TYPES.INFO);
+        await afterVisitPrompts(h, recorded, kind, date, comments);
     });
 
     await Promise.all([
         refreshVisitHistory(id),
         renderHouseholdReferrals(document.getElementById('hhReferrals'), h),
     ]);
+}
+
+// Follow-ups after a visit is saved (Visit_Reporting_Design.md §5):
+// - Moved / Deceased: offer a clerk referral, kind pre-filled and the
+//   visit linked (Record_Referral_Design.md §3.1).
+// - First contact with a "Not known" household: offer to mark it Known
+//   and pick a contact plan. A prompt, not automatic: sometimes you reach
+//   someone without really getting to know them.
+async function afterVisitPrompts(h, recorded, kind, date, comments) {
+    const name = formatDirectoryName(h);
+    let changed = false;
+    if (kind.outcome === 'moved' || kind.outcome === 'deceased') {
+        const what = kind.outcome === 'moved' ? 'moved' : 'died';
+        const go = await confirmYesNo(
+            `You recorded that this household ${what}. Create a clerk referral so the ward clerk can update the record?`,
+            'Create referral');
+        if (go) {
+            const saved = await openReferralModal({
+                households: [{ id: h.id, name }],
+                kind: kind.outcome === 'moved' ? 'moved_unknown' : 'deceased',
+                visitUid: recorded.visit_uid,
+                learnedOn: date,
+                details: comments || '',
+            });
+            if (saved) changed = true;
+        }
+    }
+    const notKnown = (h.tags || []).some(t => t.trim().toLowerCase() === 'not known');
+    if (recorded.is_contact && notKnown) {
+        const answer = await promptKnownAndPlan(name, h.contact_plan || '');
+        if (answer) {
+            try {
+                if (answer.markKnown) await Api.tagHouseholds([h.id], 'Known', false);
+                if ((answer.plan || null) !== (h.contact_plan || null)) await Api.setContactPlan(h.id, answer.plan || null);
+                changed = true;
+            } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }
+        }
+    }
+    if (changed && activeViewName() === 'household' && HouseholdPage.id === h.id) {
+        // Re-render for the new tag, plan or referral. Nothing typed is
+        // lost: the visit form was just cleared and comments are saved
+        // separately (the dirty check still guards them).
+        if (!householdPageIsDirty()) {
+            await renderHouseholdPage(h.id);
+        } else {
+            // Keep the unsaved comment text in place; refresh what can
+            // be refreshed without a full re-render.
+            const el = document.getElementById('hhReferrals');
+            if (el) await renderHouseholdReferrals(el, h);
+            const fresh = await Api.getHousehold(h.id).catch(() => null);
+            const tagsEl = document.getElementById('modalTags');
+            if (fresh && tagsEl) tagsEl.innerHTML = renderTagChips(fresh.tags, { onRemove: false });
+        }
+    }
+}
+
+// "You've made contact with the Smith household." [x] Mark as Known,
+// Contact plan [None ▾]. Resolves to { markKnown, plan } or null (Skip).
+function promptKnownAndPlan(name, currentPlan) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal ref-modal">
+                <h2>First contact</h2>
+                <p>You've made contact with ${escapeHtml(name)}.</p>
+                <label class="vk-invited"><input type="checkbox" id="kpKnown" checked> Mark as Known</label>
+                <label>Contact plan</label><div id="kpPlan" class="ref-dropdown"></div>
+                <div class="modal-buttons">
+                    <button class="btn btn-primary" id="kpSave">Save</button>
+                    <button class="btn" id="kpSkip">Skip</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        let plan = currentPlan;
+        mountDropdown(overlay.querySelector('#kpPlan'), {
+            items: CONTACT_PLANS, value: plan,
+            onSelect: (v) => { plan = v; },
+        });
+        const finish = (v) => { overlay.remove(); resolve(v); };
+        overlay.querySelector('#kpSave').addEventListener('click', () =>
+            finish({ markKnown: overlay.querySelector('#kpKnown').checked, plan }));
+        overlay.querySelector('#kpSkip').addEventListener('click', () => finish(null));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+    });
 }
 
 // Copies the whole visit history as plain text for an email: a heading
@@ -211,7 +322,8 @@ async function copyVisitHistory(householdId, name) {
     if (!visits.length) { showMessage('No visits to copy.', CONSTANTS.MESSAGE_TYPES.INFO); return; }
     const entries = visits.map(v => {
         const lines = (v.comments || '').trim().split(/\r?\n/);
-        return [`${v.visit_date}  ${lines[0]}`.trimEnd(), ...lines.slice(1).map(l => `            ${l}`)].join('\n');
+        const first = `${v.visit_date}  ${visitKindText(v)}${lines[0] ? ' — ' + lines[0] : ''}`;
+        return [first, ...lines.slice(1).map(l => `            ${l}`)].join('\n');
     });
     const text = `${name} — visit history\n\n${entries.join('\n')}\n`;
     try {
@@ -236,7 +348,8 @@ function renderVisitViewRow(v) {
     return `
         <div class="hh-visit-entry" data-visit-id="${v.id}">
             <div class="hh-visit-view-row">
-                <div class="hh-visit-date">${escapeHtml(v.visit_date)}</div>
+                <div class="hh-visit-date">${escapeHtml(v.visit_date)}
+                    <span class="vk-chip ${visitIsContact(v) ? 'vk-chip-contact' : ''}">${escapeHtml(visitKindText(v))}</span></div>
                 <div class="hh-visit-actions">
                     <button type="button" class="hh-visit-icon-btn" data-edit-visit="${v.id}" title="Edit visit" aria-label="Edit visit">&#9998;</button>
                     <button type="button" class="hh-visit-icon-btn" data-delete-visit="${v.id}" title="Delete visit" aria-label="Delete visit">&#128465;</button>
@@ -253,6 +366,7 @@ function renderVisitEditRow(v) {
     return `
         <div class="hh-visit-entry hh-visit-entry-editing" data-visit-id="${v.id}">
             <label>Date (YYYY-MM-DD) <input type="text" class="hh-visit-edit-date" value="${escapeHtml(v.visit_date)}" placeholder="YYYY-MM-DD"></label>
+            <div class="hh-visit-edit-kind"></div>
             <label>Comments <textarea class="hh-visit-edit-comments" rows="2">${escapeHtml(v.comments || '')}</textarea></label>
             <div class="modal-buttons">
                 <button type="button" class="btn btn-primary" data-save-visit="${v.id}">Save</button>
@@ -306,6 +420,7 @@ async function refreshVisitHistory(householdId) {
     function wireEditRow(id) {
         const row = el.querySelector(`[data-visit-id="${id}"]`);
         if (!row) return;
+        const kindControls = mountVisitKindControls(row.querySelector('.hh-visit-edit-kind'), byId.get(id));
         row.querySelector('[data-cancel-visit]').addEventListener('click', () => {
             row.outerHTML = renderVisitViewRow(byId.get(id));
             rewireRow(id);
@@ -315,7 +430,7 @@ async function refreshVisitHistory(householdId) {
             if (!isValidIsoDate(date)) { showMessage('Enter a real date as YYYY-MM-DD (e.g. 2026-03-05).', CONSTANTS.MESSAGE_TYPES.ERROR); return; }
             const comments = row.querySelector('.hh-visit-edit-comments').value || null;
             try {
-                await Api.updateVisit(id, date, comments);
+                await Api.updateVisit(id, date, comments, kindControls.get());
                 await refreshVisitHistory(householdId);
                 showMessage('Visit updated.', CONSTANTS.MESSAGE_TYPES.INFO);
             } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); }

@@ -34,3 +34,19 @@
 
 .map-popup-hh { color: inherit; text-decoration: underline; cursor: pointer; }
 .hp-copy-btn { font-size: 0.9em; }
+
+/* Contact plan row in the Tags card */
+.hp-plan-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.hp-plan-label { font-weight: 600; }
+
+/* Visit method / outcome controls (visit-kinds.js) */
+.vk-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.vk-field { flex: 1 1 140px; }
+.vk-dropdown { margin-top: 4px; }
+.hp label.vk-invited, label.vk-invited { display: flex; align-items: center; gap: 6px; }
+/* Method · outcome in visit history: a word, not only a colour. */
+.vk-chip {
+    display: inline-block; margin-left: 8px; padding: 0 8px; border-radius: 10px;
+    font-size: 0.8em; font-weight: normal; border: 1px solid var(--border-color);
+}
+.vk-chip-contact { border-color: var(--success-color); }

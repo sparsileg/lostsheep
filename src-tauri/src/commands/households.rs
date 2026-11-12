@@ -26,6 +26,8 @@ pub struct Household {
     pub longitude: Option<f64>,
     pub has_minors: bool,
     pub comments: Option<String>,
+    /// monthly / quarterly / as_needed, or None (Visit_Reporting_Design.md §2.3).
+    pub contact_plan: Option<String>,
     pub tags: Vec<String>,
 }
 
@@ -75,6 +77,7 @@ fn row_to_household(
         longitude: row.get("longitude")?,
         has_minors: row.get::<_, i64>("has_minors")? != 0,
         comments: row.get("comments")?,
+        contact_plan: row.get("contact_plan")?,
         tags,
     })
 }
@@ -270,13 +273,28 @@ pub fn soft_delete_household(
 ) -> Result<(), String> {
     let mut conn = state.pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    soft_delete_in_tx(&tx, id, reason.as_deref())?;
+    crate::commands::logs::log(&tx, "info", &format!("household {id} soft-deleted"), None);
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
 
+/// The soft delete itself, inside the caller's transaction: copies the
+/// household, its visits (with uid, outcome, method, invitation) and its
+/// tags into the deleted_* mirrors, then deletes it. Shared by the
+/// Households view's delete and Review Updates' "removed" → Delete.
+/// Returns the deleted_households id.
+pub(crate) fn soft_delete_in_tx(
+    tx: &rusqlite::Connection,
+    id: i64,
+    reason: Option<&str>,
+) -> Result<i64, String> {
     let affected = tx
         .execute(
             "INSERT INTO deleted_households (original_id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, deletion_reason) \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, has_minors, comments, contact_plan, deletion_reason) \
              SELECT id, household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, address_line1, address_line2, city, state, zip, \
-             latitude, longitude, address_key, source_key, has_minors, comments, ?2 FROM households WHERE id = ?1",
+             latitude, longitude, address_key, source_key, has_minors, comments, contact_plan, ?2 FROM households WHERE id = ?1",
             params![id, reason],
         )
         .map_err(|e| e.to_string())?;
@@ -286,51 +304,68 @@ pub fn soft_delete_household(
     let deleted_id = tx.last_insert_rowid();
 
     // Mirror visits and tags before the DELETE below cascades them away.
-    // Scoped blocks so each prepared statement (and its borrow of tx) is
-    // dropped before the next tx.execute() call — the E0597 shape noted in
-    // issue #21's constraints.
-    {
-        // Issue #69: carry visit_uid forward into the mirror too, so a
-        // delete/restore round trip preserves per-visit identity the same
-        // way household_uid is preserved above.
-        let mut stmt = tx
-            .prepare("SELECT visit_uid, visit_date, comments FROM visits WHERE household_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let visits: Vec<(String, String, Option<String>)> = stmt
-            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?;
-        for (visit_uid, visit_date, comments) in visits {
-            tx.execute(
-                "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
-                params![deleted_id, visit_uid, visit_date, comments],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
-    {
-        let mut stmt = tx
-            .prepare("SELECT tag_id FROM household_tags WHERE household_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let tag_ids: Vec<i64> = stmt
-            .query_map(params![id], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?;
-        for tag_id in tag_ids {
-            tx.execute(
-                "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) VALUES (?1, ?2)",
-                params![deleted_id, tag_id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    // Issue #69: visit_uid comes along, so a delete/restore round trip
+    // keeps per-visit identity the way household_uid is kept above.
+    tx.execute(
+        "INSERT INTO deleted_visits (deleted_household_id, visit_uid, visit_date, comments, outcome, method, invited) \
+         SELECT ?1, visit_uid, visit_date, comments, outcome, method, invited FROM visits WHERE household_id = ?2",
+        params![deleted_id, id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO deleted_household_tags (deleted_household_id, tag_id) \
+         SELECT ?1, tag_id FROM household_tags WHERE household_id = ?2",
+        params![deleted_id, id],
+    )
+    .map_err(|e| e.to_string())?;
 
     tx.execute("DELETE FROM households WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    crate::commands::logs::log(&tx, "info", &format!("household {id} soft-deleted"), None);
-    tx.commit().map_err(|e| e.to_string())?;
+    Ok(deleted_id)
+}
+
+/// Sets or clears a household's contact plan (Visit_Reporting_Design.md
+/// §2.3): monthly, quarterly, as_needed, or None for no plan.
+pub fn set_contact_plan_query(
+    conn: &rusqlite::Connection,
+    id: i64,
+    plan: Option<&str>,
+) -> Result<(), String> {
+    if let Some(p) = plan {
+        if !["monthly", "quarterly", "as_needed"].contains(&p) {
+            return Err(format!("unknown contact plan '{p}'"));
+        }
+    }
+    let n = conn
+        .execute(
+            "UPDATE households SET contact_plan = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+            params![plan, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no household with id {id}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_contact_plan(
+    state: State<AppState>,
+    id: i64,
+    plan: Option<String>,
+) -> Result<(), String> {
+    let conn = state.pool.get().map_err(|e| e.to_string())?;
+    let plan = plan.filter(|p| !p.is_empty());
+    set_contact_plan_query(&conn, id, plan.as_deref())?;
+    crate::commands::logs::log(
+        &conn,
+        "info",
+        &format!(
+            "household {id} contact plan set to {}",
+            plan.as_deref().unwrap_or("none")
+        ),
+        None,
+    );
     Ok(())
 }
 
@@ -445,9 +480,9 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
     let affected = tx
         .execute(
             "INSERT INTO households (household_uid, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments) \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, source_key_seq, has_minors, comments, contact_plan) \
              SELECT ?2, first_name, last_name, role, phone_1, email_1, first_name_2, last_name_2, role_2, phone_2, email_2, \
-             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, ?3, has_minors, comments \
+             address_line1, address_line2, city, state, zip, latitude, longitude, address_key, source_key, ?3, has_minors, comments, contact_plan \
              FROM deleted_households WHERE id = ?1",
             params![id, household_uid, next_seq],
         )
@@ -484,18 +519,32 @@ pub fn restore_deleted_household(state: State<AppState>, id: i64) -> Result<(), 
         // reasoning as household_uid's fallback above; no original value
         // to recover for a pre-migration row.
         let mut stmt = tx
-            .prepare("SELECT visit_uid, visit_date, comments FROM deleted_visits WHERE deleted_household_id = ?1")
+            .prepare(
+                "SELECT visit_uid, visit_date, comments, outcome, method, invited \
+                 FROM deleted_visits WHERE deleted_household_id = ?1",
+            )
             .map_err(|e| e.to_string())?;
-        let visits: Vec<(Option<String>, String, Option<String>)> = stmt
-            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        type MirroredVisit = (Option<String>, String, Option<String>, String, String, bool);
+        let visits: Vec<MirroredVisit> = stmt
+            .query_map(params![id], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        for (visit_uid, visit_date, comments) in visits {
+        for (visit_uid, visit_date, comments, outcome, method, invited) in visits {
             let visit_uid = visit_uid.unwrap_or_else(|| Uuid::new_v4().to_string());
             tx.execute(
-                "INSERT INTO visits (household_id, visit_uid, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
-                params![new_id, visit_uid, visit_date, comments],
+                "INSERT INTO visits (household_id, visit_uid, visit_date, comments, outcome, method, invited) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![new_id, visit_uid, visit_date, comments, outcome, method, invited],
             )
             .map_err(|e| e.to_string())?;
         }

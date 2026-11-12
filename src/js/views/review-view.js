@@ -26,6 +26,10 @@ async function currentBatchId() {
     return pending;
 }
 
+// The items on screen, by id: resolveItem reads an item's clerk referrals
+// from here (deletion reason, which "ask" referrals were ticked).
+let reviewItemsById = new Map();
+
 async function loadReviewQueue() {
     const batchId = await currentBatchId();
     const list = document.getElementById('reviewList');
@@ -34,6 +38,7 @@ async function loadReviewQueue() {
     let items;
     try { items = await Api.getReviewQueue(batchId); } catch (e) { showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR); return; }
 
+    reviewItemsById = new Map(items.map(i => [i.id, i]));
     if (!items.length) { list.innerHTML = '<p>Nothing left to review — ready to commit.</p>'; return; }
 
     // Issue #70 (link): 'removed' items in this batch are candidates a
@@ -115,6 +120,10 @@ function renderReviewItem(item, removedItems) {
         ? `<div class="review-link-dropdown" data-link-dropdown="${item.id}"></div>`
         : '';
 
+    const referralsHtml = (item.referrals && item.referrals.length && !item.stale)
+        ? `<div class="review-referrals">${item.referrals.map(r => renderReviewReferral(item, r)).join('')}</div>`
+        : '';
+
     return `
         <div class="review-item review-${item.match_type}${item.stale ? ' review-stale' : ''}">
             <span class="review-badge">${item.match_type}</span>
@@ -122,6 +131,7 @@ function renderReviewItem(item, removedItems) {
                 <div><strong>Incoming:</strong> ${incomingHtml}</div>
                 ${item.existing_summary ? `<div><strong>Existing:</strong> ${escapeHtml(item.existing_summary)}</div>` : ''}
                 ${changedHtml}
+                ${referralsHtml}
                 ${commentsNoteHtml}
                 ${staleHtml}
                 ${linkDropdownHtml}
@@ -130,15 +140,54 @@ function renderReviewItem(item, removedItems) {
         </div>`;
 }
 
+// Clerk referrals on this household (Record_Referral_Design.md §3.3).
+// "confirm": resolving the item closes it. "ask": the directory changed,
+// but not clearly as reported; a tick box chooses Confirm, unticked leaves
+// it open. "none": this change doesn't settle it.
+function renderReviewReferral(item, r) {
+    const what = `${escapeHtml(r.reference)} (${escapeHtml(referralKindLabel(r.kind))}` +
+        (r.reported_on ? `, reported ${escapeHtml(r.reported_on)}` : ', not yet reported') + ')';
+    const verb = item.match_type === 'removed' ? 'Confirm Delete' : 'Replace';
+    if (r.effect === 'confirm') {
+        return `<div class="review-ref"><span class="review-ref-confirm">✔ Matches clerk referral</span> ${what}. ${verb} confirms it.</div>`;
+    }
+    if (r.effect === 'ask') {
+        return `<div class="review-ref"><span class="review-ref-ask">? Clerk referral</span> ${what}: ${escapeHtml(r.reason)}.
+            <label><input type="checkbox" data-ref-confirm="${item.id}" value="${r.id}"> Confirm it on ${verb}</label>
+            ${r.new_address ? `<div class="ref-dim">Reported new address: ${escapeHtml(r.new_address)}</div>` : ''}</div>`;
+    }
+    return `<div class="review-ref review-ref-none">Clerk referral ${what} stays open: ${escapeHtml(r.reason)}.</div>`;
+}
+
+// The reason Delete records by default when the household has a referral
+// the deletion confirms: "Moved — clerk referral R-0012".
+function referralDeletionReason(item) {
+    const r = (item?.referrals || []).find(x => x.effect === 'confirm');
+    if (!r) return '';
+    const short = { moved_known: 'Moved', moved_unknown: 'Moved', deceased: 'Deceased',
+        contact_info: 'Contact info', remove_records: 'Records removal requested' }[r.kind] || 'Clerk referral';
+    return `${short} — clerk referral ${r.reference}`;
+}
+
 function actionBtn(id, action, label) {
     return `<button class="btn" data-item-id="${id}" data-resolve="${action}">${label}</button>`;
 }
 
 async function resolveItem(itemId, action, linkTargetId) {
+    const item = reviewItemsById.get(Number(itemId));
     let comment = null;
-    if (action === 'delete') comment = prompt('Reason for deletion (optional):') || null;
+    if (action === 'delete') {
+        const reason = prompt('Reason for deletion (optional):', referralDeletionReason(item));
+        if (reason === null) return; // Cancel: don't delete
+        comment = reason || null;
+    }
+    const confirmIds = [...document.querySelectorAll(`[data-ref-confirm="${Number(itemId)}"]:checked`)]
+        .map(el => Number(el.value));
     try {
-        await Api.resolveReviewItem(Number(itemId), action, comment, linkTargetId ?? null);
+        const confirmed = await Api.resolveReviewItem(Number(itemId), action, comment, linkTargetId ?? null, confirmIds);
+        if (confirmed && confirmed.length) {
+            showMessage(`Clerk referral${confirmed.length === 1 ? '' : 's'} ${confirmed.join(', ')} confirmed.`, CONSTANTS.MESSAGE_TYPES.INFO);
+        }
         await loadReviewQueue();
     } catch (e) {
         showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
@@ -171,8 +220,12 @@ async function commitBatch() {
     const batchId = await currentBatchId();
     if (!batchId) return;
     try {
-        await Api.commitImportBatch(batchId);
-        showMessage('Batch committed.', CONSTANTS.MESSAGE_TYPES.INFO);
+        const summary = await Api.commitImportBatch(batchId);
+        const parts = [];
+        const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+        if (summary?.referrals_confirmed) parts.push(`${plural(summary.referrals_confirmed, 'clerk referral')} confirmed`);
+        if (summary?.referrals_overdue) parts.push(`${plural(summary.referrals_overdue, 'clerk referral')} overdue (see Clerk Referrals)`);
+        showMessage(`Batch committed.${parts.length ? ' ' + parts.join(', ') + '.' : ''}`, CONSTANTS.MESSAGE_TYPES.INFO);
         window.__lastImportBatchId = null;
         await loadReviewQueue();
     } catch (e) {

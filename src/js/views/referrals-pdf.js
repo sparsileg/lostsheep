@@ -5,9 +5,9 @@
  * (docs/Record_Referral_Design.md §3.2). Built client-side like
  * directory-pdf.js; nothing is sent by the app itself.
  *
- * Stage 1 lists the new requests (status to_report) only. The
- * "follow-up" section for overdue referrals needs Stage 2's overdue
- * computation.
+ * Two sections: NEW REQUESTS (status to_report) and FOLLOW-UP, the
+ * overdue reported referrals: previously sent, still in the directory
+ * after enough imports. Either may be empty, not both.
  *
  * The contact plan, tags and household comments are never included:
  * only what the clerk needs to update the record.
@@ -29,8 +29,13 @@ const ReferralsPdf = {
         return `Learned ${r.learned_on}.` + (r.details ? ` ${r.details}` : '');
     },
 
-    download(items, unitName) {
-        if (!items || items.length === 0) return;
+    _followUpLine(r) {
+        return `First sent ${r.reported_on}.` +
+            (r.last_import_on ? ` Still listed in directory as of ${r.last_import_on}.` : '');
+    },
+
+    download(items, unitName, followUps = []) {
+        if ((!items || items.length === 0) && followUps.length === 0) return;
         const colors = this._colors();
         const now = new Date();
         const prepared = localIsoDate(now);
@@ -44,11 +49,20 @@ const ReferralsPdf = {
             },
         ];
         if (unitName) content.push({ text: unitName, fontSize: 11, color: colors.detail, margin: [0, 2, 0, 0] });
-        content.push({
-            text: `NEW REQUESTS (${items.length})`, fontSize: 11, bold: true, color: colors.heading,
-            margin: [0, 16, 0, 8],
-        });
-        items.forEach(r => content.push(this._entry(r, colors)));
+        if (items.length) {
+            content.push({
+                text: `NEW REQUESTS (${items.length})`, fontSize: 11, bold: true, color: colors.heading,
+                margin: [0, 16, 0, 8],
+            });
+            items.forEach(r => content.push(this._entry(r, colors)));
+        }
+        if (followUps.length) {
+            content.push({
+                text: `FOLLOW-UP — PREVIOUSLY SENT, NOT YET REFLECTED IN DIRECTORY (${followUps.length})`,
+                fontSize: 11, bold: true, color: colors.heading, margin: [0, 16, 0, 8],
+            });
+            followUps.forEach(r => content.push(this._entry(r, colors, this._followUpLine(r))));
+        }
 
         const docDefinition = {
             pageSize: 'LETTER',
@@ -67,7 +81,7 @@ const ReferralsPdf = {
         pdfMake.createPdf(docDefinition).download(`LostSheep-RecordUpdates-${stamp}.pdf`);
     },
 
-    _entry(r, colors) {
+    _entry(r, colors, followUpLine) {
         const right = [
             {
                 columns: [
@@ -79,6 +93,7 @@ const ReferralsPdf = {
         ];
         if (r.new_address) right.push({ text: `New address: ${r.new_address}`, fontSize: 10, color: colors.text });
         right.push({ text: this._learnedLine(r), fontSize: 9, color: colors.detail });
+        if (followUpLine) right.push({ text: followUpLine, fontSize: 9, bold: true, color: colors.detail });
         return {
             unbreakable: true,
             margin: [0, 0, 0, 12],
@@ -89,16 +104,26 @@ const ReferralsPdf = {
         };
     },
 
-    text(items, unitName) {
+    text(items, unitName, followUps = []) {
         const lines = ['Record Update Requests'];
         if (unitName) lines.push(unitName);
-        lines.push(`Prepared ${localIsoDate()}`, '', `NEW REQUESTS (${items.length})`, '');
-        items.forEach(r => {
+        lines.push(`Prepared ${localIsoDate()}`, '');
+        const entry = (r, extra) => {
             lines.push(`${r.reference}  ${r.snapshot_name} — ${r.snapshot_address || '(no address on file)'}`);
             lines.push(`        ${this._kindLine(r)}`);
             if (r.new_address) lines.push(`        New address: ${r.new_address}`);
-            lines.push(`        ${this._learnedLine(r)}`, '');
-        });
+            lines.push(`        ${this._learnedLine(r)}`);
+            if (extra) lines.push(`        ${extra}`);
+            lines.push('');
+        };
+        if (items.length) {
+            lines.push(`NEW REQUESTS (${items.length})`, '');
+            items.forEach(r => entry(r));
+        }
+        if (followUps.length) {
+            lines.push(`FOLLOW-UP — PREVIOUSLY SENT, NOT YET REFLECTED IN DIRECTORY (${followUps.length})`, '');
+            followUps.forEach(r => entry(r, this._followUpLine(r)));
+        }
         return lines.join('\n');
     },
 };

@@ -10,11 +10,15 @@
 //  - staticLabel: trigger label never changes (e.g. "+ filter by tag"),
 //    used where picking an item performs an action rather than setting
 //    a persisted single value.
-function mountDropdown(container, { items, value = '', placeholder = 'Select…', staticLabel = null, onSelect }) {
+//
+// sizeToItems: true makes the trigger as wide as the longest item label,
+// so the width doesn't jump with the selection. Without it the trigger
+// fills its container, or in a flex row shrinks to the current label.
+function mountDropdown(container, { items, value = '', placeholder = 'Select…', staticLabel = null, sizeToItems = false, onSelect }) {
     container.classList.add('astryx-dropdown');
     container.innerHTML = `
         <div class="astryx-dropdown-trigger" tabindex="0">
-            <span class="astryx-dropdown-label"></span>
+            <span class="astryx-dropdown-labels"><span class="astryx-dropdown-label"></span><span class="astryx-dropdown-sizer" aria-hidden="true"></span></span>
             <span class="astryx-dropdown-arrow">▾</span>
         </div>
         <div class="astryx-dropdown-menu"></div>
@@ -22,6 +26,7 @@ function mountDropdown(container, { items, value = '', placeholder = 'Select…'
     const trigger = container.querySelector('.astryx-dropdown-trigger');
     const label = container.querySelector('.astryx-dropdown-label');
     const menu = container.querySelector('.astryx-dropdown-menu');
+    const sizer = container.querySelector('.astryx-dropdown-sizer');
 
     function currentLabelFor(val) {
         if (staticLabel) return staticLabel;
@@ -31,6 +36,11 @@ function mountDropdown(container, { items, value = '', placeholder = 'Select…'
 
     function renderItems(list) {
         items = list;
+        // Every label stacked in one invisible grid cell (base.css), so
+        // the widest sets the trigger's width.
+        sizer.innerHTML = sizeToItems
+            ? [placeholder, ...list.map(it => it.label)].map(l => `<span>${escapeHtml(l)}</span>`).join('')
+            : '';
         menu.innerHTML = list.length
             ? list.map(it => `<div class="astryx-dropdown-item" data-value="${escapeHtml(it.value)}">${escapeHtml(it.label)}</div>`).join('')
             : `<div class="astryx-dropdown-item astryx-dropdown-empty">Nothing here yet</div>`;

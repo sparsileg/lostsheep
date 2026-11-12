@@ -21,6 +21,7 @@ async function openSettingsModal() {
             <div class="settings-row"><label>Minimum log level</label><div id="sLogLevelDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label>Households page size</label><div id="sPageSizeDropdown" class="inline-dropdown"></div></div>
             <div class="settings-row"><label for="sVisitSize">Default visit-list size</label><input type="number" id="sVisitSize" min="1"></div>
+            <div class="settings-row"><label title="A reported clerk referral is overdue once this many finished imports after it was sent still show the household">Clerk referral overdue after</label><div id="sOverdueDropdown" class="inline-dropdown"></div></div>
             <hr class="settings-separator">
 
             <label>Backup folder</label>
@@ -96,6 +97,11 @@ async function openSettingsModal() {
             items: ['error', 'warning', 'info', 'debug'].map(l => ({ value: l, label: l })),
             value: settings.logLevel || 'info',
             onSelect: (val) => { pending.logLevel = val; },
+        });
+        mountDropdown(document.getElementById('sOverdueDropdown'), {
+            items: ['1', '2', '3', '4', '6', '8'].map(n => ({ value: n, label: `${n} import${n === '1' ? '' : 's'}` })),
+            value: settings.referralOverdueImports || '2',
+            onSelect: (val) => { pending.referralOverdueImports = val; },
         });
         mountDropdown(document.getElementById('sPageSizeDropdown'), {
             items: ['10', '25', '100', '500'].map(n => ({ value: n, label: n })),

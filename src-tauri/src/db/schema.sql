@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS households (
     has_minors    INTEGER NOT NULL DEFAULT 0,  -- true if the source flagged unparsed minor-children
                                                  -- lines for this entry; names are NEVER stored, only this flag
     comments      TEXT,              -- household-level comments (distinct from visit comments) — free-text
+    -- How often we intend to reach out (Visit_Reporting_Design.md §2.3):
+    -- our commitment, not a judgment about the household. NULL = no plan.
+    -- Added to existing databases by db/mod.rs::migrate_stage2.
+    contact_plan  TEXT CHECK (contact_plan IS NULL OR contact_plan IN ('monthly','quarterly','as_needed')),
                                        -- notes only now, never auto-populated by the parser
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -118,6 +122,7 @@ CREATE TABLE IF NOT EXISTS deleted_households (
     source_key       TEXT NOT NULL,
     has_minors       INTEGER NOT NULL DEFAULT 0,
     comments         TEXT,
+    contact_plan     TEXT,
     deletion_reason  TEXT,
     deleted_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -168,6 +173,16 @@ CREATE TABLE IF NOT EXISTS visits (
     household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
     visit_date   TEXT NOT NULL,     -- ISO date
     comments     TEXT,
+    -- Visit_Reporting_Design.md §2.1. Only outcome 'contacted' with method
+    -- 'visit' or 'phone' counts as contact. A card's outcome is always
+    -- 'sent'. Added to existing databases by db/mod.rs::migrate_stage2;
+    -- rows from before then defaulted to visit/contacted (the migration
+    -- time is in schema_meta 'visit_outcome_migrated_at').
+    outcome      TEXT NOT NULL DEFAULT 'contacted'
+                 CHECK (outcome IN ('contacted','no_answer','not_home','refused','moved',
+                                    'deceased','sent','other')),
+    method       TEXT NOT NULL DEFAULT 'visit' CHECK (method IN ('visit','phone','card')),
+    invited      INTEGER NOT NULL DEFAULT 0,   -- an invitation was extended
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_visits_household ON visits(household_id);
@@ -188,6 +203,9 @@ CREATE TABLE IF NOT EXISTS deleted_visits (
     visit_uid             TEXT,
     visit_date            TEXT NOT NULL,
     comments              TEXT,
+    outcome               TEXT NOT NULL DEFAULT 'contacted',
+    method                TEXT NOT NULL DEFAULT 'visit',
+    invited               INTEGER NOT NULL DEFAULT 0,
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deleted_visits_household ON deleted_visits(deleted_household_id);
@@ -279,6 +297,10 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('lastBackupAt', ''),
     ('lastDbChangeAt', '');
 
+-- Clerk referrals Stage 2: a reported referral is overdue once this many
+-- completed imports after its reported date still show the household.
+INSERT OR IGNORE INTO settings (key, value) VALUES ('referralOverdueImports', '2');
+
 -- Offline map-tile caching was dropped (issue #3) — this runs on every
 -- startup, not just a fresh DB, so it also cleans up an existing
 -- install's leftover table/setting from before the removal. Must come
@@ -324,6 +346,10 @@ CREATE TABLE IF NOT EXISTS referrals (
     reported_on      TEXT,           -- ISO date it was sent to the clerk
     resolved_on      TEXT,           -- ISO date confirmed or cancelled
     resolution_note  TEXT,
+    -- The import batch whose Review Updates resolution confirmed it, for
+    -- the post-import summary. NULL when closed by hand. Added to existing
+    -- databases by db/mod.rs::migrate_stage2.
+    import_batch_id  INTEGER,
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_referrals_household_uid ON referrals(household_uid);

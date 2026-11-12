@@ -30,3 +30,18 @@
 .hh-referrals .ref-closed { opacity: 0.7; }
 .hh-referrals .btn { margin-top: 6px; }
 .ref-modal .ref-dropdown { margin-top: 4px; }
+
+/* Stage 2: overdue and follow-ups */
+.ref-followups { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ref-num { white-space: nowrap; }
+.ref-overdue { font-weight: 700; color: var(--warning-color); }
+.ref-modal label.vk-invited { font-weight: normal; }
+.ref-modal .vk-invited input { display: inline; width: auto; margin: 0 6px 0 0; }
+
+/* Review Updates: open referrals on an item (review-view.js) */
+.review-referrals { margin-top: 6px; }
+.review-ref { margin: 2px 0; }
+.review-ref-confirm { color: var(--success-color); font-weight: 600; }
+.review-ref-ask { color: var(--warning-color); font-weight: 600; }
+.review-ref-none { color: var(--color-text-muted); }
+.review-ref label { font-weight: normal; margin-left: 6px; }

@@ -1,6 +1,6 @@
 // core.js — app boot, view router, tiny shared utilities.
 const CONSTANTS = {
-    APP_VERSION: '1.4.0',
+    APP_VERSION: '1.5.0',
     VIEWS: ['import', 'review', 'households', 'visits-report', 'referrals', 'household', 'deleted-records', 'map', 'logs'],
     MESSAGE_TYPES: { INFO: 'info', ERROR: 'error', WARNING: 'warning' },
 };

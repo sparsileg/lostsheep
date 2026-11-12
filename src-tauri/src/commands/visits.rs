@@ -17,27 +17,103 @@ fn parse_iso_date(s: &str) -> Result<chrono::NaiveDate, String> {
         .map_err(|_| format!("'{s}' is not a valid date — use YYYY-MM-DD (e.g. 2026-03-05)"))
 }
 
+pub const OUTCOMES: [&str; 8] = [
+    "contacted",
+    "no_answer",
+    "not_home",
+    "refused",
+    "moved",
+    "deceased",
+    "sent",
+    "other",
+];
+pub const METHODS: [&str; 3] = ["visit", "phone", "card"];
+
+/// How a visit was made and what came of it (Visit_Reporting_Design.md
+/// §2.1). Missing values default to a contacted visit, the only thing the
+/// app could record before 1.5.0.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisitKind {
+    pub method: String,
+    pub outcome: String,
+    pub invited: bool,
+}
+
+impl VisitKind {
+    /// Validates the pair. A card's outcome is always "sent" (whatever was
+    /// passed), and "sent" belongs only to cards.
+    pub fn new(
+        method: Option<String>,
+        outcome: Option<String>,
+        invited: Option<bool>,
+    ) -> Result<Self, String> {
+        let method = method.unwrap_or_else(|| "visit".into());
+        if !METHODS.contains(&method.as_str()) {
+            return Err(format!("unknown visit method '{method}'"));
+        }
+        let outcome = if method == "card" {
+            "sent".to_string()
+        } else {
+            let o = outcome.unwrap_or_else(|| "contacted".into());
+            if !OUTCOMES.contains(&o.as_str()) {
+                return Err(format!("unknown visit outcome '{o}'"));
+            }
+            if o == "sent" {
+                return Err("'sent' is only for cards".to_string());
+            }
+            o
+        };
+        Ok(VisitKind {
+            method,
+            outcome,
+            invited: invited.unwrap_or(false),
+        })
+    }
+
+    /// The settled rule: only a contacted visit or call counts as contact
+    /// and resets the contact-plan clock.
+    pub fn is_contact(&self) -> bool {
+        self.outcome == "contacted" && (self.method == "visit" || self.method == "phone")
+    }
+}
+
+/// What record_visit hands back: the frontend needs visit_uid to link a
+/// clerk referral to the visit that surfaced it.
+#[derive(Serialize, Debug)]
+pub struct RecordedVisit {
+    pub id: i64,
+    pub visit_uid: String,
+    pub is_contact: bool,
+}
+
 #[tauri::command]
 pub fn record_visit(
     state: State<AppState>,
     household_id: i64,
     visit_date: String,
     comments: Option<String>,
-) -> Result<i64, String> {
+    method: Option<String>,
+    outcome: Option<String>,
+    invited: Option<bool>,
+) -> Result<RecordedVisit, String> {
     let parsed = parse_iso_date(&visit_date)?;
     // Store the canonical zero-padded form chrono formats back out, not
     // whatever the caller sent — this is the backend, load-bearing check
     // (the frontend's is a convenience, not a control, per the issue).
     let normalized = parsed.format("%Y-%m-%d").to_string();
+    let kind = VisitKind::new(method, outcome, invited)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let visit_id = insert_visit(&conn, household_id, &normalized, comments.as_deref())?;
+    let recorded = insert_visit(&conn, household_id, &normalized, comments.as_deref(), &kind)?;
     super::logs::log(
         &conn,
         "info",
-        &format!("visit recorded for household {household_id} on {normalized}"),
+        &format!(
+            "visit recorded for household {household_id} on {normalized} ({}, {})",
+            kind.method, kind.outcome
+        ),
         None,
     );
-    Ok(visit_id)
+    Ok(recorded)
 }
 
 /// Inserts one visit with a freshly minted visit_uid (#69/#70). Before this
@@ -52,13 +128,28 @@ fn insert_visit(
     household_id: i64,
     visit_date: &str,
     comments: Option<&str>,
-) -> Result<i64, String> {
+    kind: &VisitKind,
+) -> Result<RecordedVisit, String> {
+    let visit_uid = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO visits (visit_uid, household_id, visit_date, comments) VALUES (?1, ?2, ?3, ?4)",
-        params![uuid::Uuid::new_v4().to_string(), household_id, visit_date, comments],
+        "INSERT INTO visits (visit_uid, household_id, visit_date, comments, outcome, method, invited) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            visit_uid,
+            household_id,
+            visit_date,
+            comments,
+            kind.outcome,
+            kind.method,
+            kind.invited
+        ],
     )
     .map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    Ok(RecordedVisit {
+        id: conn.last_insert_rowid(),
+        visit_uid,
+        is_contact: kind.is_contact(),
+    })
 }
 
 #[derive(Serialize)]
@@ -68,6 +159,9 @@ pub struct VisitRecord {
     pub household_name: String,
     pub visit_date: String,
     pub comments: Option<String>,
+    pub method: String,
+    pub outcome: String,
+    pub invited: bool,
 }
 
 #[tauri::command]
@@ -88,7 +182,7 @@ pub fn get_visits_report(
         .prepare(
             "SELECT v.id, v.household_id, \
              h.first_name || ' ' || h.last_name || coalesce(' & ' || h.first_name_2 || ' ' || h.last_name_2, ''), \
-             v.visit_date, v.comments \
+             v.visit_date, v.comments, v.method, v.outcome, v.invited \
              FROM visits v JOIN households h ON h.id = v.household_id \
              WHERE v.visit_date BETWEEN ?1 AND ?2 ORDER BY v.visit_date DESC",
         )
@@ -101,6 +195,9 @@ pub fn get_visits_report(
                 household_name: row.get(2)?,
                 visit_date: row.get(3)?,
                 comments: row.get(4)?,
+                method: row.get(5)?,
+                outcome: row.get(6)?,
+                invited: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -115,8 +212,12 @@ pub fn get_visits_report(
 #[derive(Serialize)]
 pub struct HouseholdVisit {
     pub id: i64,
+    pub visit_uid: String,
     pub visit_date: String,
     pub comments: Option<String>,
+    pub method: String,
+    pub outcome: String,
+    pub invited: bool,
 }
 
 #[tauri::command]
@@ -126,14 +227,21 @@ pub fn get_household_visits(
 ) -> Result<Vec<HouseholdVisit>, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, visit_date, comments FROM visits WHERE household_id = ?1 ORDER BY visit_date DESC, id DESC")
+        .prepare(
+            "SELECT id, visit_uid, visit_date, comments, method, outcome, invited FROM visits \
+             WHERE household_id = ?1 ORDER BY visit_date DESC, id DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![household_id], |row| {
             Ok(HouseholdVisit {
                 id: row.get(0)?,
-                visit_date: row.get(1)?,
-                comments: row.get(2)?,
+                visit_uid: row.get(1)?,
+                visit_date: row.get(2)?,
+                comments: row.get(3)?,
+                method: row.get(4)?,
+                outcome: row.get(5)?,
+                invited: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -142,13 +250,16 @@ pub fn get_household_visits(
     Ok(rows)
 }
 
-// ── Needs Attention report (Visit_Reporting_Design.md §3.1, Stage 1) ──────
+// ── Needs Attention report (Visit_Reporting_Design.md §3.1) ──────────────
 //
 // Household-anchored, not visit-anchored: one row per household, LEFT JOIN
 // to visits so a household with zero visits appears (as "never") instead of
 // vanishing the way it does from get_visits_report's inner join (G2).
-// Stage 1 runs against the existing schema — no outcome column yet, so
-// every visit counts toward recency.
+//
+// Stage 2: recency is measured from the last *contact* (outcome contacted,
+// by visit or phone) unless the caller asks to count attempts, in which
+// case any recorded visit, call or card counts. The contact plan's due
+// marker always uses the last contact.
 
 #[derive(Serialize, Debug)]
 pub struct NeedsAttentionRow {
@@ -166,9 +277,24 @@ pub struct NeedsAttentionRow {
     /// generate_visit_list would fall back to (0,0) for it.
     pub has_coords: bool,
     pub tags: Vec<String>,
+    /// The date recency is measured from: the last contact, or with
+    /// count_attempts the last recorded visit of any kind. None = never.
     pub last_visit_date: Option<String>,
     pub days_since: Option<i64>,
+    /// Every recorded visit, call and card.
     pub visit_count: i64,
+    pub last_contact_date: Option<String>,
+    /// Outcome and method of the most recent row, whatever it was.
+    pub last_outcome: Option<String>,
+    pub last_method: Option<String>,
+    /// Visits and calls since the last contact (or ever, with no contact)
+    /// that did not reach anyone. Cards are not attempts.
+    pub attempts: i64,
+    pub contact_plan: Option<String>,
+    /// Past the plan's interval since the last contact (or never contacted).
+    pub plan_due: bool,
+    /// No date to measure recency from under the current mode.
+    pub never: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -186,6 +312,28 @@ pub struct NeedsAttentionResult {
 /// than a comma: tag names are free text and may contain commas.
 const TAG_SEP: char = '\u{1f}';
 
+/// Days after the last contact at which a plan comes due (§2.3).
+/// `as_needed` never comes due, for now.
+pub fn plan_interval_days(plan: &str) -> Option<i64> {
+    match plan {
+        "monthly" => Some(30),
+        "quarterly" => Some(91),
+        _ => None,
+    }
+}
+
+/// SQL for "this visits row counts as contact", for a visits alias.
+fn contact_sql(alias: &str) -> String {
+    format!("({alias}.outcome = 'contacted' AND {alias}.method IN ('visit','phone'))")
+}
+
+/// Dates are stored zero-padded YYYY-MM-DD (record_visit / update_visit
+/// normalize them, #35). An unparseable legacy value gives None.
+fn days_between(date: Option<&str>, today: chrono::NaiveDate) -> Option<i64> {
+    date.and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .map(|d| (today - d).num_days())
+}
+
 /// The query behind get_needs_attention, split out so it can be tested
 /// against a plain connection with a fixed `today`.
 ///
@@ -196,35 +344,61 @@ pub fn needs_attention_query(
     conn: &rusqlite::Connection,
     tag_id: Option<i64>,
     threshold_days: Option<i64>,
+    count_attempts: bool,
     today: chrono::NaiveDate,
 ) -> Result<NeedsAttentionResult, String> {
     let sql = format!(
-        "SELECT h.id, h.first_name, h.last_name, h.first_name_2, h.last_name_2, \
+        "WITH s AS ( \
+            SELECT household_id, MAX(visit_date) AS last_any, \
+                   MAX(CASE WHEN {contact_v} THEN visit_date END) AS last_contact, \
+                   COUNT(*) AS n \
+            FROM visits v GROUP BY household_id) \
+         SELECT h.id, h.first_name, h.last_name, h.first_name_2, h.last_name_2, \
                 h.address_line1, h.city, h.address_key, \
                 (h.latitude IS NOT NULL AND h.longitude IS NOT NULL), \
                 (SELECT group_concat(t.name, char({sep})) FROM household_tags ht \
                    JOIN tags t ON t.id = ht.tag_id WHERE ht.household_id = h.id), \
-                MAX(v.visit_date), COUNT(v.id) \
-         FROM households h LEFT JOIN visits v ON v.household_id = h.id \
+                s.last_any, s.last_contact, coalesce(s.n, 0), \
+                (SELECT outcome FROM visits l WHERE l.household_id = h.id \
+                   ORDER BY l.visit_date DESC, l.id DESC LIMIT 1), \
+                (SELECT method FROM visits l WHERE l.household_id = h.id \
+                   ORDER BY l.visit_date DESC, l.id DESC LIMIT 1), \
+                (SELECT count(*) FROM visits a WHERE a.household_id = h.id \
+                   AND a.method IN ('visit','phone') AND NOT {contact_a} \
+                   AND (s.last_contact IS NULL OR a.visit_date > s.last_contact)), \
+                h.contact_plan \
+         FROM households h LEFT JOIN s ON s.household_id = h.id \
          WHERE h.id NOT IN (SELECT ht2.household_id FROM household_tags ht2 \
                             JOIN tags t2 ON t2.id = ht2.tag_id WHERE t2.system_key = 'do_not_contact') \
-           AND (?1 IS NULL OR h.id IN (SELECT household_id FROM household_tags WHERE tag_id = ?1)) \
-         GROUP BY h.id",
+           AND (?1 IS NULL OR h.id IN (SELECT household_id FROM household_tags WHERE tag_id = ?1))",
+        contact_v = contact_sql("v"),
+        contact_a = contact_sql("a"),
         sep = TAG_SEP as u32
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let all: Vec<NeedsAttentionRow> = stmt
         .query_map(params![tag_id], |r| {
-            let last_visit_date: Option<String> = r.get(10)?;
-            // Dates are stored zero-padded YYYY-MM-DD (record_visit /
-            // update_visit normalize them, #35). An unparseable legacy
-            // value is treated as "unknown recency" rather than failing
-            // the whole report: days_since stays None but the household
-            // is NOT counted as never-visited, since it has visits.
-            let days_since = last_visit_date
+            let last_any: Option<String> = r.get(10)?;
+            let last_contact_date: Option<String> = r.get(11)?;
+            let last_visit_date = if count_attempts {
+                last_any
+            } else {
+                last_contact_date.clone()
+            };
+            // An unparseable legacy date is "unknown recency" rather than
+            // a failure of the whole report: days_since stays None but the
+            // household is not counted as never-visited.
+            let days_since = days_between(last_visit_date.as_deref(), today);
+            let contact_plan: Option<String> = r.get(16)?;
+            let plan_due = contact_plan
                 .as_deref()
-                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-                .map(|d| (today - d).num_days());
+                .and_then(plan_interval_days)
+                .is_some_and(
+                    |interval| match days_between(last_contact_date.as_deref(), today) {
+                        Some(d) => d > interval,
+                        None => last_contact_date.is_none(),
+                    },
+                );
             let mut tags: Vec<String> = r
                 .get::<_, Option<String>>(9)?
                 .map(|s| s.split(TAG_SEP).map(str::to_string).collect())
@@ -241,9 +415,16 @@ pub fn needs_attention_query(
                 address_key: r.get(7)?,
                 has_coords: r.get(8)?,
                 tags,
+                never: last_visit_date.is_none(),
                 last_visit_date,
                 days_since,
-                visit_count: r.get(11)?,
+                visit_count: r.get(12)?,
+                last_contact_date,
+                last_outcome: r.get(13)?,
+                last_method: r.get(14)?,
+                attempts: r.get(15)?,
+                contact_plan,
+                plan_due,
             })
         })
         .map_err(|e| e.to_string())?
@@ -251,12 +432,12 @@ pub fn needs_attention_query(
         .map_err(|e| e.to_string())?;
 
     let total_eligible = all.len() as i64;
-    let never_count = all.iter().filter(|r| r.visit_count == 0).count() as i64;
+    let never_count = all.iter().filter(|r| r.never).count() as i64;
     let rows = all
         .into_iter()
         .filter(|r| match threshold_days {
             None => true,
-            Some(n) => r.visit_count == 0 || r.days_since.is_some_and(|d| d > n),
+            Some(n) => r.never || r.days_since.is_some_and(|d| d > n),
         })
         .collect();
 
@@ -273,6 +454,7 @@ pub fn get_needs_attention(
     state: State<AppState>,
     tag_id: Option<i64>,
     threshold_days: Option<i64>,
+    count_attempts: Option<bool>,
 ) -> Result<NeedsAttentionResult, String> {
     if let Some(n) = threshold_days {
         if n < 0 {
@@ -286,6 +468,7 @@ pub fn get_needs_attention(
         &conn,
         tag_id,
         threshold_days,
+        count_attempts.unwrap_or(false),
         chrono::Local::now().date_naive(),
     )
 }
@@ -297,19 +480,25 @@ pub fn get_needs_attention(
 /// can't be corrupted by a non-zero-padded-but-real date sneaking in via
 /// an edit instead of a fresh record_visit call.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn update_visit(
     state: State<AppState>,
     visit_id: i64,
     visit_date: String,
     comments: Option<String>,
+    method: Option<String>,
+    outcome: Option<String>,
+    invited: Option<bool>,
 ) -> Result<(), String> {
     let parsed = parse_iso_date(&visit_date)?;
     let normalized = parsed.format("%Y-%m-%d").to_string();
+    let kind = VisitKind::new(method, outcome, invited)?;
     let conn = state.pool.get().map_err(|e| e.to_string())?;
     let rows = conn
         .execute(
-            "UPDATE visits SET visit_date = ?1, comments = ?2 WHERE id = ?3",
-            params![normalized, comments, visit_id],
+            "UPDATE visits SET visit_date = ?1, comments = ?2, method = ?3, outcome = ?4, invited = ?5 \
+             WHERE id = ?6",
+            params![normalized, comments, kind.method, kind.outcome, kind.invited, visit_id],
         )
         .map_err(|e| e.to_string())?;
     if rows == 0 {
@@ -1550,7 +1739,7 @@ mod needs_attention_tests {
         visit(&c, recent, "2026-10-01"); // 41 days
         visit(&c, recent, "2025-01-01"); // older visit must not matter — MAX wins
 
-        let r = needs_attention_query(&c, None, Some(90), today()).unwrap();
+        let r = needs_attention_query(&c, None, Some(90), false, today()).unwrap();
         assert_eq!(ids(&r), vec![never, stale]);
         assert_eq!(r.total_eligible, 3);
         assert_eq!(r.never_count, 1);
@@ -1567,9 +1756,9 @@ mod needs_attention_tests {
         let c = conn();
         let exactly = household(&c, "Ed", "Exactly", true);
         visit(&c, exactly, "2026-08-13"); // exactly 90 days before 2026-11-11
-        let r = needs_attention_query(&c, None, Some(90), today()).unwrap();
+        let r = needs_attention_query(&c, None, Some(90), false, today()).unwrap();
         assert!(r.rows.is_empty());
-        let r = needs_attention_query(&c, None, Some(89), today()).unwrap();
+        let r = needs_attention_query(&c, None, Some(89), false, today()).unwrap();
         assert_eq!(ids(&r), vec![exactly]);
     }
 
@@ -1579,7 +1768,7 @@ mod needs_attention_tests {
         let a = household(&c, "A", "One", true);
         let b = household(&c, "B", "Two", false);
         visit(&c, a, "2026-11-10");
-        let r = needs_attention_query(&c, None, None, today()).unwrap();
+        let r = needs_attention_query(&c, None, None, false, today()).unwrap();
         assert_eq!(ids(&r), vec![a, b]);
         assert!(
             !r.rows
@@ -1596,7 +1785,7 @@ mod needs_attention_tests {
         let dnc = household(&c, "Dee", "Nocontact", true);
         tag(&c, dnc, "do not contact");
         let ok = household(&c, "Ok", "Person", true);
-        let r = needs_attention_query(&c, None, Some(90), today()).unwrap();
+        let r = needs_attention_query(&c, None, Some(90), false, today()).unwrap();
         assert_eq!(ids(&r), vec![ok]);
         assert_eq!(r.total_eligible, 1);
     }
@@ -1608,7 +1797,7 @@ mod needs_attention_tests {
         let not_known = household(&c, "Nate", "Notknown", true);
         tag(&c, known, "known");
         let nk_tag = tag(&c, not_known, "not known");
-        let r = needs_attention_query(&c, Some(nk_tag), Some(90), today()).unwrap();
+        let r = needs_attention_query(&c, Some(nk_tag), Some(90), false, today()).unwrap();
         assert_eq!(ids(&r), vec![not_known]);
         assert_eq!(r.total_eligible, 1);
         assert_eq!(r.rows[0].tags, vec!["Not known".to_string()]);
@@ -1620,8 +1809,11 @@ mod needs_attention_tests {
     fn insert_visit_mints_uid_on_fresh_schema() {
         let c = conn();
         let hh = household(&c, "Re", "Cord", true);
-        let a = insert_visit(&c, hh, "2026-11-11", Some("first")).unwrap();
-        let b = insert_visit(&c, hh, "2026-11-11", None).unwrap();
+        let k = VisitKind::new(None, None, None).unwrap();
+        let a = insert_visit(&c, hh, "2026-11-11", Some("first"), &k)
+            .unwrap()
+            .id;
+        let b = insert_visit(&c, hh, "2026-11-11", None, &k).unwrap().id;
         let uid = |id: i64| -> String {
             c.query_row(
                 "SELECT visit_uid FROM visits WHERE id = ?1",
@@ -1634,12 +1826,114 @@ mod needs_attention_tests {
         assert_ne!(uid(a), uid(b));
     }
 
+    fn visit_kind(c: &Connection, hh: i64, date: &str, method: &str, outcome: &str) {
+        let k = VisitKind::new(Some(method.into()), Some(outcome.into()), None).unwrap();
+        insert_visit(c, hh, date, None, &k).unwrap();
+    }
+
+    fn row(r: &NeedsAttentionResult, hh: i64) -> &NeedsAttentionRow {
+        r.rows.iter().find(|x| x.household_id == hh).unwrap()
+    }
+
+    #[test]
+    fn visit_kind_rules() {
+        let d = VisitKind::new(None, None, None).unwrap();
+        assert_eq!(
+            (d.method.as_str(), d.outcome.as_str(), d.invited),
+            ("visit", "contacted", false)
+        );
+        assert!(d.is_contact());
+        // A card is always "sent", and never contact.
+        let card =
+            VisitKind::new(Some("card".into()), Some("contacted".into()), Some(true)).unwrap();
+        assert_eq!(card.outcome, "sent");
+        assert!(!card.is_contact());
+        assert!(VisitKind::new(Some("visit".into()), Some("sent".into()), None).is_err());
+        assert!(VisitKind::new(Some("email".into()), None, None).is_err());
+        assert!(VisitKind::new(None, Some("maybe".into()), None).is_err());
+        assert!(VisitKind::new(Some("phone".into()), None, None)
+            .unwrap()
+            .is_contact());
+        assert!(!VisitKind::new(None, Some("not_home".into()), None)
+            .unwrap()
+            .is_contact());
+    }
+
+    #[test]
+    fn attempts_do_not_count_as_contact_unless_asked() {
+        let c = conn();
+        let h = household(&c, "At", "Tempt", true);
+        visit_kind(&c, h, "2026-01-01", "visit", "contacted");
+        visit_kind(&c, h, "2026-10-01", "visit", "not_home");
+        visit_kind(&c, h, "2026-11-01", "phone", "no_answer");
+        visit_kind(&c, h, "2026-11-05", "card", "sent");
+
+        let r = needs_attention_query(&c, None, Some(90), false, today()).unwrap();
+        let x = row(&r, h);
+        assert_eq!(x.last_visit_date.as_deref(), Some("2026-01-01"));
+        assert_eq!(x.last_contact_date.as_deref(), Some("2026-01-01"));
+        assert_eq!(x.attempts, 2, "the card is not an attempt");
+        assert_eq!(x.visit_count, 4);
+        assert_eq!(x.last_outcome.as_deref(), Some("sent"));
+        assert_eq!(x.last_method.as_deref(), Some("card"));
+        assert!(!x.never);
+
+        // Counting attempts, the card six days ago makes it current.
+        let r = needs_attention_query(&c, None, Some(90), true, today()).unwrap();
+        assert!(r.rows.is_empty());
+    }
+
+    #[test]
+    fn only_attempts_is_never_contacted() {
+        let c = conn();
+        let h = household(&c, "No", "Answer", true);
+        visit_kind(&c, h, "2026-11-01", "visit", "no_answer");
+        visit_kind(&c, h, "2026-11-02", "visit", "not_home");
+        let r = needs_attention_query(&c, None, Some(30), false, today()).unwrap();
+        let x = row(&r, h);
+        assert!(x.never);
+        assert_eq!(x.attempts, 2);
+        assert_eq!(r.never_count, 1);
+        let r = needs_attention_query(&c, None, Some(30), true, today()).unwrap();
+        assert!(r.rows.is_empty());
+        assert_eq!(r.never_count, 0);
+    }
+
+    #[test]
+    fn plan_due_uses_last_contact() {
+        let c = conn();
+        let monthly = household(&c, "Mon", "Thly", true);
+        let quarterly = household(&c, "Quar", "Terly", true);
+        let never = household(&c, "Nev", "Er", true);
+        let as_needed = household(&c, "As", "Needed", true);
+        let plan = |hh: i64, p: &str| {
+            c.execute(
+                "UPDATE households SET contact_plan = ?1 WHERE id = ?2",
+                params![p, hh],
+            )
+            .unwrap();
+        };
+        plan(monthly, "monthly");
+        plan(quarterly, "quarterly");
+        plan(never, "monthly");
+        plan(as_needed, "as_needed");
+        visit_kind(&c, monthly, "2026-10-01", "visit", "contacted"); // 41 days
+        visit_kind(&c, monthly, "2026-11-10", "visit", "not_home");
+        visit_kind(&c, quarterly, "2026-10-01", "phone", "contacted"); // 41 days
+        let r = needs_attention_query(&c, None, None, false, today()).unwrap();
+        assert!(row(&r, monthly).plan_due);
+        assert!(!row(&r, quarterly).plan_due);
+        assert!(row(&r, never).plan_due);
+        assert!(!row(&r, as_needed).plan_due);
+        assert_eq!(row(&r, monthly).contact_plan.as_deref(), Some("monthly"));
+    }
+
     #[test]
     fn future_dated_visit_counts_as_current() {
         let c = conn();
         let f = household(&c, "Fu", "Ture", true);
         visit(&c, f, "2026-12-01");
-        let r = needs_attention_query(&c, None, Some(30), today()).unwrap();
+        let r = needs_attention_query(&c, None, Some(30), false, today()).unwrap();
         assert!(r.rows.is_empty());
     }
 }

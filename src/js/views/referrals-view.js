@@ -1,4 +1,4 @@
-// ── Clerk Referrals (docs/Record_Referral_Design.md, Stage 1) ──────────────
+// ── Clerk Referrals (docs/Record_Referral_Design.md) ───────────────────────
 // A referral is a record change the ward clerk has to make: a move, a
 // death, wrong contact info, a removal request. This file holds the
 // Clerk Referrals view (to report / awaiting clerk / closed), and the
@@ -6,8 +6,11 @@
 // map popup open. The PDF and Copy Text for the clerk are in
 // referrals-pdf.js.
 //
-// Stage 1 closes referrals by hand (Confirm / Cancel). Import-driven
-// confirmation and the Overdue tab come in Stage 2.
+// Referrals close by hand (Confirm / Cancel) or, since Stage 2, through
+// Review Updates when an import shows the change (review-view.js). A
+// reported referral still in the directory after enough imports is
+// overdue (computed by the backend) and can go back to the clerk as a
+// follow-up in the next export.
 
 const REFERRAL_KINDS = [
     { value: 'moved_known', label: 'Moved — new address known' },
@@ -38,6 +41,8 @@ function referralIsOpen(r) {
 //   marker that groups several directory entries at one address; the
 //   user picks which one.
 // opts.referral: an existing referral to edit instead of creating one.
+// opts.kind / learnedOn / details / visitUid: pre-fill a new referral,
+//   e.g. from a visit recorded as Moved or Deceased (visitUid links it).
 // Resolves to the saved referral, or null if the user cancelled.
 function openReferralModal(opts) {
     return new Promise((resolve) => {
@@ -61,8 +66,8 @@ function openReferralModal(opts) {
                 ${whoHtml}
                 <label>What the clerk needs to do</label><div id="refKind" class="ref-dropdown"></div>
                 <label id="refNewAddressLabel">New address <input type="text" id="refNewAddress" value="${escapeHtml(editing?.new_address || '')}" placeholder="Street, city, state, zip"></label>
-                <label>Details <textarea id="refDetails" rows="3" placeholder="How you learned it, dates, who told you">${escapeHtml(editing?.details || '')}</textarea></label>
-                <label>Learned on (YYYY-MM-DD) <input type="text" id="refLearnedOn" value="${escapeHtml(editing?.learned_on || localIsoDate())}"></label>
+                <label>Details <textarea id="refDetails" rows="3" placeholder="How you learned it, dates, who told you">${escapeHtml(editing?.details ?? opts.details ?? '')}</textarea></label>
+                <label>Learned on (YYYY-MM-DD) <input type="text" id="refLearnedOn" value="${escapeHtml(editing?.learned_on || opts.learnedOn || localIsoDate())}"></label>
                 <div class="modal-buttons">
                     <button class="btn btn-primary" id="refSave">${editing ? 'Save' : 'Add referral'}</button>
                     <button class="btn" id="refCancel">Cancel</button>
@@ -73,7 +78,7 @@ function openReferralModal(opts) {
         // Themed dropdowns (dropdown.js), not native <select>: WebKitGTK
         // draws a native select's list and selected value with its own
         // colours, unreadable in the dark themes.
-        let kind = editing ? editing.kind : REFERRAL_KINDS[0].value;
+        let kind = editing ? editing.kind : (opts.kind || REFERRAL_KINDS[0].value);
         const syncNewAddress = () => {
             overlay.querySelector('#refNewAddressLabel').style.display = kind === 'moved_known' ? '' : 'none';
         };
@@ -120,7 +125,7 @@ function openReferralModal(opts) {
                         'Add anyway');
                     if (!go) return;
                 }
-                const saved = await Api.createReferral(householdId, kind, details, newAddress, learnedOn);
+                const saved = await Api.createReferral(householdId, kind, details, newAddress, learnedOn, opts.visitUid);
                 showMessage(`Clerk referral ${saved.reference} added.`, CONSTANTS.MESSAGE_TYPES.INFO);
                 finish(saved);
             } catch (e) {
@@ -183,7 +188,8 @@ const refState = { tab: 'to_report', all: [] };
 
 const REFERRAL_TABS = [
     { key: 'to_report', label: 'To report', match: r => r.status === 'to_report' },
-    { key: 'reported', label: 'Awaiting clerk', match: r => r.status === 'reported' },
+    { key: 'reported', label: 'Awaiting clerk', match: r => r.status === 'reported' && !r.overdue },
+    { key: 'overdue', label: 'Overdue', match: r => r.status === 'reported' && r.overdue },
     { key: 'closed', label: 'Closed', match: r => !referralIsOpen(r) },
 ];
 
@@ -196,6 +202,7 @@ registerView('referrals', {
                     ${REFERRAL_TABS.map(t => `<button type="button" class="rp-tab" role="tab" data-ref-tab="${t.key}">${t.label} <span data-ref-count="${t.key}"></span></button>`).join('')}
                 </div>
                 <div class="ref-export">
+                    <label class="ref-followups" id="refFollowupsLabel" title="Overdue referrals: sent before, still in the directory"><input type="checkbox" id="refFollowups" checked> Include follow-ups <span id="refFollowupsCount"></span></label>
                     <button class="btn btn-primary" id="refExportPdfBtn">Export for Clerk</button>
                     <button class="btn" id="refCopyTextBtn">⎘ Copy Text</button>
                 </div>
@@ -210,6 +217,7 @@ registerView('referrals', {
             btn.addEventListener('click', () => { refState.tab = btn.dataset.refTab; renderReferrals(); }));
         document.getElementById('refExportPdfBtn').addEventListener('click', () => exportForClerk('pdf'));
         document.getElementById('refCopyTextBtn').addEventListener('click', () => exportForClerk('text'));
+        document.getElementById('refFollowups').addEventListener('change', renderReferrals);
     },
     async onShow() {
         await loadReferrals();
@@ -229,12 +237,18 @@ function renderReferrals() {
         document.querySelector(`[data-ref-tab="${t.key}"]`).classList.toggle('active', t.key === refState.tab);
     });
     const toReport = refState.all.filter(r => r.status === 'to_report').length;
-    document.getElementById('refExportPdfBtn').disabled = toReport === 0;
-    document.getElementById('refCopyTextBtn').disabled = toReport === 0;
+    const overdue = refState.all.filter(r => r.status === 'reported' && r.overdue).length;
+    document.getElementById('refFollowupsLabel').style.display = overdue ? '' : 'none';
+    document.getElementById('refFollowupsCount').textContent = `(${overdue})`;
+    const includeFollowups = overdue > 0 && document.getElementById('refFollowups').checked;
+    const nothing = toReport === 0 && !includeFollowups;
+    document.getElementById('refExportPdfBtn').disabled = nothing;
+    document.getElementById('refCopyTextBtn').disabled = nothing;
 
     const help = {
         to_report: 'Recorded, not yet sent. Export for Clerk makes a PDF (or text for an email) of these.',
-        reported: 'Sent to the clerk. Confirm one when the directory shows the change.',
+        reported: 'Sent to the clerk. When an import shows the change, Review Updates confirms it; you can also Confirm one by hand.',
+        overdue: 'Sent, but the household is still in the directory after several imports (Settings sets how many). Export for Clerk can include these as follow-ups.',
         closed: 'Confirmed or cancelled. Kept as history.',
     };
     document.getElementById('refHelp').textContent = help[refState.tab];
@@ -242,19 +256,21 @@ function renderReferrals() {
     const tab = REFERRAL_TABS.find(t => t.key === refState.tab);
     const rows = refState.all.filter(tab.match);
     const closed = refState.tab === 'closed';
+    const sent = refState.tab === 'reported' || refState.tab === 'overdue';
     document.getElementById('refTableHead').innerHTML = `<tr>
         <th>Ref</th><th>Household</th><th>Change</th><th>Learned</th><th>Reported</th>
+        ${sent ? '<th title="Finished imports since it was reported that still list the household">Imports since</th>' : ''}
         ${closed ? '<th>Closed</th>' : ''}<th></th></tr>`;
-    const cols = closed ? 7 : 6;
+    const cols = 6 + (closed ? 1 : 0) + (sent ? 1 : 0);
     document.getElementById('refTableBody').innerHTML = rows.length
-        ? rows.map(r => renderReferralRow(r, closed)).join('')
+        ? rows.map(r => renderReferralRow(r, closed, sent)).join('')
         : `<tr><td colspan="${cols}" class="ref-dim">Nothing here.</td></tr>`;
 
     document.querySelectorAll('#refTableBody [data-ref-action]').forEach(btn =>
         btn.addEventListener('click', () => referralAction(btn.dataset.refAction, Number(btn.dataset.refId))));
 }
 
-function renderReferralRow(r, closed) {
+function renderReferralRow(r, closed, sent) {
     const extra = [
         r.new_address ? `New address: ${r.new_address}` : '',
         r.details || '',
@@ -279,6 +295,7 @@ function renderReferralRow(r, closed) {
         <td><div>${escapeHtml(referralKindLabel(r.kind))}</div>${extra}</td>
         <td class="ref-date">${escapeHtml(r.learned_on)}</td>
         <td class="ref-date">${escapeHtml(r.reported_on || '—')}</td>
+        ${sent ? `<td class="ref-num">${r.household_id == null ? '—' : r.imports_since}${r.overdue ? ' <span class="ref-overdue">overdue</span>' : ''}</td>` : ''}
         ${closedCell}
         <td class="ref-actions">${actions.map(([a, label]) =>
             `<button class="btn btn-small" type="button" data-ref-action="${a}" data-ref-id="${r.id}">${label}</button>`).join('')}</td>
@@ -325,15 +342,19 @@ async function referralAction(action, id) {
 async function exportForClerk(format) {
     const items = refState.all.filter(r => r.status === 'to_report')
         .sort((a, b) => a.id - b.id);
-    if (items.length === 0) return;
+    // Follow-ups keep their original reported_on: "first sent" stays true.
+    const followUps = document.getElementById('refFollowups').checked
+        ? refState.all.filter(r => r.status === 'reported' && r.overdue).sort((a, b) => a.id - b.id)
+        : [];
+    if (items.length === 0 && followUps.length === 0) return;
     let unitName = '';
     try { unitName = (await Api.getActiveProfile())?.name || ''; } catch (_) { /* header line is optional */ }
 
     if (format === 'pdf') {
-        ReferralsPdf.download(items, unitName);
+        ReferralsPdf.download(items, unitName, followUps);
     } else {
         try {
-            await navigator.clipboard.writeText(ReferralsPdf.text(items, unitName));
+            await navigator.clipboard.writeText(ReferralsPdf.text(items, unitName, followUps));
             showMessage('Copied. Paste it into your email to the clerk.', CONSTANTS.MESSAGE_TYPES.INFO);
         } catch (e) {
             showMessage(`Could not copy: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
@@ -342,6 +363,7 @@ async function exportForClerk(format) {
     }
 
     const n = items.length;
+    if (n === 0) return;
     const ok = await confirmYesNo(
         `Mark ${n} new request${n === 1 ? '' : 's'} as reported today? Choose this once you have sent ${n === 1 ? 'it' : 'them'} to the clerk.`,
         'Mark reported');

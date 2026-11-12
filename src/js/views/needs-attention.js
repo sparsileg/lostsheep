@@ -1,21 +1,23 @@
-// ── Needs Attention (Visit_Reporting_Design.md §3.1, Stage 1) ──────────────
+// ── Needs Attention (Visit_Reporting_Design.md §3.1) ──────────────────────
 // Who should we go to next? One row per household (not per visit), from
-// commands::visits::get_needs_attention. Never-visited households always
-// appear; the rest appear once their last visit is older than the chosen
+// commands::visits::get_needs_attention. Never-contacted households always
+// appear; the rest appear once their last contact is older than the chosen
 // threshold. Do-not-contact households are excluded by the backend
 // unconditionally — this report sends people to doors.
+//
+// Stage 2: recency counts contact only (a contacted visit or call), unless
+// "Count attempts as visits" is ticked. Plan, Last outcome and Attempts
+// columns; a "due" marker when the contact plan's interval has passed.
 //
 // Lives as a tab inside the Reports view (visits-report-view.js), which
 // calls NeedsAttention.mount() once from its own init() and
 // NeedsAttention.refresh() whenever the tab is shown.
-//
-// Stage 1 has no visit outcome yet, so every recorded visit counts toward
-// recency and there is no Last Outcome / Attempts column.
 
 const naState = {
     tagId: '',          // '' = all households
     threshold: '90',    // days, or 'any'
     sort: 'overdue',    // 'overdue' | 'name'
+    countAttempts: false,
     result: null,
     tagDropdown: null,
 };
@@ -29,12 +31,14 @@ const NeedsAttention = {
                 <label class="na-label">Tag <div id="naTagDropdown" class="na-dropdown"></div></label>
                 <label class="na-label">Not visited in <div id="naThresholdDropdown" class="na-dropdown"></div></label>
                 <label class="na-label">Sort <div id="naSortDropdown" class="na-dropdown"></div></label>
+                <label class="na-check" title="Count not-home, no-answer and cards too: where have I at least been?"><input type="checkbox" id="naCountAttempts"> Count attempts as visits</label>
             </div>
             <div id="naSummary" class="na-summary"></div>
             <table id="naTable">
                 <thead><tr>
-                    <th>Household</th><th>Address</th><th>Tags</th>
-                    <th>Last visit</th><th>Days since</th><th></th>
+                    <th>Household</th><th>Address</th><th>Tags</th><th>Plan</th>
+                    <th id="naLastHeader">Last contact</th><th>Days since</th>
+                    <th>Last outcome</th><th title="Visits and calls since the last contact that reached no one">Attempts</th><th></th>
                 </tr></thead>
                 <tbody id="naTableBody"></tbody>
             </table>
@@ -53,6 +57,10 @@ const NeedsAttention = {
             value: naState.threshold,
             onSelect: (val) => { naState.threshold = val; NeedsAttention.refresh(); },
         });
+        document.getElementById('naCountAttempts').addEventListener('change', (e) => {
+            naState.countAttempts = e.target.checked;
+            NeedsAttention.refresh();
+        });
         mountDropdown(document.getElementById('naSortDropdown'), {
             items: [
                 { value: 'overdue', label: 'Most overdue first' },
@@ -68,7 +76,7 @@ const NeedsAttention = {
         const tagId = naState.tagId ? Number(naState.tagId) : null;
         const threshold = naState.threshold === 'any' ? null : Number(naState.threshold);
         try {
-            naState.result = await Api.getNeedsAttention(tagId, threshold);
+            naState.result = await Api.getNeedsAttention(tagId, threshold, naState.countAttempts);
         } catch (e) {
             showMessage(`${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
             return;
@@ -107,11 +115,11 @@ function naSortedRows() {
     const rows = (naState.result?.rows || []).map(r => ({ ...r, display: naFormatName(r) }));
     const byName = (a, b) => a.display.localeCompare(b.display);
     if (naState.sort === 'name') return rows.sort(byName);
-    // Never-visited first (alphabetical), then most days since last visit.
-    // A household whose last visit date couldn't be parsed (days_since
-    // null but visit_count > 0) sorts after everything with a real number.
+    // Never first (alphabetical), then most days since. A household whose
+    // date couldn't be parsed (days_since null, not never) sorts after
+    // everything with a real number.
     return rows.sort((a, b) => {
-        const aNever = a.visit_count === 0, bNever = b.visit_count === 0;
+        const aNever = a.never, bNever = b.never;
         if (aNever !== bNever) return aNever ? -1 : 1;
         if (aNever) return byName(a, b);
         const ad = a.days_since ?? -Infinity, bd = b.days_since ?? -Infinity;
@@ -123,36 +131,46 @@ function naSortedRows() {
 function naSummaryText(result) {
     const n = result.rows.length;
     const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+    const reached = naState.countAttempts ? 'visited' : 'contacted';
+    const due = result.rows.filter(r => r.plan_due).length;
+    const dueText = due ? ` ${due} due per contact plan.` : '';
     if (naState.threshold === 'any') {
-        return `${plural(result.total_eligible, 'household')} — ${result.never_count} never visited.`;
+        return `${plural(result.total_eligible, 'household')} — ${result.never_count} never ${reached}.${dueText}`;
     }
     if (n === 0) {
-        return `No households need attention — all ${plural(result.total_eligible, 'household')} visited in the last ${naState.threshold} days.`;
+        return `No households need attention — all ${plural(result.total_eligible, 'household')} ${reached} in the last ${naState.threshold} days.`;
     }
     const stale = n - result.never_count;
     const current = result.total_eligible - n;
     return `${plural(n, 'household')} need${n === 1 ? 's' : ''} attention — ` +
-        `${result.never_count} never visited, ${stale} not visited in over ${naState.threshold} days. ` +
-        `${current} of ${result.total_eligible} are current.`;
+        `${result.never_count} never ${reached}, ${stale} not ${reached} in over ${naState.threshold} days. ` +
+        `${current} of ${result.total_eligible} are current.${dueText}`;
 }
 
 function renderNaRows() {
     const result = naState.result;
     if (!result) return;
     document.getElementById('naSummary').textContent = naSummaryText(result);
+    document.getElementById('naLastHeader').textContent = naState.countAttempts ? 'Last visit' : 'Last contact';
 
     const bodyEl = document.getElementById('naTableBody');
     const rows = naSortedRows();
     if (!rows.length) {
-        bodyEl.innerHTML = `<tr><td colspan="6" class="na-empty">Everyone in this group is current.</td></tr>`;
+        bodyEl.innerHTML = `<tr><td colspan="9" class="na-empty">Everyone in this group is current.</td></tr>`;
         return;
     }
     bodyEl.innerHTML = rows.map(r => {
         const address = [r.address_line1, r.city].filter(Boolean).join(', ') || '(no address on file)';
         const tags = r.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
-        const lastVisit = r.visit_count === 0
+        const lastVisit = r.never
             ? '<span class="na-never">Never</span>'
             : escapeHtml(r.last_visit_date || '');
+        const plan = r.contact_plan
+            ? `${escapeHtml(contactPlanLabel(r.contact_plan))}${r.plan_due ? ' <span class="na-due">due</span>' : ''}`
+            : '';
+        const lastOutcome = r.last_outcome
+            ? `<span class="vk-chip ${r.last_outcome === 'contacted' && r.last_method !== 'card' ? 'vk-chip-contact' : ''}">${escapeHtml(visitKindText({ method: r.last_method, outcome: r.last_outcome }))}</span>`
+            : '';
         const seedBtn = r.has_coords
             ? `<button class="btn btn-small" data-na-seed="${r.household_id}">Visit around here</button>`
             : `<button class="btn btn-small" disabled title="No map coordinates for this address">Visit around here</button>`;
@@ -161,8 +179,11 @@ function renderNaRows() {
                 <td>${escapeHtml(r.display)}</td>
                 <td>${escapeHtml(address)}</td>
                 <td>${tags}</td>
+                <td>${plan}</td>
                 <td>${lastVisit}</td>
                 <td class="na-num">${r.days_since == null ? '' : r.days_since}</td>
+                <td>${lastOutcome}</td>
+                <td class="na-num">${r.attempts || ''}</td>
                 <td>${seedBtn}</td>
             </tr>`;
     }).join('');

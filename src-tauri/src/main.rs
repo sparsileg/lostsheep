@@ -230,6 +230,7 @@ fn main() {
             commands::households::soft_delete_household,
             commands::households::list_deleted_households,
             commands::households::restore_deleted_household,
+            commands::households::set_contact_plan,
             // tags
             commands::tags::list_tags,
             commands::tags::create_tag,
@@ -559,7 +560,7 @@ mod uid_lifecycle_tests {
             conn.last_insert_rowid()
         };
 
-        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None, None)
+        import::resolve_review_item(st.clone(), item_id, "replace".to_string(), None, None, None)
             .unwrap();
 
         let new_id: i64 = st
@@ -616,6 +617,7 @@ mod uid_lifecycle_tests {
             item_id,
             "delete".to_string(),
             Some("test".into()),
+            None,
             None,
         )
         .unwrap();
@@ -763,6 +765,7 @@ mod uid_lifecycle_tests {
             "link".to_string(),
             None,
             Some(hh_id),
+            None,
         )
         .unwrap();
 
@@ -853,6 +856,368 @@ mod uid_lifecycle_tests {
             "paired 'removed' review item was not auto-resolved by link"
         );
 
+        cleanup(&[db_path, roads_path]);
+    }
+
+    // ── Clerk referrals Stage 2 / Visit Reporting Stage 2 ───────────────
+
+    fn new_batch(pool: &db::Pool, imported_at: &str, status: &str) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO import_batches (source_type, filename, imported_at, status) VALUES ('pdf', 't.pdf', ?1, ?2)",
+            rusqlite::params![imported_at, status],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn queue_item(
+        pool: &db::Pool,
+        batch: i64,
+        match_type: &str,
+        incoming: Option<String>,
+        hh: i64,
+    ) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO review_queue (import_batch_id, match_type, incoming_data, existing_household_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![batch, match_type, incoming, hh],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn referral(
+        pool: &db::Pool,
+        hh: i64,
+        kind: &str,
+        new_address: Option<&str>,
+        reported_on: Option<&str>,
+    ) -> i64 {
+        let mut conn = pool.get().unwrap();
+        let r = commands::referrals::create_referral_query(
+            &conn,
+            commands::referrals::NewReferral {
+                household_id: hh,
+                kind: kind.into(),
+                details: None,
+                new_address: new_address.map(str::to_string),
+                learned_on: "2026-01-01".into(),
+                visit_uid: None,
+            },
+        )
+        .unwrap();
+        if let Some(on) = reported_on {
+            commands::referrals::mark_reported_query(&mut conn, &[r.id], on).unwrap();
+        }
+        r.id
+    }
+
+    fn referral_row(pool: &db::Pool, id: i64) -> (String, Option<String>, Option<i64>) {
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT status, resolution_note, import_batch_id FROM referrals WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn incoming_at(address: &str, city: &str) -> String {
+        serde_json::json!({
+            "first_name": "Test", "last_name": "Household", "role": "head",
+            "first_name_2": null, "last_name_2": null, "role_2": null,
+            "phone_1": null, "email_1": null, "phone_2": null, "email_2": null,
+            "address_line1": address, "address_line2": null, "city": city,
+            "state": "VA", "zip": null, "latitude": null, "longitude": null,
+            "has_minors": false, "comments": null
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn review_delete_confirms_referrals_and_keeps_stage2_fields() {
+        let (state, db_path, roads_path) = build_state();
+        let (hh_id, _) = insert_test_household(&state.pool, "ref-key-1");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE households SET contact_plan = 'monthly' WHERE id = ?1",
+                rusqlite::params![hh_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO visits (visit_uid, household_id, visit_date, outcome, method, invited) \
+                 VALUES ('v-card', ?1, '2026-02-01', 'sent', 'card', 1)",
+                rusqlite::params![hh_id],
+            )
+            .unwrap();
+        }
+        let moved = referral(
+            &state.pool,
+            hh_id,
+            "moved_unknown",
+            None,
+            Some("2026-02-01"),
+        );
+        let unsent = referral(&state.pool, hh_id, "contact_info", None, None);
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+
+        let batch = new_batch(&st.pool, "2026-03-01T12:00:00.000Z", "pending");
+        let item = queue_item(&st.pool, batch, "removed", None, hh_id);
+
+        let queue = import::get_review_queue(st.clone(), batch).unwrap();
+        let effects: Vec<&str> = queue[0]
+            .referrals
+            .iter()
+            .map(|r| r.effect.as_str())
+            .collect();
+        assert_eq!(effects, ["confirm", "confirm"]);
+
+        let confirmed =
+            import::resolve_review_item(st.clone(), item, "delete".into(), None, None, None)
+                .unwrap();
+        assert_eq!(confirmed.len(), 2);
+
+        let (status, note, batch_id) = referral_row(&st.pool, moved);
+        assert_eq!(status, "confirmed");
+        assert_eq!(
+            note.as_deref(),
+            Some("Removed from directory, import of 2026-03-01")
+        );
+        assert_eq!(batch_id, Some(batch));
+        assert_eq!(
+            referral_row(&st.pool, unsent).0,
+            "confirmed",
+            "to_report may be confirmed too"
+        );
+
+        let conn = st.pool.get().unwrap();
+        let (reason, plan, deleted_id): (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT deletion_reason, contact_plan, id FROM deleted_households WHERE original_id = ?1",
+                rusqlite::params![hh_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            reason.as_deref(),
+            Some(format!("Moved — clerk referral R-{moved:04}").as_str())
+        );
+        assert_eq!(plan.as_deref(), Some("monthly"));
+        let (outcome, method, invited): (String, String, bool) = conn
+            .query_row(
+                "SELECT outcome, method, invited FROM deleted_visits WHERE deleted_household_id = ?1",
+                rusqlite::params![deleted_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (outcome.as_str(), method.as_str(), invited),
+            ("sent", "card", true)
+        );
+        drop(conn);
+
+        let summary = import::commit_import_batch(st.clone(), batch).unwrap();
+        assert_eq!(summary.referrals_confirmed, 2);
+
+        // Restore brings the plan and the visit's kind back.
+        households::restore_deleted_household(st.clone(), deleted_id).unwrap();
+        let conn = st.pool.get().unwrap();
+        let (plan, method): (Option<String>, String) = conn
+            .query_row(
+                "SELECT h.contact_plan, v.method FROM households h JOIN visits v ON v.household_id = h.id \
+                 WHERE h.source_key = 'ref-key-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (plan.as_deref(), method.as_str()),
+            (Some("monthly"), "card")
+        );
+        drop(conn);
+
+        cleanup(&[db_path, roads_path]);
+    }
+
+    #[test]
+    fn replace_confirms_matching_move_and_asks_on_mismatch() {
+        let (state, db_path, roads_path) = build_state();
+        let (a_id, _) = insert_test_household(&state.pool, "ref-key-a");
+        let (b_id, _) = insert_test_household(&state.pool, "ref-key-b");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE households SET contact_plan = 'quarterly' WHERE id = ?1",
+                rusqlite::params![a_id],
+            )
+            .unwrap();
+        }
+        let a_ref = referral(
+            &state.pool,
+            a_id,
+            "moved_known",
+            Some("45 Elm Rd, Front Royal VA 22630"),
+            Some("2026-02-01"),
+        );
+        let b_ref = referral(
+            &state.pool,
+            b_id,
+            "moved_known",
+            Some("45 Elm Rd, Front Royal VA"),
+            Some("2026-02-01"),
+        );
+        let b_other = referral(&state.pool, b_id, "deceased", None, Some("2026-02-01"));
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+        let batch = new_batch(&st.pool, "2026-03-01T12:00:00.000Z", "pending");
+        let a_item = queue_item(
+            &st.pool,
+            batch,
+            "changed",
+            Some(incoming_at("45 Elm Road", "Front Royal")),
+            a_id,
+        );
+        let b_item = queue_item(
+            &st.pool,
+            batch,
+            "changed",
+            Some(incoming_at("9 Pine Ct", "Winchester")),
+            b_id,
+        );
+
+        let queue = import::get_review_queue(st.clone(), batch).unwrap();
+        let effect = |item: i64, id: i64| -> String {
+            queue
+                .iter()
+                .find(|q| q.id == item)
+                .unwrap()
+                .referrals
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .effect
+                .clone()
+        };
+        // "Road" vs "Rd" is a miss: asked, not auto-confirmed.
+        assert_eq!(effect(a_item, a_ref), "ask");
+        assert_eq!(effect(b_item, b_ref), "ask");
+        assert_eq!(effect(b_item, b_other), "none");
+
+        // The user confirms A's anyway; B is left open.
+        let done = import::resolve_review_item(
+            st.clone(),
+            a_item,
+            "replace".into(),
+            None,
+            None,
+            Some(vec![a_ref]),
+        )
+        .unwrap();
+        assert_eq!(done, vec![format!("R-{a_ref:04}")]);
+        assert_eq!(referral_row(&st.pool, a_ref).0, "confirmed");
+        let done =
+            import::resolve_review_item(st.clone(), b_item, "replace".into(), None, None, None)
+                .unwrap();
+        assert!(done.is_empty());
+        assert_eq!(referral_row(&st.pool, b_ref).0, "reported");
+        assert_eq!(referral_row(&st.pool, b_other).0, "reported");
+
+        // The contact plan rode through Replace.
+        let plan: Option<String> = st
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT contact_plan FROM households WHERE address_line1 = '45 Elm Road'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(plan.as_deref(), Some("quarterly"));
+
+        cleanup(&[db_path, roads_path]);
+    }
+
+    #[test]
+    fn exact_new_address_auto_confirms() {
+        let (state, db_path, roads_path) = build_state();
+        let (id, _) = insert_test_household(&state.pool, "ref-key-c");
+        let r = referral(
+            &state.pool,
+            id,
+            "moved_known",
+            Some("45 Elm Rd, Front Royal VA 22630"),
+            Some("2026-02-01"),
+        );
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let st: tauri::State<AppState> = app.state();
+        let batch = new_batch(&st.pool, "2026-03-01T12:00:00.000Z", "pending");
+        let item = queue_item(
+            &st.pool,
+            batch,
+            "changed",
+            Some(incoming_at("45 Elm Rd", "Front Royal")),
+            id,
+        );
+        let done =
+            import::resolve_review_item(st.clone(), item, "replace".into(), None, None, None)
+                .unwrap();
+        assert_eq!(done.len(), 1);
+        let (status, note, _) = referral_row(&st.pool, r);
+        assert_eq!(status, "confirmed");
+        assert_eq!(
+            note.as_deref(),
+            Some("Address updated, import of 2026-03-01")
+        );
+        cleanup(&[db_path, roads_path]);
+    }
+
+    #[test]
+    fn overdue_counts_only_completed_imports_after_reporting() {
+        let (state, db_path, roads_path) = build_state();
+        let (id, _) = insert_test_household(&state.pool, "ref-key-d");
+        let r = referral(&state.pool, id, "moved_unknown", None, Some("2026-02-01"));
+        let pool = &state.pool;
+        new_batch(pool, "2026-01-20T12:00:00.000Z", "committed"); // before reporting
+        new_batch(pool, "2026-02-08T12:00:00.000Z", "committed");
+        new_batch(pool, "2026-02-10T12:00:00.000Z", "discarded");
+        let open = new_batch(pool, "2026-02-12T12:00:00.000Z", "pending");
+        queue_item(pool, open, "new", Some(incoming_at("1 A St", "X")), id);
+
+        let get = || {
+            commands::referrals::list_referrals_query(&pool.get().unwrap(), None)
+                .unwrap()
+                .into_iter()
+                .find(|x| x.id == r)
+                .unwrap()
+        };
+        let x = get();
+        assert_eq!((x.imports_since, x.overdue), (1, false));
+
+        // An import with nothing to review, finished: the second one.
+        new_batch(pool, "2026-02-15T12:00:00.000Z", "pending");
+        let x = get();
+        assert_eq!((x.imports_since, x.overdue), (2, true));
+        assert_eq!(x.last_import_on.as_deref(), Some("2026-02-15"));
+
+        // The threshold is a setting.
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value = '3' WHERE key = 'referralOverdueImports'",
+                [],
+            )
+            .unwrap();
+        assert!(!get().overdue);
         cleanup(&[db_path, roads_path]);
     }
 }

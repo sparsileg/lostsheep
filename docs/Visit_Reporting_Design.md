@@ -470,6 +470,23 @@ Plan column and the columns that depend on outcome. Consider recording the
 migration date so pre-migration rows — which were defaulted, not observed —
 can be identified later.
 
+*Implemented (v1.5.0):* `db/mod.rs::migrate_stage2` adds `visits.outcome`
+/ `method` / `invited`, `households.contact_plan`, and the same columns on
+the `deleted_*` mirrors, so soft-delete and restore keep them; the
+migration time is in `schema_meta` (`visit_outcome_migrated_at`).
+`visits.rs::VisitKind` validates the pair (a card is always `sent`) and
+`is_contact()` is the §2.1 rule. Needs Attention measures recency from
+the last contact, with a "Count attempts as visits" checkbox, and adds
+Plan (with a "due" marker), Last outcome and Attempts. The Visit Log
+gains a How column and the contacted / not reached / cards summary. On
+the household page: a contact plan picker in the Tags card, method /
+outcome / invitation controls on Record New Visit and on visit edit, the
+method and outcome in the history and its Copy text, and both post-save
+prompts (Moved / Deceased → clerk referral linked to the visit; first
+contact with a Not known household → Mark as Known + contact plan).
+Replace / Merge / Link carry the plan forward. Not done here: the tag
+filter on the Visit Log (left for Stage 3 with the PDF exports).
+
 **Stage 3 — Coverage Summary, Contact Plans tab, and PDF exports.** Includes
 the ward council PDF (§3.5) and the "Due per contact plan" filter. All small
 once stages 1 and 2 exist. Add a test that the route, clerk, directory and

@@ -330,6 +330,29 @@ overdue computation.
 on resolution, pre-fill `deletion_reason`, and the overdue computation and
 tab. Add the post-import summary line. This stage closes the loop.
 
+*Implemented (v1.5.0):* `get_review_queue` attaches the household's
+open referrals to each removed / changed item with an effect
+(`referrals::review_referrals`): **confirm** (removal; `moved_known`
+whose new address matches; `contact_info` when address or phone/email
+changed), **ask** (`moved_known` to a different address, `moved_unknown`
+with an address change, `deceased` / `remove_records` with a name
+change, `other` with any change), or **none**. Review Updates shows
+them; "ask" ones get a tick box ("Confirm it on Replace"), unticked
+leaves them open. `resolve_review_item` confirms in the same
+transaction, records `import_batch_id` and a note such as "Removed from
+directory, import of 2026-11-18", and fills an empty deletion reason
+("Moved — clerk referral R-0012"; Review Updates pre-fills the prompt
+with it too). Address matching: the reported address must start with the
+directory's street line and name its city, compared as lower-case words,
+so "Road" vs "Rd" falls to "ask". Overdue (`referrals::annotate_overdue`)
+counts finished imports (not discarded, no item still pending) dated
+after `reported_on`, while the household is still present; the setting
+is in Settings. The Clerk Referrals view has an Overdue tab and an
+"Imports since" column, and Export for Clerk can include the overdue
+ones as the FOLLOW-UP section. Committing a batch reports "N clerk
+referrals confirmed, M overdue". An import with nothing to review is now
+marked committed at once.
+
 **Stage 3: routing and visibility.** Exclude open move/death referrals
 from visit-list generation, the households badge and filter, the dashboard
 line.
@@ -337,6 +360,11 @@ line.
 **Stage 4: visit outcomes.** Done together with Stage 2 of
 `Visit_Reporting_Design.md`, not separately: add `deceased` to the outcome
 list, and add the referral prompt and the Known prompt to the visit modal.
+
+*Stage 4 implemented with Visit Reporting Stage 2 (v1.5.0):* `deceased`
+is in the outcome list, and saving a Moved or Deceased visit offers a
+referral with the kind (`moved_unknown` / `deceased`), date and comments
+pre-filled and `visit_uid` linked.
 
 Each stage ships on its own. Stages 1–3 need no change to existing tables.
 

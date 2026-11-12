@@ -80,6 +80,12 @@ tr:hover td { background: var(--color-table-row-hover); }
     border-radius: 6px; cursor: pointer; user-select: none; transition: border-color 0.2s;
 }
 .astryx-dropdown-trigger:hover { border-color: var(--primary-color); }
+/* The label and the sizeToItems sizer share one grid cell; the sizer's
+   hidden copies of every item label give the cell the longest width. */
+.astryx-dropdown-labels { display: grid; margin-right: 0.5rem; }
+.astryx-dropdown-labels > .astryx-dropdown-label { grid-area: 1 / 1; }
+.astryx-dropdown-sizer { grid-area: 1 / 1; display: grid; visibility: hidden; height: 0; overflow: hidden; }
+.astryx-dropdown-sizer > span { grid-area: 1 / 1; white-space: nowrap; }
 .astryx-dropdown-arrow { color: var(--text-secondary); font-size: 0.8rem; transition: transform 0.2s; }
 .astryx-dropdown.open .astryx-dropdown-arrow { transform: rotate(180deg); }
 .astryx-dropdown-menu {

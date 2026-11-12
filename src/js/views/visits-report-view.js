@@ -35,7 +35,7 @@ registerView('visits-report', {
             </div>
             <div id="vrResultsMeta"></div>
             <table id="vrTable">
-                <thead><tr><th>Household</th><th>Date</th><th>Comments</th></tr></thead>
+                <thead><tr><th>Household</th><th>Date</th><th>How</th><th>Comments</th></tr></thead>
                 <tbody id="vrTableBody"></tbody>
             </table>
             </div>
@@ -103,7 +103,9 @@ async function refreshReportsTab() {
     else await runVisitsReport();
 }
 
-function isoDate(d) { return d.toISOString().slice(0, 10); }
+// Local calendar date (core.js), not UTC: toISOString() gave tomorrow's
+// date in the evening west of Greenwich.
+function isoDate(d) { return localIsoDate(d); }
 
 // Duplicated from households-view.js's isValidIsoDate rather than shared —
 // small enough that adding a load-order dependency between the two view
@@ -197,6 +199,20 @@ function groupRowsByHousehold(sorted) {
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// "38 visits across 31 households — 22 contacted, 9 not reached, 7 cards"
+// (Visit_Reporting_Design.md §3.2). Calls count as visits here.
+function vrSummaryText(rows) {
+    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    const households = new Set(rows.map(r => r.household_id)).size;
+    const contacted = rows.filter(visitIsContact).length;
+    const cards = rows.filter(r => r.method === 'card').length;
+    const notReached = rows.length - contacted - cards;
+    const parts = [`${contacted} contacted`];
+    if (notReached) parts.push(`${notReached} not reached`);
+    if (cards) parts.push(plural(cards, 'card'));
+    return `${plural(rows.length, 'visit')} across ${plural(households, 'household')} — ${parts.join(', ')}`;
+}
+
 function renderVrRows() {
     const sorted = getSortedVrRows();
     const metaEl = document.getElementById('vrResultsMeta');
@@ -204,31 +220,34 @@ function renderVrRows() {
 
     if (!sorted.length) {
         metaEl.textContent = '0 visits';
-        bodyEl.innerHTML = '<tr><td colspan="3">No visits in this date range.</td></tr>';
+        bodyEl.innerHTML = '<tr><td colspan="4">No visits in this date range.</td></tr>';
         return;
     }
 
+    metaEl.textContent = vrSummaryText(sorted);
+    const how = r => `<span class="vk-chip ${visitIsContact(r) ? 'vk-chip-contact' : ''}">${escapeHtml(visitKindText(r))}</span>`;
+
     if (!vrState.groupByHousehold) {
-        metaEl.textContent = `${sorted.length} visit${sorted.length === 1 ? '' : 's'}`;
         bodyEl.innerHTML = sorted.map(r => `
             <tr>
                 <td>${escapeHtml(r.household_name)}</td>
                 <td>${escapeHtml(r.visit_date)}</td>
+                <td>${how(r)}</td>
                 <td>${escapeHtml(r.comments || '')}</td>
             </tr>`).join('');
         return;
     }
 
     const groups = groupRowsByHousehold(sorted);
-    metaEl.textContent = `${sorted.length} visit${sorted.length === 1 ? '' : 's'} across ${groups.length} household${groups.length === 1 ? '' : 's'}`;
     bodyEl.innerHTML = groups.map(g => `
         <tr class="vr-group-header">
-            <td colspan="3" style="font-weight:bold;">${escapeHtml(g.name)} (${g.rows.length} visit${g.rows.length === 1 ? '' : 's'})</td>
+            <td colspan="4" style="font-weight:bold;">${escapeHtml(g.name)} (${g.rows.length} visit${g.rows.length === 1 ? '' : 's'})</td>
         </tr>
         ${g.rows.map(r => `
             <tr class="vr-group-row">
                 <td></td>
                 <td>${escapeHtml(r.visit_date)}</td>
+                <td>${how(r)}</td>
                 <td>${escapeHtml(r.comments || '')}</td>
             </tr>`).join('')}
     `).join('');
