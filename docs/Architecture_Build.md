@@ -162,3 +162,46 @@ Then, in order of dependency:
    before/after diff looks right.
 5. `cargo tauri build` for installers (deb/rpm/dmg/msi/nsis already
    configured in `tauri.conf.json`).
+
+## 8. Releases and the bundled pdftotext
+
+### Building a release
+
+`.github/workflows/release.yml` builds the installers on GitHub and
+attaches them to a **draft** release:
+
+1. `just version X.Y.Z`, then commit and push.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. The workflow checks the tag matches `src-tauri/Cargo.toml`, creates
+   the draft release, runs the tests and builds:
+   - Linux (`ubuntu-22.04`): `.deb` and `.rpm`
+   - Windows (`windows-latest`): the NSIS setup `.exe` (no MSI: it
+     accepts only numeric prerelease versions)
+4. Check the draft on GitHub, write the notes, publish.
+
+To rebuild an existing tag (assets of the same name are replaced):
+`gh workflow run release.yml -f tag=vX.Y.Z`.
+
+On Windows, SQLCipher's OpenSSL is built from source and linked
+statically (`Cargo.toml`, `bundled-sqlcipher-vendored-openssl`), so
+neither the build machine nor the user needs OpenSSL installed. Linux
+uses the system `libcrypto`.
+
+### pdftotext
+
+PDF import runs `pdftotext -enc UTF-8 -raw <file> -` (`pdf_parser.rs`).
+It is bundled, never a system dependency, and comes from different
+projects per platform:
+
+| Platform | Source | Bundled as |
+|---|---|---|
+| Linux | Poppler's `pdftotext`, a static musl build from Nix: `nix build github:NixOS/nixpkgs/<rev>#pkgsStatic.poppler-utils` (rev in `release.yml`'s `NIXPKGS_REV`; nixos-25.11 gives poppler 25.10.0) | resource `binaries/pdftotext-x86_64-unknown-linux-gnu` → `pdftotext` (`tauri.linux.conf.json`) |
+| Windows | Xpdf's `pdftotext.exe` from the Xpdf command-line tools, `bin64/` of `xpdf-tools-win-<version>.zip` at https://dl.xpdfreader.com/ (version in `XPDF_VERSION`) | sidecar `binaries/pdftotext-x86_64-pc-windows-msvc.exe` (`externalBin`) |
+
+`-enc UTF-8` matters for Xpdf, which defaults to Latin-1; Poppler
+defaults to UTF-8 and gives identical output with or without it.
+
+For a local build, put the file for your platform in
+`src-tauri/binaries/` under the name above (the folder is gitignored).
+Both are GPL software; the release notes should say the installers
+include Poppler (Linux) or Xpdf (Windows) and link to their source.

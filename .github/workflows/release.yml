@@ -1,0 +1,191 @@
+# Builds the Linux (.deb, .rpm) and Windows (NSIS .exe) installers and
+# attaches them to a draft GitHub release for the tag. See
+# docs/Architecture_Build.md §8 for the whole release procedure.
+#
+# Release: `just version X.Y.Z`, commit, `git tag vX.Y.Z`, push the tag.
+# Rebuild an existing tag: Actions → release → Run workflow, enter the tag
+# (or `gh workflow run release.yml -f tag=vX.Y.Z`). Assets with the same
+# name are replaced.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build, e.g. v1.5.0'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # Tauri CLI, same version as local builds (`cargo tauri --version`)
+  TAURI_CLI: '@tauri-apps/cli@2.11.1'
+  # Linux pdftotext: static (musl) poppler-utils from this nixpkgs commit
+  # (nixos-25.11, poppler 25.10.0). Bump it to update poppler.
+  NIXPKGS_REV: b6018f87da91d19d0ab4cf979885689b469cdd41
+  # Windows pdftotext: Xpdf command-line tools (xpdfreader.com).
+  # XPDF_SHA256: fill in from the first run's log to pin the download.
+  XPDF_VERSION: '4.06'
+  XPDF_SHA256: ''
+
+jobs:
+  # Checks the tag matches the app version, and makes the draft release
+  # once so the two build jobs don't race to create it.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: tag matches Cargo.toml version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG but src-tauri/Cargo.toml says $version (run: just version ${TAG#v})"
+            exit 1
+          fi
+
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists; its assets will be replaced"
+          else
+            gh release create "$TAG" --draft --verify-tag \
+              --title "Lost Sheep ${TAG#v}" \
+              --notes "Linux: .deb (Debian/Ubuntu) or .rpm (Fedora/openSUSE). Windows: the setup .exe."
+          fi
+
+  linux:
+    needs: release
+    # The oldest supported runner, so the .deb/.rpm run on older distros
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev
+
+      # Building static poppler takes a while, so the result is kept per
+      # nixpkgs commit and only rebuilt when NIXPKGS_REV changes.
+      - name: cached pdftotext
+        id: pdftotext-cache
+        uses: actions/cache@v4
+        with:
+          path: pdftotext-cache
+          key: pdftotext-nix-${{ env.NIXPKGS_REV }}
+
+      - name: install Nix
+        if: steps.pdftotext-cache.outputs.cache-hit != 'true'
+        uses: cachix/install-nix-action@v31
+
+      - name: build pdftotext (static poppler-utils)
+        if: steps.pdftotext-cache.outputs.cache-hit != 'true'
+        run: |
+          nix build "github:NixOS/nixpkgs/$NIXPKGS_REV#pkgsStatic.poppler-utils" --out-link poppler
+          mkdir -p pdftotext-cache
+          cp poppler/bin/pdftotext pdftotext-cache/pdftotext
+          chmod u+w pdftotext-cache/pdftotext
+          strip pdftotext-cache/pdftotext || true
+
+      - name: stage pdftotext
+        run: |
+          mkdir -p src-tauri/binaries
+          cp pdftotext-cache/pdftotext src-tauri/binaries/pdftotext-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/pdftotext-x86_64-unknown-linux-gnu
+          file src-tauri/binaries/pdftotext-x86_64-unknown-linux-gnu
+          src-tauri/binaries/pdftotext-x86_64-unknown-linux-gnu -v
+          sha256sum src-tauri/binaries/pdftotext-x86_64-unknown-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: build .deb and .rpm
+        run: npx --yes "$TAURI_CLI" build --bundles deb,rpm
+
+      - name: upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --clobber \
+            src-tauri/target/release/bundle/deb/*.deb \
+            src-tauri/target/release/bundle/rpm/*.rpm
+
+  windows:
+    needs: release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # SQLCipher's OpenSSL is built from source on Windows (Cargo.toml).
+      # Git for Windows' perl comes first on PATH but lacks modules
+      # OpenSSL's Configure needs; use Strawberry Perl.
+      OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: ilammy/setup-nasm@v1
+
+      - name: download pdftotext (Xpdf tools)
+        run: |
+          $zip = "xpdf-tools-win-$env:XPDF_VERSION.zip"
+          # Current releases live at the top level, older ones under old/
+          try {
+            Invoke-WebRequest "https://dl.xpdfreader.com/$zip" -OutFile $zip
+          } catch {
+            Invoke-WebRequest "https://dl.xpdfreader.com/old/$zip" -OutFile $zip
+          }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "$zip SHA256 $hash"
+          if ($env:XPDF_SHA256 -and $hash -ne $env:XPDF_SHA256.ToLower()) {
+            Write-Error "SHA256 mismatch: expected $env:XPDF_SHA256"
+            exit 1
+          }
+          Expand-Archive $zip -DestinationPath xpdf
+          $exe = Get-ChildItem xpdf -Recurse -Filter pdftotext.exe |
+            Where-Object { $_.Directory.Name -eq 'bin64' } | Select-Object -First 1
+          if (-not $exe) { Write-Error "bin64\pdftotext.exe not found in $zip"; exit 1 }
+          New-Item -ItemType Directory -Force src-tauri\binaries | Out-Null
+          Copy-Item $exe.FullName src-tauri\binaries\pdftotext-x86_64-pc-windows-msvc.exe
+          & src-tauri\binaries\pdftotext-x86_64-pc-windows-msvc.exe -v
+          exit 0   # only the version banner is wanted, whatever -v exits with
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # NSIS only: MSI accepts only numeric prerelease versions
+      - name: build setup .exe
+        run: npx --yes "$env:TAURI_CLI" build --bundles nsis
+
+      - name: upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe
+          gh release upload "$env:TAG" --clobber $exe.FullName

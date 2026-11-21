@@ -233,6 +233,11 @@ fn split_first_middle(h: &str) -> (String, String) {
 /// which collides with the system poppler-utils package there — see
 /// the cfg(target_os = "linux") branch below for the split. Resolving
 /// either path requires an `AppHandle`, so this is async.
+///
+/// Linux bundles poppler's pdftotext (built with Nix); Windows bundles
+/// Xpdf's (docs/Architecture_Build.md §8). `-enc UTF-8` is passed
+/// explicitly because Xpdf defaults to Latin-1, which would turn
+/// accented names into U+FFFD below; poppler already defaults to UTF-8.
 pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<ParseResult> {
     #[cfg(not(target_os = "linux"))]
     use tauri_plugin_shell::ShellExt;
@@ -265,7 +270,7 @@ pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<Pa
             .resolve("pdftotext", tauri::path::BaseDirectory::Resource)
             .map_err(|e| anyhow::anyhow!("could not resolve bundled pdftotext resource: {e}"))?;
         std::process::Command::new(&resource_path)
-            .args(["-raw", path_str, "-"])
+            .args(["-enc", "UTF-8", "-raw", path_str, "-"])
             .output()
             .map_err(|e| anyhow::anyhow!("pdftotext resource failed to run: {e}"))?
     };
@@ -277,7 +282,7 @@ pub async fn parse_pdf(app: &tauri::AppHandle, path: &Path) -> anyhow::Result<Pa
         .shell()
         .sidecar("pdftotext")
         .map_err(|e| anyhow::anyhow!("could not launch bundled pdftotext sidecar: {e}"))?
-        .args(["-raw", path_str, "-"])
+        .args(["-enc", "UTF-8", "-raw", path_str, "-"])
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("pdftotext sidecar failed to run: {e}"))?;

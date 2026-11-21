@@ -56,6 +56,13 @@ log = "0.4"
 # commands/paths.rs (issue #32) — std has no portable equivalent.
 dirs = "5"
 
+# Windows: build OpenSSL from source and link it statically for SQLCipher,
+# so the installer doesn't need OpenSSL DLLs on the user's machine (or an
+# OpenSSL install on the build machine). Features unify with the
+# rusqlite/r2d2_sqlite entries above. Linux keeps the system libcrypto.
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl"] }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 
