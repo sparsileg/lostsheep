@@ -195,7 +195,7 @@ projects per platform:
 
 | Platform | Source | Bundled as |
 |---|---|---|
-| Linux | Poppler's `pdftotext`, a static musl build from Nix: `nix build github:NixOS/nixpkgs/<rev>#pkgsStatic.poppler-utils` (rev in `release.yml`'s `NIXPKGS_REV`; nixos-25.11 gives poppler 25.10.0) | resource `binaries/pdftotext-x86_64-unknown-linux-gnu` → `pdftotext` (`tauri.linux.conf.json`) |
+| Linux | Poppler's `pdftotext`, a static musl build from Nix: `pkgsStatic.poppler-utils.override { minimal = true; }` (no NSS, cairo, curl; see `release.yml`) from nixpkgs <rev> (rev in `release.yml`'s `NIXPKGS_REV`; nixos-25.11 gives poppler 25.10.0) | resource `binaries/pdftotext-x86_64-unknown-linux-gnu` → `pdftotext` (`tauri.linux.conf.json`) |
 | Windows | Xpdf's `pdftotext.exe` from the Xpdf command-line tools, `bin64/` of `xpdf-tools-win-<version>.zip` at https://dl.xpdfreader.com/ (version in `XPDF_VERSION`) | sidecar `binaries/pdftotext-x86_64-pc-windows-msvc.exe` (`externalBin`) |
 
 `-enc UTF-8` matters for Xpdf, which defaults to Latin-1; Poppler

@@ -25,13 +25,13 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
   # Tauri CLI, same version as local builds (`cargo tauri --version`)
   TAURI_CLI: '@tauri-apps/cli@2.11.1'
-  # Linux pdftotext: static (musl) poppler-utils from this nixpkgs commit
-  # (nixos-25.11, poppler 25.10.0). Bump it to update poppler.
+  # Linux pdftotext: static (musl) minimal poppler-utils from this nixpkgs
+  # commit (nixos-25.11, poppler 25.10.0). Bump it to update poppler.
   NIXPKGS_REV: b6018f87da91d19d0ab4cf979885689b469cdd41
   # Windows pdftotext: Xpdf command-line tools (xpdfreader.com).
-  # XPDF_SHA256: fill in from the first run's log to pin the download.
+  # XPDF_SHA256 pins the download; update it with XPDF_VERSION.
   XPDF_VERSION: '4.06'
-  XPDF_SHA256: ''
+  XPDF_SHA256: '2b6ca45da794e7854a6468fd6c8063fde62701f001ce03fa4f603eab7e15a0b6'
 
 jobs:
   # Checks the tag matches the app version, and makes the draft release
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: pdftotext-cache
-          key: pdftotext-nix-${{ env.NIXPKGS_REV }}
+          key: pdftotext-nix-minimal-${{ env.NIXPKGS_REV }}
 
       - name: install Nix
         if: steps.pdftotext-cache.outputs.cache-hit != 'true'
@@ -93,7 +93,11 @@ jobs:
       - name: build pdftotext (static poppler-utils)
         if: steps.pdftotext-cache.outputs.cache-hit != 'true'
         run: |
-          nix build "github:NixOS/nixpkgs/$NIXPKGS_REV#pkgsStatic.poppler-utils" --out-link poppler
+          # minimal: no NSS (p11-kit can't be built static), cairo, curl,
+          # lcms, libtiff or glib; none of them matter to pdftotext.
+          nix build --impure --out-link poppler --expr "
+            (builtins.getFlake \"github:NixOS/nixpkgs/$NIXPKGS_REV\")
+              .legacyPackages.x86_64-linux.pkgsStatic.poppler-utils.override { minimal = true; }"
           mkdir -p pdftotext-cache
           cp poppler/bin/pdftotext pdftotext-cache/pdftotext
           chmod u+w pdftotext-cache/pdftotext
