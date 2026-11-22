@@ -205,6 +205,13 @@ each household's whole visit history (date, method and outcome, visit
 comments), newest first, after the entry. A household no longer in the
 directory has no visit history left to show.
 
+Export for Clerk and Copy Text follow the selected tab: **To report**
+exports the new requests (and the follow-ups, if the checkbox is
+ticked) and then offers to mark them reported; **Awaiting clerk**
+exports the referrals sent but not yet overdue, and **Overdue** the
+overdue ones as a follow-up, without changing them; **Closed** has
+nothing to export.
+
 Each referral can also carry a free-text **Recommendation** (what the
 user suggests the clerk do), entered in the Report to clerk dialog. It
 appears in the list, the PDF and the text.

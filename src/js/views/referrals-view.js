@@ -238,19 +238,19 @@ function renderReferrals() {
         document.querySelector(`[data-ref-count="${t.key}"]`).textContent = `(${n})`;
         document.querySelector(`[data-ref-tab="${t.key}"]`).classList.toggle('active', t.key === refState.tab);
     });
-    const toReport = refState.all.filter(r => r.status === 'to_report').length;
+    // The follow-ups checkbox only applies to the To report export.
     const overdue = refState.all.filter(r => r.status === 'reported' && r.overdue).length;
-    document.getElementById('refFollowupsLabel').style.display = overdue ? '' : 'none';
+    document.getElementById('refFollowupsLabel').style.display =
+        overdue && refState.tab === 'to_report' ? '' : 'none';
     document.getElementById('refFollowupsCount').textContent = `(${overdue})`;
-    const includeFollowups = overdue > 0 && document.getElementById('refFollowups').checked;
-    const nothing = toReport === 0 && !includeFollowups;
+    const nothing = exportSections().every(sec => sec.items.length === 0);
     document.getElementById('refExportPdfBtn').disabled = nothing;
     document.getElementById('refCopyTextBtn').disabled = nothing;
 
     const help = {
         to_report: 'Recorded, not yet sent. Export for Clerk makes a PDF (or text for an email) of these.',
-        reported: 'Sent to the clerk. When an import shows the change, Review Updates confirms it; you can also Confirm one by hand.',
-        overdue: 'Sent, but the household is still in the directory after several imports (Settings sets how many). Export for Clerk can include these as follow-ups.',
+        reported: 'Sent to the clerk. When an import shows the change, Review Updates confirms it; you can also Confirm one by hand. Export for Clerk and Copy Text resend these.',
+        overdue: 'Sent, but the household is still in the directory after several imports (Settings sets how many). Export for Clerk and Copy Text make a follow-up of these.',
         closed: 'Confirmed or cancelled. Kept as history.',
     };
     document.getElementById('refHelp').textContent = help[refState.tab];
@@ -340,27 +340,45 @@ async function referralAction(action, id) {
     await loadReferrals();
 }
 
+// What Export for Clerk / Copy Text include, by the selected tab:
+// To report: the new requests, plus the overdue ones as follow-ups when
+// the checkbox is ticked; Awaiting clerk and Overdue: that tab's
+// referrals; Closed: nothing. Oldest first.
+function exportSections() {
+    const pick = (match) => refState.all.filter(match).sort((a, b) => a.id - b.id);
+    const tab = (key) => REFERRAL_TABS.find(t => t.key === key).match;
+    switch (refState.tab) {
+        case 'to_report':
+            return [
+                { key: 'new', items: pick(tab('to_report')) },
+                { key: 'followUp', items: document.getElementById('refFollowups').checked ? pick(tab('overdue')) : [] },
+            ];
+        case 'reported': return [{ key: 'awaiting', items: pick(tab('reported')) }];
+        case 'overdue': return [{ key: 'followUp', items: pick(tab('overdue')) }];
+        default: return [];
+    }
+}
+
 // Export (PDF or text), then ask before marking anything reported: a
 // download or a copy is not proof the email was sent (design §3.2).
+// Only new requests are marked; already-sent ones keep their original
+// reported_on, so "first sent" stays true.
 async function exportForClerk(format) {
-    const items = refState.all.filter(r => r.status === 'to_report')
-        .sort((a, b) => a.id - b.id);
-    // Follow-ups keep their original reported_on: "first sent" stays true.
-    const followUps = document.getElementById('refFollowups').checked
-        ? refState.all.filter(r => r.status === 'reported' && r.overdue).sort((a, b) => a.id - b.id)
-        : [];
-    if (items.length === 0 && followUps.length === 0) return;
+    const sections = exportSections();
+    const all = sections.flatMap(sec => sec.items);
+    if (all.length === 0) return;
+    const items = sections.find(sec => sec.key === 'new')?.items || [];
     let unitName = '';
     try { unitName = (await Api.getActiveProfile())?.name || ''; } catch (_) { /* header line is optional */ }
 
     if (format === 'pdf') {
-        ReferralsPdf.download(items, unitName, followUps);
+        ReferralsPdf.download(sections, unitName);
     } else {
         // The text carries each household's visit history, for the clerk's
         // context. A household that has left the directory has none left.
         const visits = {};
         try {
-            for (const r of [...items, ...followUps]) {
+            for (const r of all) {
                 if (r.household_id != null && !(r.household_id in visits)) {
                     visits[r.household_id] = await Api.getHouseholdVisits(r.household_id);
                 }
@@ -370,7 +388,7 @@ async function exportForClerk(format) {
             return;
         }
         try {
-            await navigator.clipboard.writeText(ReferralsPdf.text(items, unitName, followUps, visits));
+            await navigator.clipboard.writeText(ReferralsPdf.text(sections, unitName, visits));
             showMessage('Copied. Paste it into your email to the clerk.', CONSTANTS.MESSAGE_TYPES.INFO);
         } catch (e) {
             showMessage(`Could not copy: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);

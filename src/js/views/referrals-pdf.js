@@ -5,9 +5,11 @@
  * (docs/Record_Referral_Design.md §3.2). Built client-side like
  * directory-pdf.js; nothing is sent by the app itself.
  *
- * Two sections: NEW REQUESTS (status to_report) and FOLLOW-UP, the
- * overdue reported referrals: previously sent, still in the directory
- * after enough imports. Either may be empty, not both.
+ * The sections follow the Clerk Referrals tab the export starts from:
+ * NEW REQUESTS (status to_report), with FOLLOW-UP (the overdue reported
+ * referrals: previously sent, still in the directory after enough
+ * imports) if asked for; AWAITING CLERK (reported, not yet overdue); or
+ * FOLLOW-UP alone.
  *
  * The contact plan, tags and household comments are never included.
  * The Copy Text version also lists each household's visit history
@@ -35,8 +37,24 @@ const ReferralsPdf = {
             (r.last_import_on ? ` Still listed in directory as of ${r.last_import_on}.` : '');
     },
 
-    download(items, unitName, followUps = []) {
-        if ((!items || items.length === 0) && followUps.length === 0) return;
+    // The sections an export can hold, by what the Clerk Referrals view
+    // passes in. `sent` adds the "First sent ..." line to each entry.
+    SECTIONS: {
+        new: { heading: 'NEW REQUESTS', sent: false },
+        awaiting: { heading: 'AWAITING CLERK — PREVIOUSLY SENT', sent: true },
+        followUp: { heading: 'FOLLOW-UP — PREVIOUSLY SENT, NOT YET REFLECTED IN DIRECTORY', sent: true },
+    },
+
+    // sections: [{ key: 'new' | 'awaiting' | 'followUp', items: [referral] }],
+    // in print order; empty ones are skipped.
+    _sections(sections) {
+        return sections.filter(sec => sec.items && sec.items.length)
+            .map(sec => ({ ...this.SECTIONS[sec.key], items: sec.items }));
+    },
+
+    download(sections, unitName) {
+        const parts = this._sections(sections);
+        if (parts.length === 0) return;
         const colors = this._colors();
         const now = new Date();
         const prepared = localIsoDate(now);
@@ -50,20 +68,13 @@ const ReferralsPdf = {
             },
         ];
         if (unitName) content.push({ text: unitName, fontSize: 11, color: colors.detail, margin: [0, 2, 0, 0] });
-        if (items.length) {
+        parts.forEach(sec => {
             content.push({
-                text: `NEW REQUESTS (${items.length})`, fontSize: 11, bold: true, color: colors.heading,
+                text: `${sec.heading} (${sec.items.length})`, fontSize: 11, bold: true, color: colors.heading,
                 margin: [0, 16, 0, 8],
             });
-            items.forEach(r => content.push(this._entry(r, colors)));
-        }
-        if (followUps.length) {
-            content.push({
-                text: `FOLLOW-UP — PREVIOUSLY SENT, NOT YET REFLECTED IN DIRECTORY (${followUps.length})`,
-                fontSize: 11, bold: true, color: colors.heading, margin: [0, 16, 0, 8],
-            });
-            followUps.forEach(r => content.push(this._entry(r, colors, this._followUpLine(r))));
-        }
+            sec.items.forEach(r => content.push(this._entry(r, colors, sec.sent ? this._followUpLine(r) : null)));
+        });
 
         const docDefinition = {
             pageSize: 'LETTER',
@@ -109,7 +120,7 @@ const ReferralsPdf = {
     // visits: { household_id: [visit, ...] } (get_household_visits,
     // newest first). Each entry ends with the household's whole visit
     // history, and a line of 70 dashes separates it from the one before.
-    text(items, unitName, followUps = [], visits = {}) {
+    text(sections, unitName, visits = {}) {
         const lines = ['Record Update Requests'];
         if (unitName) lines.push(unitName);
         lines.push(`Prepared ${localIsoDate()}`, '');
@@ -138,14 +149,10 @@ const ReferralsPdf = {
             }
             lines.push('');
         };
-        if (items.length) {
-            lines.push(`NEW REQUESTS (${items.length})`, '');
-            items.forEach(r => entry(r));
-        }
-        if (followUps.length) {
-            lines.push(`FOLLOW-UP — PREVIOUSLY SENT, NOT YET REFLECTED IN DIRECTORY (${followUps.length})`, '');
-            followUps.forEach(r => entry(r, this._followUpLine(r)));
-        }
+        this._sections(sections).forEach(sec => {
+            lines.push(`${sec.heading} (${sec.items.length})`, '');
+            sec.items.forEach(r => entry(r, sec.sent ? this._followUpLine(r) : null));
+        });
         return lines.join('\n');
     },
 };
