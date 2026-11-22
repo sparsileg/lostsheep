@@ -495,7 +495,7 @@ fn migrate_stage2(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// After 1.5.0: the free-text recommendation on a clerk referral.
+/// Version 1.5.1: the free-text recommendation on a clerk referral.
 fn migrate_referral_recommendation(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "referrals", "recommendation", "TEXT")?;
     Ok(())
