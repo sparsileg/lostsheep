@@ -67,6 +67,7 @@ function openReferralModal(opts) {
                 <label>What the clerk needs to do</label><div id="refKind" class="ref-dropdown"></div>
                 <label id="refNewAddressLabel">New address <input type="text" id="refNewAddress" value="${escapeHtml(editing?.new_address || '')}" placeholder="Street, city, state, zip"></label>
                 <label>Details <textarea id="refDetails" rows="3" placeholder="How you learned it, dates, who told you">${escapeHtml(editing?.details ?? opts.details ?? '')}</textarea></label>
+                <label>Recommendation <textarea id="refRecommendation" rows="3" placeholder="What you suggest the clerk do (optional)">${escapeHtml(editing?.recommendation ?? '')}</textarea></label>
                 <label>Learned on (YYYY-MM-DD) <input type="text" id="refLearnedOn" value="${escapeHtml(editing?.learned_on || opts.learnedOn || localIsoDate())}"></label>
                 <div class="modal-buttons">
                     <button class="btn btn-primary" id="refSave">${editing ? 'Save' : 'Add referral'}</button>
@@ -104,6 +105,7 @@ function openReferralModal(opts) {
 
         overlay.querySelector('#refSave').addEventListener('click', async () => {
             const details = overlay.querySelector('#refDetails').value;
+            const recommendation = overlay.querySelector('#refRecommendation').value;
             const newAddress = overlay.querySelector('#refNewAddress').value;
             const learnedOn = overlay.querySelector('#refLearnedOn').value.trim();
             if (!isValidIsoDate(learnedOn)) {
@@ -112,7 +114,7 @@ function openReferralModal(opts) {
             }
             try {
                 if (editing) {
-                    finish(await Api.updateReferral(editing.id, kind, details, newAddress, learnedOn));
+                    finish(await Api.updateReferral(editing.id, kind, details, recommendation, newAddress, learnedOn));
                     return;
                 }
                 // Same kind already open for this household: warn, don't block
@@ -125,7 +127,7 @@ function openReferralModal(opts) {
                         'Add anyway');
                     if (!go) return;
                 }
-                const saved = await Api.createReferral(householdId, kind, details, newAddress, learnedOn, opts.visitUid);
+                const saved = await Api.createReferral(householdId, kind, details, recommendation, newAddress, learnedOn, opts.visitUid);
                 showMessage(`Clerk referral ${saved.reference} added.`, CONSTANTS.MESSAGE_TYPES.INFO);
                 finish(saved);
             } catch (e) {
@@ -274,6 +276,7 @@ function renderReferralRow(r, closed, sent) {
     const extra = [
         r.new_address ? `New address: ${r.new_address}` : '',
         r.details || '',
+        r.recommendation ? `Recommendation: ${r.recommendation}` : '',
     ].filter(Boolean).map(t => `<div class="ref-detail">${escapeHtml(t)}</div>`).join('');
     const gone = r.household_id == null ? '<div class="ref-dim">No longer in the directory</div>' : '';
     const actions = [];
@@ -353,8 +356,21 @@ async function exportForClerk(format) {
     if (format === 'pdf') {
         ReferralsPdf.download(items, unitName, followUps);
     } else {
+        // The text carries each household's visit history, for the clerk's
+        // context. A household that has left the directory has none left.
+        const visits = {};
         try {
-            await navigator.clipboard.writeText(ReferralsPdf.text(items, unitName, followUps));
+            for (const r of [...items, ...followUps]) {
+                if (r.household_id != null && !(r.household_id in visits)) {
+                    visits[r.household_id] = await Api.getHouseholdVisits(r.household_id);
+                }
+            }
+        } catch (e) {
+            showMessage(`Could not load visit history: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(ReferralsPdf.text(items, unitName, followUps, visits));
             showMessage('Copied. Paste it into your email to the clerk.', CONSTANTS.MESSAGE_TYPES.INFO);
         } catch (e) {
             showMessage(`Could not copy: ${e}`, CONSTANTS.MESSAGE_TYPES.ERROR);

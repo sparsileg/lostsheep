@@ -903,6 +903,7 @@ mod uid_lifecycle_tests {
                 household_id: hh,
                 kind: kind.into(),
                 details: None,
+                recommendation: None,
                 new_address: new_address.map(str::to_string),
                 learned_on: "2026-01-01".into(),
                 visit_uid: None,

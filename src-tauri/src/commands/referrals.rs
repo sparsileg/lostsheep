@@ -39,6 +39,8 @@ pub struct Referral {
     pub snapshot_address: Option<String>,
     pub kind: String,
     pub details: Option<String>,
+    /// The user's free-text recommendation to the clerk.
+    pub recommendation: Option<String>,
     pub new_address: Option<String>,
     pub learned_on: String,
     pub visit_uid: Option<String>,
@@ -138,7 +140,7 @@ fn one_line_address(
 const SELECT_REFERRAL: &str =
     "SELECT r.id, r.household_uid, h.id, r.snapshot_name, r.snapshot_address, r.kind, \
      r.details, r.new_address, r.learned_on, r.visit_uid, r.status, r.reported_on, r.resolved_on, \
-     r.resolution_note, r.created_at \
+     r.resolution_note, r.created_at, r.recommendation \
      FROM referrals r LEFT JOIN households h ON h.household_uid = r.household_uid";
 
 fn row_to_referral(row: &rusqlite::Row) -> rusqlite::Result<Referral> {
@@ -160,6 +162,7 @@ fn row_to_referral(row: &rusqlite::Row) -> rusqlite::Result<Referral> {
         resolved_on: row.get(12)?,
         resolution_note: row.get(13)?,
         created_at: row.get(14)?,
+        recommendation: row.get(15)?,
         imports_since: 0,
         last_import_on: None,
         overdue: false,
@@ -264,6 +267,7 @@ pub struct NewReferral {
     pub household_id: i64,
     pub kind: String,
     pub details: Option<String>,
+    pub recommendation: Option<String>,
     pub new_address: Option<String>,
     pub learned_on: String,
     pub visit_uid: Option<String>,
@@ -326,7 +330,8 @@ pub fn create_referral_query(conn: &Connection, n: NewReferral) -> Result<Referr
 
     conn.execute(
         "INSERT INTO referrals (household_uid, snapshot_name, snapshot_address, kind, details, \
-         new_address, learned_on, visit_uid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         new_address, learned_on, visit_uid, recommendation) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             uid,
             name,
@@ -335,7 +340,8 @@ pub fn create_referral_query(conn: &Connection, n: NewReferral) -> Result<Referr
             blank_to_none(n.details),
             new_address,
             learned_on,
-            n.visit_uid
+            n.visit_uid,
+            blank_to_none(n.recommendation)
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -349,6 +355,7 @@ pub fn update_referral_query(
     id: i64,
     kind: &str,
     details: Option<String>,
+    recommendation: Option<String>,
     new_address: Option<String>,
     learned_on: &str,
 ) -> Result<Referral, String> {
@@ -361,9 +368,16 @@ pub fn update_referral_query(
     };
     let n = conn
         .execute(
-            "UPDATE referrals SET kind = ?1, details = ?2, new_address = ?3, learned_on = ?4 \
-             WHERE id = ?5 AND status IN ('to_report', 'reported')",
-            params![kind, blank_to_none(details), new_address, learned_on, id],
+            "UPDATE referrals SET kind = ?1, details = ?2, new_address = ?3, learned_on = ?4, \
+             recommendation = ?5 WHERE id = ?6 AND status IN ('to_report', 'reported')",
+            params![
+                kind,
+                blank_to_none(details),
+                new_address,
+                learned_on,
+                blank_to_none(recommendation),
+                id
+            ],
         )
         .map_err(|e| e.to_string())?;
     if n == 0 {
@@ -667,6 +681,7 @@ pub fn create_referral(
     household_id: i64,
     kind: String,
     details: Option<String>,
+    recommendation: Option<String>,
     new_address: Option<String>,
     learned_on: String,
     visit_uid: Option<String>,
@@ -678,6 +693,7 @@ pub fn create_referral(
             household_id,
             kind,
             details,
+            recommendation,
             new_address,
             learned_on,
             visit_uid: blank_to_none(visit_uid),
@@ -696,11 +712,20 @@ pub fn update_referral(
     id: i64,
     kind: String,
     details: Option<String>,
+    recommendation: Option<String>,
     new_address: Option<String>,
     learned_on: String,
 ) -> Result<Referral, String> {
     let conn = state.pool.get().map_err(|e| e.to_string())?;
-    let r = update_referral_query(&conn, id, &kind, details, new_address, &learned_on)?;
+    let r = update_referral_query(
+        &conn,
+        id,
+        &kind,
+        details,
+        recommendation,
+        new_address,
+        &learned_on,
+    )?;
     log(&conn, &format!("clerk referral {} edited", r.reference));
     Ok(r)
 }
@@ -771,6 +796,7 @@ mod tests {
             household_id: hh,
             kind: kind.into(),
             details: Some("  neighbor said  ".into()),
+            recommendation: Some("  remove from the ward list  ".into()),
             new_address: Some("45 Elm Rd".into()),
             learned_on: "2026-11-8".into(),
             visit_uid: None,
@@ -893,7 +919,7 @@ mod tests {
         assert_eq!(done.status, "confirmed");
         assert_eq!(done.resolved_on.as_deref(), Some("2026-11-20"));
         assert!(close_referral_query(&c, sent.id, "cancelled", None, "2026-11-21").is_err());
-        assert!(update_referral_query(&c, sent.id, "other", None, None, "2026-11-01").is_err());
+        assert!(update_referral_query(&c, sent.id, "other", None, None, None, "2026-11-01").is_err());
         assert!(close_referral_query(&c, unsent.id, "reported", None, "2026-11-21").is_err());
 
         // A to_report referral can be confirmed directly (the clerk heard first).
@@ -920,10 +946,13 @@ mod tests {
             r.id,
             "contact_info",
             Some("phone disconnected".into()),
+            Some("   ".into()),
             Some("x".into()),
             "2026-11-09",
         )
         .unwrap();
+        assert_eq!(r.recommendation.as_deref(), Some("remove from the ward list"));
+        assert_eq!(u.recommendation, None);
         assert_eq!(u.kind, "contact_info");
         assert_eq!(u.new_address, None);
         assert_eq!(u.details.as_deref(), Some("phone disconnected"));

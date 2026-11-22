@@ -9,8 +9,9 @@
  * overdue reported referrals: previously sent, still in the directory
  * after enough imports. Either may be empty, not both.
  *
- * The contact plan, tags and household comments are never included:
- * only what the clerk needs to update the record.
+ * The contact plan, tags and household comments are never included.
+ * The Copy Text version also lists each household's visit history
+ * (dates, kind, visit comments), so the clerk has the background.
  */
 
 const ReferralsPdf = {
@@ -93,6 +94,7 @@ const ReferralsPdf = {
         ];
         if (r.new_address) right.push({ text: `New address: ${r.new_address}`, fontSize: 10, color: colors.text });
         right.push({ text: this._learnedLine(r), fontSize: 9, color: colors.detail });
+        if (r.recommendation) right.push({ text: `Recommendation: ${r.recommendation}`, fontSize: 9, color: colors.detail });
         if (followUpLine) right.push({ text: followUpLine, fontSize: 9, bold: true, color: colors.detail });
         return {
             unbreakable: true,
@@ -104,16 +106,36 @@ const ReferralsPdf = {
         };
     },
 
-    text(items, unitName, followUps = []) {
+    // visits: { household_id: [visit, ...] } (get_household_visits,
+    // newest first). Each entry ends with the household's whole visit
+    // history, and a line of 70 dashes separates it from the one before.
+    text(items, unitName, followUps = [], visits = {}) {
         const lines = ['Record Update Requests'];
         if (unitName) lines.push(unitName);
         lines.push(`Prepared ${localIsoDate()}`, '');
+        const indent = '        ';
+        // Multi-line text keeps its line breaks, each line indented.
+        const push = (text, pad = indent) =>
+            String(text).split(/\r?\n/).forEach(l => lines.push(`${pad}${l}`.trimEnd()));
         const entry = (r, extra) => {
+            lines.push('-'.repeat(70));
             lines.push(`${r.reference}  ${r.snapshot_name} — ${r.snapshot_address || '(no address on file)'}`);
-            lines.push(`        ${this._kindLine(r)}`);
-            if (r.new_address) lines.push(`        New address: ${r.new_address}`);
-            lines.push(`        ${this._learnedLine(r)}`);
-            if (extra) lines.push(`        ${extra}`);
+            push(this._kindLine(r));
+            if (r.new_address) push(`New address: ${r.new_address}`);
+            push(this._learnedLine(r));
+            if (r.recommendation) push(`Recommendation: ${r.recommendation}`);
+            if (extra) push(extra);
+            lines.push('');
+            if (r.household_id == null) {
+                push('Visit history: not available (no longer in the directory).');
+            } else {
+                const history = visits[r.household_id] || [];
+                push(history.length ? `Visit history (${history.length}):` : 'Visit history: none recorded.');
+                history.forEach(v => {
+                    push(`${v.visit_date}  ${visitKindText(v)}`, indent + '  ');
+                    if (v.comments && v.comments.trim()) push(v.comments.trim(), indent + '              ');
+                });
+            }
             lines.push('');
         };
         if (items.length) {

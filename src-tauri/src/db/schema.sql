@@ -338,6 +338,9 @@ CREATE TABLE IF NOT EXISTS referrals (
                          'moved_known', 'moved_unknown', 'deceased',
                          'contact_info', 'remove_records', 'other')),
     details          TEXT,
+    -- The user's recommendation to the clerk, free text. Added to
+    -- existing databases by db/mod.rs::migrate_referral_recommendation.
+    recommendation   TEXT,
     new_address      TEXT,           -- moved_known only
     learned_on       TEXT NOT NULL,  -- ISO date
     visit_uid        TEXT,           -- the visit that surfaced it, if any (no FK)

@@ -199,6 +199,15 @@ not proof the email was sent.
 
 A **Copy Text** variant of the same content (as the route export has)
 covers the case where the user would rather paste into the email body.
+Copy Text adds two things the PDF leaves out: a line of 70 dashes
+before each entry's reference and name, to separate the entries, and
+each household's whole visit history (date, method and outcome, visit
+comments), newest first, after the entry. A household no longer in the
+directory has no visit history left to show.
+
+Each referral can also carry a free-text **Recommendation** (what the
+user suggests the clerk do), entered in the Report to clerk dialog. It
+appears in the list, the PDF and the text.
 
 ### 3.3 Confirmation on import
 

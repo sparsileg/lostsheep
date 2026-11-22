@@ -50,10 +50,10 @@ const Api = {
 
     // clerk referrals
     listReferrals: (householdId) => invoke('list_referrals', { householdId }),
-    createReferral: (householdId, kind, details, newAddress, learnedOn, visitUid) =>
-        invoke('create_referral', { householdId, kind, details, newAddress, learnedOn, visitUid: visitUid || null }),
-    updateReferral: (id, kind, details, newAddress, learnedOn) =>
-        invoke('update_referral', { id, kind, details, newAddress, learnedOn }),
+    createReferral: (householdId, kind, details, recommendation, newAddress, learnedOn, visitUid) =>
+        invoke('create_referral', { householdId, kind, details, recommendation, newAddress, learnedOn, visitUid: visitUid || null }),
+    updateReferral: (id, kind, details, recommendation, newAddress, learnedOn) =>
+        invoke('update_referral', { id, kind, details, recommendation, newAddress, learnedOn }),
     markReferralsReported: (ids, reportedOn) => invoke('mark_referrals_reported', { ids, reportedOn }),
     closeReferral: (id, status, note) => invoke('close_referral', { id, status, note }),
     reopenReferral: (id) => invoke('reopen_referral', { id }),

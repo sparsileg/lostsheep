@@ -74,6 +74,7 @@ pub fn open_pool(
     // with a raw CHECK-constraint error at write time.
     migrate_review_queue_link_resolution(&conn)?;
     migrate_stage2(&conn)?;
+    migrate_referral_recommendation(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     Ok(pool)
 }
@@ -491,6 +492,12 @@ fn migrate_stage2(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+/// After 1.5.0: the free-text recommendation on a clerk referral.
+fn migrate_referral_recommendation(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_missing(conn, "referrals", "recommendation", "TEXT")?;
     Ok(())
 }
 
