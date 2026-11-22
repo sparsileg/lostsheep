@@ -36,6 +36,21 @@ release-check BASE="":
 release-check BASE="":
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-check.ps1 {{BASE}}
 
+# Build installers on GitHub Actions, download to dist/TAG/ (TAG default v<version>; PLATFORMS all|linux|windows)
+[unix]
+ci-build TAG="" PLATFORMS="all":
+    scripts/ci-build.sh "{{TAG}}" {{PLATFORMS}}
+
+# Download a release's installers to dist/TAG/ without building
+[unix]
+download TAG="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tag="{{TAG}}"
+    [ -n "$tag" ] || tag=v$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+    gh release download "$tag" -R sparsileg/lostsheep -D "dist/$tag" --clobber -p '*.deb' -p '*.rpm' -p '*.exe'
+    ls -lh "dist/$tag"
+
 # Set the app version in all the places it is written, e.g. `just version 1.4.0`
 [unix]
 version V:

@@ -179,6 +179,12 @@ attaches them to a **draft** release:
      accepts only numeric prerelease versions)
 4. Check the draft on GitHub, write the notes, publish.
 
+`just ci-build [TAG] [PLATFORMS]` starts the workflow for a pushed tag
+(default `v<Cargo.toml version>`; `all`, `linux` or `windows`), waits
+for it, and downloads the installers to `dist/TAG/` (gitignored). It
+asks before replacing a published release's files. `just download
+[TAG]` only downloads.
+
 To rebuild an existing tag (assets of the same name are replaced):
 `gh workflow run release.yml -f tag=vX.Y.Z` (add `-f platforms=linux` or `windows` for one platform).
 
